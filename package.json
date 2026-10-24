@@ -1,0 +1,36 @@
+{
+  "name": "dobby-ai",
+  "version": "0.1.0",
+  "description": "An AI dev team on your own machine: builds, reviews and ships your tickets as pull requests, with Claude Code.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dapplelight/dobby"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "type": "module",
+  "bin": {
+    "dobby": "bin/dobby",
+    "foreman": "bin/foreman"
+  },
+  "scripts": {
+    "test": "node --no-warnings --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.81",
+    "@clack/prompts": "1.8.1",
+    "@langchain/core": "1.2.14",
+    "@langchain/langgraph": "1.4.19",
+    "@langchain/langgraph-checkpoint-sqlite": "1.0.4",
+    "better-sqlite3": "12.10.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.0.0",
+    "typescript": "5.9.3"
+  }
+}

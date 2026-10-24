@@ -1,0 +1,14 @@
+{
+  "timezone": "Asia/Kolkata",
+  "timezoneLabel": "IST",
+  "github": { "owner": "ownerdev", "accounts": ["ownerdev", "acmeorg"] },
+  "clientNames": ["orion", "lyra", "vega", "rigel", "altair"],
+  "clientProjects": ["shopfront"],
+  "frontDeskDenyMcp": ["tally", "vitals"],
+  "watchJobs": { "prefixes": ["com.acme."], "daemons": ["com.acme.dm-server", "com.acme.dm-tunnel", "com.acme.agent"] },
+  "paths": { "dashboardDist": "~/projects/dashboard/dist" },
+  "discord": {
+    "apps": { "tally": { "label": "💰 TALLY", "ideas": true }, "shopfront": { "label": "🎬 SHOPFRONT", "ideas": true }, "dobby": { "label": "⚙️ DOBBY", "ideas": true } },
+    "extraChannels": { "shopfront": ["shopfront-dms"] }
+  }
+}

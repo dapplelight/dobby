@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Dobby</title>
+<style>
+/* Design tokens: an "editorial" palette (warm neutrals, green accent), inlined because Dobby has no build step. */
+:root {
+  --bg-base: #faf9f7; --bg-surface: #f2f0ec; --bg-elevated: #eae7e1;
+  --border-default: #d8d4cc; --border-subtle: #eae7e1;
+  --accent-green: #16a34a; --accent-blue: #2563eb; --accent-amber: #c2860a; --accent-red: #b91c1c;
+  --accent-green-subtle: rgba(22,163,74,.1); --accent-red-subtle: rgba(185,28,28,.1); --accent-amber-subtle: rgba(194,134,10,.1);
+  --text-primary: #1a1814; --text-secondary: #524e4a; --text-muted: #7a736a; --text-hint: #9d9590;
+  --chart-1: var(--accent-blue); --chart-2: var(--accent-green); --chart-3: var(--accent-amber); --chart-4: var(--accent-red); --chart-5: #7a736a; --chart-6: #c2bdb3;
+  --shadow-sm: 0 1px 4px rgba(26,24,20,.08), 0 1px 2px rgba(26,24,20,.04);
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; --font-mono: "Geist Mono", ui-monospace, monospace;
+  --text-label: .6875rem; --text-caption: .75rem; --text-body: .8125rem; --text-callout: .875rem; --text-subhead: 1rem; --text-headline: 1.375rem; --text-stat: 1.75rem;
+  --radius: .5rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-base: #0d0d0b; --bg-surface: #171714; --bg-elevated: #1d1d1a;
+    --border-default: #2d2d29; --border-subtle: #232320;
+    --accent-green: #34d399; --accent-blue: #60a5fa; --accent-amber: #f59e0b; --accent-red: #f87171;
+    --accent-green-subtle: rgba(52,211,153,.12); --accent-red-subtle: rgba(248,113,113,.12); --accent-amber-subtle: rgba(245,158,11,.12);
+    --text-primary: #f0ece6; --text-secondary: #9d9590; --text-muted: #8a847d; --text-hint: #6b6560;
+    --chart-5: #9d9590; --chart-6: #524e4a;
+    --shadow-sm: 0 1px 4px rgba(0,0,0,.35);
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg-base); color: var(--text-primary); font: var(--text-body)/1.5 var(--font-sans); -webkit-font-smoothing: antialiased; }
+a { color: inherit; }
+header { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; justify-content: space-between; padding: .75rem 1rem; border-bottom: 1px solid var(--border-default); position: sticky; top: 0; background: var(--bg-base); z-index: 2; }
+h1 { font-size: var(--text-headline); margin: 0; letter-spacing: -.01em; }
+h2 { font-size: var(--text-subhead); margin: 0 0 .75rem; }
+h3 { font-size: var(--text-label); text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); margin: 1rem 0 .4rem; font-weight: 600; }
+main { padding: 1rem; display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); max-width: 90rem; margin: 0 auto; }
+section { background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--radius); padding: 1rem; box-shadow: var(--shadow-sm); min-width: 0; }
+section.wide { grid-column: 1 / -1; }
+.muted { color: var(--text-muted); } .hint { color: var(--text-hint); font-size: var(--text-caption); }
+.seg { display: inline-flex; border: 1px solid var(--border-default); border-radius: var(--radius); overflow: hidden; }
+.seg button { font: inherit; padding: .35rem .8rem; border: 0; background: transparent; color: var(--text-secondary); cursor: pointer; min-height: 2rem; }
+.seg button[aria-pressed="true"] { background: var(--bg-elevated); color: var(--text-primary); font-weight: 600; }
+:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 2px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr)); gap: .5rem; margin-bottom: .5rem; }
+.tile { background: var(--bg-base); border: 1px solid var(--border-subtle); border-radius: var(--radius); padding: .5rem .65rem; }
+.tile b { display: block; font-size: var(--text-stat); line-height: 1.15; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tile span { color: var(--text-muted); font-size: var(--text-caption); }
+.tile.warn { border-color: var(--accent-amber); } .tile.bad { border-color: var(--accent-red); }
+ul.rows { list-style: none; margin: 0; padding: 0; }
+ul.rows li { display: flex; flex-wrap: wrap; gap: .1rem .6rem; align-items: baseline; padding: .4rem 0; border-top: 1px solid var(--border-subtle); }
+ul.rows li:first-child { border-top: 0; }
+ul.rows .t { flex: 1 1 14rem; min-width: 0; overflow-wrap: anywhere; }
+ul.rows .r { color: var(--text-muted); font-size: var(--text-caption); font-variant-numeric: tabular-nums; }
+ul.rows .why { flex-basis: 100%; color: var(--text-secondary); font-size: var(--text-caption); }
+/* Needs you (#174): big, high-contrast, readable on a phone */
+.need { border-left: 4px solid var(--accent-amber, #b45309); padding: .5rem 0 .5rem .75rem; margin: 0 0 1rem; }
+.need h3 { font-size: 1.25rem; margin: 0; color: var(--text-primary); }
+.need .do { font-size: 1.125rem; font-weight: 600; margin: .25rem 0 .5rem; color: var(--text-primary); }
+.need li { font-size: 1.0625rem; color: var(--text-primary); padding: .25rem 0; }
+.chip { font-size: var(--text-label); padding: .05rem .4rem; border: 1px solid var(--border-default); border-radius: 999px; color: var(--text-secondary); white-space: nowrap; }
+.dot { display: inline-block; width: .6rem; height: .6rem; border-radius: 50%; margin-right: .35rem; vertical-align: baseline; }
+.legend { display: flex; flex-wrap: wrap; gap: .2rem .9rem; font-size: var(--text-caption); color: var(--text-secondary); margin: .35rem 0 0; }
+svg.chart { width: 100%; height: auto; display: block; overflow: visible; }
+svg.chart text { fill: var(--text-muted); font-size: 10px; font-family: var(--font-sans); }
+svg.chart line { stroke: var(--border-default); }
+.meter { height: .5rem; background: var(--bg-elevated); border-radius: 999px; overflow: hidden; margin: .2rem 0 .1rem; }
+.meter i { display: block; height: 100%; background: var(--accent-green); }
+.meter.hot i { background: var(--accent-amber); } .meter.max i { background: var(--accent-red); }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: .3rem .4rem; border-top: 1px solid var(--border-subtle); }
+th { color: var(--text-muted); font-weight: 500; font-size: var(--text-caption); border-top: 0; }
+td.n, th.n { text-align: right; }
+.scroll { overflow-x: auto; }
+#err { display: none; background: var(--accent-amber-subtle); border: 1px solid var(--accent-amber); border-radius: var(--radius); padding: .4rem .75rem; margin: 1rem 1rem 0; }
+.empty { color: var(--text-muted); margin: .25rem 0; }
+@media (max-width: 30rem) { main { padding: .5rem; } section { padding: .75rem; } header { padding: .5rem .75rem; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Dobby</h1>
+  <div style="display:flex;gap:.75rem;align-items:center;flex-wrap:wrap">
+    <span class="hint" id="stamp" role="status">loading…</span>
+    <div class="seg" role="group" aria-label="Time window"><button data-d="7" aria-pressed="true">7 days</button><button data-d="30" aria-pressed="false">30 days</button></div>
+  </div>
+</header>
+<div id="err" role="alert"></div>
+<main id="app"></main>
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const usd = (n) => n == null ? "n/a" : "$" + (n >= 100 ? Math.round(n).toLocaleString() : n.toFixed(2));
+const pct = (n) => n == null ? "n/a" : n + "%";
+const hours = (h) => h == null ? "n/a" : h < 48 ? (Math.round(h * 10) / 10) + " h" : (Math.round(h / 2.4) / 10) + " d";
+const ago = (iso) => { const m = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000)); return m < 60 ? m + "m ago" : m < 2880 ? Math.round(m / 60) + "h ago" : Math.round(m / 1440) + "d ago"; };
+const until = (ms) => { if (!ms) return ""; const m = Math.round((ms - Date.now()) / 60000); const at = new Date(ms).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  return m <= 0 ? "resetting now" : "resets in " + (m < 60 ? m + "m" : m < 2880 ? Math.floor(m / 60) + "h " + (m % 60) + "m" : Math.round(m / 1440) + "d") + " (" + at + ")"; };
+const empty = (t) => `<p class="empty">${esc(t)}</p>`;
+const sub = (t) => `<span class="hint">${esc(t)}</span>`; // small grey suffix, e.g. a ticket or PR number
+const COLORS = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)", "var(--chart-5)", "var(--chart-6)"];
+const tile = (v, label, cls = "") => `<div class="tile ${cls}"><b>${esc(v)}</b><span>${esc(label)}</span></div>`;
+const legend = (items) => `<div class="legend">${items.map(([c, l]) => `<span><i class="dot" style="background:${c}"></i>${esc(l)}</span>`).join("")}</div>`;
+const meter = (p) => `<div class="meter ${p >= 100 ? "max" : p >= 80 ? "hot" : ""}" role="img" aria-label="${p}% used"><i style="width:${Math.min(100, p)}%"></i></div>`;
+
+// Stacked columns, one per day. series: [{label,color,get(day)}]. Every column has a text tooltip; the legend names the colours.
+function columns(days, series, label, fmt = (n) => String(n)) {
+  const W = 320, H = 110, gap = days.length > 14 ? 2 : 4, bw = (W - gap * (days.length - 1)) / days.length;
+  const totals = days.map((d) => series.reduce((a, s) => a + (s.get(d) || 0), 0)), max = Math.max(...totals, 0);
+  if (!max) return empty("Nothing in this window yet.");
+  const bars = days.map((d, i) => { let y = H; const x = i * (bw + gap);
+    const segs = series.map((s) => { const v = s.get(d) || 0, h = v / max * (H - 4); y -= h; return v ? `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(h, 1).toFixed(1)}" fill="${s.color}" rx="1"/>` : ""; }).join("");
+    return `<g><title>${esc(d.day + ": " + series.filter((s) => s.get(d)).map((s) => s.label + " " + fmt(s.get(d))).join(", ") + (series.length > 1 ? " (total " + fmt(totals[i]) + ")" : ""))}</title>${segs}<rect x="${x.toFixed(1)}" y="0" width="${bw.toFixed(1)}" height="${H}" fill="transparent"/></g>`; }).join("");
+  const f = days[0].day.slice(5), l = days[days.length - 1].day.slice(5);
+  return `<svg class="chart" viewBox="0 -10 ${W} ${H + 24}" role="img" aria-label="${esc(label)}"><text x="0" y="-1">max ${esc(fmt(max))}</text><line x1="0" x2="${W}" y1="${H}" y2="${H}"/>${bars}<text x="0" y="${H + 12}">${f}</text><text x="${W}" y="${H + 12}" text-anchor="end">${l}</text></svg>` + (series.length > 1 ? legend(series.map((s) => [s.color, s.label])) : "");
+}
+// Rows with a horizontal bar: [{name, value 0-100, text}]
+const hbars = (rows) => rows.length ? `<ul class="rows">${rows.map((r) => `<li><span class="t">${esc(r.name)}${r.hint ? " " + sub(r.hint) : ""}</span><span class="r">${esc(r.text)}</span><div class="meter" style="flex-basis:100%" role="img" aria-label="${esc(r.name)} ${r.value}%"><i style="width:${r.value}%;background:var(--chart-1)"></i></div></li>`).join("")}</ul>` : empty("Nothing yet.");
+
+const list = (items, row, max = 8) => items.length ? `<ul class="rows">${items.slice(0, max).map(row).join("")}</ul>` + (items.length > max ? `<p class="hint">+${items.length - max} more</p>` : "") : empty("None.");
+const VERDICT = { pass: ["var(--accent-green)", "Passed"], fail: ["var(--accent-red)", "Failed"], skip: ["var(--text-hint)", "Skipped"], error: ["var(--accent-amber)", "Error"], accepted: ["var(--accent-blue)", "Accepted"] };
+
+function render(s) {
+  const n = s.now, o = s.outcomes, q = s.quality, sp = s.spend, u = sp.usage;
+  const tickMin = n.lastTick ? (Date.now() - n.lastTick) / 60000 : null;
+  const roleColor = Object.fromEntries(sp.roles.map((r, i) => [r, COLORS[i % COLORS.length]]));
+  const sections = [];
+
+  const needs = s.needsMe || [];
+  sections.push(`<section class="wide"><h2>Needs you</h2>${needs.length ? needs.map((g) => `<div class="need"><h3>${esc(g.reason)} (${g.items.length})</h3><p class="do">${esc(g.action)}</p><ul>${g.items.slice(0, 5).map((i) => `<li>${esc(i.title)}${i.app && !i.title.startsWith(i.app) ? " " + sub(i.app) : ""}</li>`).join("")}${g.items.length > 5 ? `<li class="hint">and ${g.items.length - 5} more</li>` : ""}</ul></div>`).join("") : empty("Nothing needs you.")}</section>`);
+
+  sections.push(`<section class="wide"><h2>Now</h2><div class="tiles">
+    ${tile(n.building.length, "building now")}${tile(n.ready.length, "ready to build")}${tile(n.stuck.length, "stuck", n.stuck.length ? "warn" : "")}
+    ${n.lastTickAgo ? tile(n.lastTickAgo + " ago", "last tick", tickMin > 15 ? "bad" : "") : tile(n.lastRunAgo ? n.lastRunAgo + " ago" : "unknown", "last agent run (tick time not recorded)", n.lastRunAgo ? "" : "bad")}
+    ${tile(n.jobs.total ? n.jobs.ok + " of " + n.jobs.total : "none", "health checks ok", n.jobs.failing.length ? "bad" : "")}</div>
+    <div style="display:grid;gap:0 1.5rem;grid-template-columns:repeat(auto-fit,minmax(min(100%,20rem),1fr))"><div>
+    <h3>Building now</h3>${list(n.building, (b) => `<li><span class="t">${esc(b.title)}</span><span class="chip">${esc(b.app)}</span><span class="r">${esc(b.since)}</span></li>`)}
+    <h3>Ready queue</h3>${list(n.ready, (b) => `<li><span class="t">${esc(b.title)}</span><span class="chip">${esc(b.app)}</span><span class="r">waiting ${esc(b.since)}</span></li>`, 5)}
+    </div><div>
+    <h3>Stuck</h3>${list(n.stuck, (b) => `<li><span class="t">${esc(b.title)} ${sub("#" + b.id)}</span><span class="chip">${esc(b.app)}</span><span class="r">${esc(b.state)}, ${esc(b.since)}</span><span class="why">${esc(b.reason)}</span></li>`, 6)}
+    <h3>Health checks</h3>${n.jobs.failing.length ? list(n.jobs.failing, (f) => `<li><span class="t">${esc(f.name)}</span><span class="r">failing ${esc(f.since)}</span>${f.detail ? `<span class="why">${esc(f.detail)}</span>` : ""}</li>`) : empty(n.jobs.total ? "All passing at the last run." : "No check has run yet.")}
+    </div></div></section>`);
+
+  sections.push(`<section><h2>Outcomes, ${s.days} days</h2><div class="tiles">${tile(o.shipped, "shipped")}${tile(hours(o.medianHours), "median, created to shipped")}${tile(pct(o.noTouchPct), "shipped with no owner touch")}</div>
+    <h3>Shipped per day</h3>${columns(o.perDay, [{ label: "Shipped", color: "var(--chart-2)", get: (d) => d.n }], "Tickets shipped per day")}</section>`);
+
+  const rw = q.rework;
+  sections.push(`<section><h2>Quality, ${s.days} days</h2><div class="tiles">${tile(pct(q.passPct), "reviews passed")}${tile(rw.avgBuilds ?? "n/a", "builds per shipped ticket")}${tile(pct(q.checker.pct), "Checker sent back", q.checker.pct > 50 ? "warn" : "")}</div>
+    <p class="hint">${rw.tickets ? `Built once: ${rw.once}, twice: ${rw.twice}, three or more: ${rw.more}. ` : ""}${q.checker.checks ? `${q.checker.sentBack} of ${q.checker.checks} Checker runs were followed by another build (or failed).` : ""}</p>
+    <h3>Review verdicts per day</h3>${columns(q.verdictsPerDay, ["pass", "fail", "skip", "error"].map((k) => ({ label: VERDICT[k][1], color: VERDICT[k][0], get: (d) => d[k] })), "Review verdicts per day")}
+    <h3>Pass rate by repository</h3>${hbars(q.passRateByRepo.map((r) => ({ name: r.repo, hint: r.total + " judged", value: r.pct, text: r.pct + "%" })))}</section>`);
+
+  sections.push(`<section><h2>Spend, ${s.days} days</h2><div class="tiles">${tile(usd(sp.total), "API-$ spent")}
+    ${u ? tile(u.fivePct + "%", "5-hour window", u.fivePct >= 90 ? "warn" : "") + tile(u.weekPct + "%", "weekly limit") : tile("n/a", "plan usage")}</div>
+    ${u ? `<p class="hint">5-hour: ${esc(until(u.fiveResetAt))}. Weekly: ${esc(until(u.weekResetAt))}. Read ${esc(u.readAgo)} ago.</p>${meter(u.fivePct)}${meter(u.weekPct)}` : ""}
+    <h3>API-$ per day, by role</h3>${columns(sp.perDay, sp.roles.map((r) => ({ label: r, color: roleColor[r], get: (d) => d.parts[r] })), "API dollars per day by role", usd)}
+    <h3>By model</h3>${hbars(sp.byModel.slice(0, 6).map((m) => ({ name: m.name, value: Math.round(100 * m.usd / (sp.byModel[0].usd || 1)), text: usd(m.usd) })))}
+    <h3>Per shipped ticket, by app</h3>${sp.perShippedByApp.length ? `<div class="scroll"><table><tr><th>App</th><th class="n">Spent</th><th class="n">Shipped</th><th class="n">Per ticket</th></tr>${sp.perShippedByApp.map((a) => `<tr><td>${esc(a.app)}</td><td class="n">${usd(a.usd)}</td><td class="n">${a.shipped}</td><td class="n">${usd(a.perTicket)}</td></tr>`).join("")}</table></div>` : empty("Nothing yet.")}</section>`);
+
+  sections.push(`<section><h2>Goals</h2>${s.goals.length ? s.goals.map((g) => `<h3>${esc(g.app)}</h3><ul class="rows">${g.goals.map((x) => { const tot = x.shipped + x.open + x.failed;
+    return `<li><span class="t">${esc(x.title)}${x.draft ? ` <span class="chip">draft</span>` : ""}</span><span class="r">${x.shipped} shipped, ${x.open} open${x.failed ? ", " + x.failed + " failed" : ""}</span><div class="meter" style="flex-basis:100%" role="img" aria-label="${x.shipped} of ${tot} tickets shipped"><i style="width:${tot ? Math.round(100 * x.shipped / tot) : 0}%"></i></div></li>`; }).join("")}</ul>`).join("") : empty("No active goals.")}</section>`);
+
+  const buckets = s.queue.backlog[0] ? Object.keys(s.queue.backlog[0].buckets) : [];
+  sections.push(`<section><h2>Queue</h2><h3>Backlog by app and age</h3>${s.queue.backlog.length ? `<div class="scroll"><table><tr><th>App</th>${buckets.map((b) => `<th class="n">${esc(b)}</th>`).join("")}<th class="n">Total</th></tr>${s.queue.backlog.map((b) => `<tr><td>${esc(b.app)}</td>${buckets.map((k) => `<td class="n">${b.buckets[k]}</td>`).join("")}<td class="n">${b.total}</td></tr>`).join("")}</table></div>` : empty("Backlog is empty.")}
+    <h3>Failed tickets</h3>${list(s.queue.failed, (f) => `<li><span class="t">${esc(f.title)} ${sub("#" + f.id)}</span><span class="chip">${esc(f.app)}</span><span class="r">${esc(f.since)}</span><span class="why">${esc(f.reason)}</span></li>`, 10)}</section>`);
+
+  sections.push(`<section class="wide"><h2>Latest reviews</h2>${s.reviews.length ? `<ul class="rows">${s.reviews.map((r) => { const v = VERDICT[r.verdict] || ["var(--text-hint)", r.verdict];
+    return `<li><span class="t">${esc(r.title || "Pull request")} <span class="muted">in ${esc(r.repo)}</span> <a class="hint" href="${esc(r.url)}" rel="noreferrer noopener" target="_blank">#${r.pr}</a></span>
+      <span><i class="dot" style="background:${v[0]}"></i>${esc(v[1])}</span><span class="r">${esc(r.choice && r.choice !== "none" ? r.choice : "no model")}${r.by ? " (" + esc(r.by) + ")" : ""}</span><span class="r">${r.cost == null ? "" : usd(r.cost)}</span><span class="r">${esc(ago(r.at))}</span></li>`; }).join("")}</ul>` : empty("No reviews yet.")}</section>`);
+
+  $("#app").innerHTML = sections.join("");
+}
+
+let days = 7, good = 0;
+const token = new URLSearchParams(location.search).get("token");
+async function load() {
+  try {
+    const r = await fetch("api/snapshot?days=" + days + (token ? "&token=" + encodeURIComponent(token) : ""), { cache: "no-store" });
+    if (!r.ok) throw new Error("server said " + r.status);
+    render(await r.json());
+    good = Date.now(); $("#err").style.display = "none";
+    $("#stamp").textContent = "updated " + new Date(good).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + ", refreshes every minute";
+  } catch (e) {
+    $("#err").style.display = "block";
+    $("#err").textContent = "Could not refresh (" + e.message + ")." + (good ? " Showing data from " + new Date(good).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + "." : "");
+  }
+}
+document.querySelectorAll(".seg button").forEach((b) => b.addEventListener("click", () => {
+  days = Number(b.dataset.d); document.querySelectorAll(".seg button").forEach((x) => x.setAttribute("aria-pressed", String(x === b))); load();
+}));
+load(); setInterval(load, 60000);
+</script>
+</body>
+</html>

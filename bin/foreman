@@ -1,0 +1,3 @@
+#!/bin/zsh
+# Old name; Dobby is the command now. Kept for scripts and habits from before the rename.
+exec "${0:A:h}/dobby" "$@"

@@ -1,0 +1,29 @@
+# Claude Review: GitHub starts it, the Mac's self-hosted runner runs it, Dobby's locked-down reviewer does it.
+# Safe by design: pull_request_target always runs THIS file from the default branch (a PR cannot edit it),
+# there is no checkout of PR code here, and the reviewer ignores the PR's own .claude settings and hooks.
+name: Claude Review
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+permissions: {} # the reviewer uses the Mac's own gh and Claude logins, not GITHUB_TOKEN
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+jobs:
+  review:
+    if: github.event_name == 'pull_request_target' || (contains(github.event.comment.body, '@dobby') || contains(github.event.comment.body, '@foreman'))
+    runs-on: [self-hosted, macOS]
+    timeout-minutes: 40
+    steps:
+      - name: Review (PR pushes) or answer @dobby (comments)
+        env:
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+          KIND: ${{ github.event_name }}
+        run: |
+          if [ "$KIND" = "pull_request_target" ]; then ~/projects/foreman/bin/dobby review "$REPO" "$PR"
+          else ~/projects/foreman/bin/dobby review-scan; fi
