@@ -6,6 +6,8 @@ export type Act = (typeof ACTIONS)[number]
 export const PRESET_NAMES = ["strict", "balanced", "autonomous"] as const
 
 const all = (a: Act): Record<Category, Act> => Object.fromEntries(CATEGORIES.map((c) => [c, a])) as Record<Category, Act>
+/** The floor for every merge, sensitive or not: strict = every merge waits for the owner. Config safety.everyMerge overrides it. */
+export const EVERY_MERGE: Record<(typeof PRESET_NAMES)[number], "auto" | "review" | "owner"> = { strict: "owner", balanced: "auto", autonomous: "auto" }
 export const PRESETS: Record<(typeof PRESET_NAMES)[number], Record<Category, Act>> = {
   strict: all("owner"),
   balanced: { ...all("owner"), "migrations.schema": "auto", deploys: "auto", config: "auto", payments: "review", auth: "review", secrets: "review" },

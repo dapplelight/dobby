@@ -395,7 +395,7 @@ test("readUsage: no reader installed = no pacing, said once; the reader coming b
   L.readUsage(db, read, Date.now(), tell, () => false, () => true)
   assert.equal(reads, 0, "nothing to spawn")
   assert.equal(told.length, 1)
-  assert.match(told[0], /^usage-missing: No usage reader at .+, so builders run with no pacing/)
+  assert.match(told[0], /^usage-missing: No usage reader .+, so I cannot pace builders/)
   assert.equal(L.readUsage(db, read, Date.now(), tell, () => false, () => false)!.fiveUsed, 40)
   assert.equal(kv(db, "usage:missing-told"), undefined)
   assert.equal(L.noUsageReader("/nonexistent/cli.js"), true)

@@ -7,7 +7,7 @@
 import { existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { z } from "zod"
-import { PRESETS } from "./presets.ts"
+import { EVERY_MERGE, PRESETS } from "./presets.ts"
 import { providersConfigSchema } from "./providers/config.ts"
 import { reviewConfigSchema } from "./reviewer/settings.ts"
 
@@ -34,9 +34,13 @@ export const Schema = z.object({
     projects: z.string(), // where project clones live
     data: z.string(), // Dobby's data dir (DOBBY_DIR still wins)
     memory: z.string(), // the owner's Claude Code memory folder (dobby company)
-    usageCli: z.string(), // the claude-code-usage-limits reader
+    usageCli: z.string(), // the claude-code-usage-limits reader; "" = the copy bundled in node_modules
     dashboardDist: z.string(), // the built dashboard app (DOBBY_DASHBOARD_DIST still wins)
+    agentRules: z.string().optional(), // your own rules file, appended to every agent's rules after Dobby's (src/tools.ts)
   }),
+  // Agent tooling (src/tools.ts, `dobby tools`). A tool's rules reach agents only when it is on AND found on this machine.
+  // Absent = graphify, rtk, caveman, ponytail on (free); jev on only when safety.classifier is "jev" (paid: opt in).
+  tools: z.object({ graphify: z.boolean(), rtk: z.boolean(), caveman: z.boolean(), ponytail: z.boolean(), jev: z.boolean() }).partial().optional(),
   discord: z.object({
     hq: z.array(z.string()), // channels in the HQ category
     apps: z.record(App), // one category per app: <app>-tickets, <app>-releases, <app>-ideas when ideas
@@ -56,6 +60,8 @@ export const Schema = z.object({
   // Token savings (src/savings.ts). Every key is absent by default = Dobby behaves as before; the private config turns each on.
   // ticketBudget: most one ticket may spend, by size, in percent-of-the-week points (usdPerWeekPoint dollars = 1 point; default 26, measured). Over it, the ticket goes to the owner.
   ticketBudget: z.object({ S: z.number().positive(), M: z.number().positive(), L: z.number().positive(), usdPerWeekPoint: z.number().positive() }).partial().optional(),
+  // pacing.fallbackBuildsPerDay: builds started per day (configured timezone) while the Claude usage cannot be read (default 3).
+  pacing: z.object({ fallbackBuildsPerDay: z.number().int().min(0) }).partial().optional(),
   // retryLimit: builds one ticket may use before it goes to the owner instead of being rebuilt.
   retryLimit: z.number().int().min(1).optional(),
   // builderContextCeiling: tokens of context at which a builder run is ended and continued in a fresh run with a short handoff.
@@ -96,6 +102,10 @@ export const Schema = z.object({
     rules: z.record(z.enum(["migrations.schema", "migrations.data", "payments", "auth", "secrets", "deploys", "config", "client-sites", "releases"]), z.enum(["auto", "review", "owner", "never"])),
     classifier: z.enum(["jev", "model", "none"]),
     unsure: z.enum(["ask", "allow"]),
+    // everyMerge: the floor for every merge, including changes in no category: auto | review (strict review) | owner (draft PR, the
+    // owner merges). Unset = the preset's (strict: owner, else auto). deploy: after a merge, auto (deploy at once) | ask (a Deploy tap).
+    everyMerge: z.enum(["auto", "review", "owner"]).optional(),
+    deploy: z.enum(["auto", "ask"]).optional(),
   }),
   migrated: z.object({ at: z.string(), projects: z.array(z.string()), secretKeys: z.array(z.string()), discord: z.record(z.string()), launchdJobs: z.array(z.string()) }).partial().optional(),
 })
@@ -113,7 +123,10 @@ function tightenSafety(prev: Config["safety"], next: Config["safety"]): Config["
   const rules: Config["safety"]["rules"] = { ...prev.rules }
   for (const c of Object.keys(b) as (keyof typeof b)[]) if (ACT[b[c]] > ACT[a[c]]) rules[c] = b[c]
   const preset = PRESET_ORDER.indexOf(next.preset) > PRESET_ORDER.indexOf(prev.preset) ? next.preset : prev.preset
-  return { preset, rules, classifier: prev.classifier, unsure: prev.unsure === "ask" || next.unsure === "ask" ? "ask" : "allow" }
+  const floor = (s: Config["safety"]) => s.everyMerge ?? EVERY_MERGE[s.preset]
+  const everyMerge = ACT[floor(next)] > ACT[floor(prev)] ? floor(next) : prev.everyMerge
+  const deploy = prev.deploy === "ask" || next.deploy === "ask" ? "ask" : prev.deploy
+  return { preset, rules, classifier: prev.classifier, unsure: prev.unsure === "ask" || next.unsure === "ask" ? "ask" : "allow", ...(everyMerge ? { everyMerge } : {}), ...(deploy ? { deploy } : {}) }
 }
 
 export const configDir = (home = homedir(), platform = process.platform, env = process.env) =>
@@ -151,7 +164,7 @@ export function defaults(home = homedir(), platform = process.platform, tz = loc
       projects: "~/projects",
       data: dataDir(home, platform),
       memory: `~/.claude/projects/${home.replace(/[/.]/g, "-")}/memory`,
-      usageCli: "~/claude-code-usage-limits/bin/cli.js",
+      usageCli: "", // "" = the bundled claude-usage-limits; set a path to use your own copy
       dashboardDist: "", // none: the single-file dashboard
     },
     discord: {

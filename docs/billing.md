@@ -7,6 +7,11 @@ Dobby runs Claude Code for every role. It can pay in one of two ways, set in `~/
 A Claude Pro or Max sign-in (`claude`, then `/login`). Runs count against the plan's 5-hour and weekly windows, and
 Dobby paces itself so the last 5% of the week stays yours. Best value if you already pay for Max.
 
+Pacing needs to read your usage. Dobby bundles the open-source `claude-usage-limits` reader for that (set `paths.usageCli`
+to use your own copy). It reads your Claude sign-in and asks Anthropic only for your usage numbers. The 5% protection holds
+only while the numbers are readable. When they are not, builders cannot be paced, so Dobby starts at most
+`pacing.fallbackBuildsPerDay` builds per day (default 3) and tells you once a day.
+
 ## API key
 
 No plan needed: every run, builders included, pays by the token.

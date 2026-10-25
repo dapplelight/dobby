@@ -163,3 +163,20 @@ test("status board and snapshot show what is paused; dashboard actions take a sc
   assert.deepEqual(actionArgs(db, { action: "pause" }), { args: ["pause"] })
   assert.ok("error" in actionArgs(db, { action: "pause", kind: "x; rm" }))
 })
+
+test("deploys: safety.deploy ask sends a Deploy tap instead of deploying; the tap deploys", async () => {
+  const db = open(":memory:")
+  const { deployProject } = await import("../src/deploy.ts")
+  const { config, setConfig } = await import("../src/config.ts")
+  const base = config()
+  const ran: string[] = [], cards: string[] = []
+  const sh = (cmd: string) => (cmd.includes("bun run deploy") && ran.push(cmd), cmd === "git rev-parse HEAD" ? { ok: true, out: "abc1234\n" } : cmd.includes("deploy/prod") ? { ok: false, out: "" } : { ok: true, out: cmd.includes("status") ? "" : "ok" })
+  const o = { sh: sh as any, notify: (async (t: string, _f: unknown, b?: { data: string }[]) => (cards.push(`${t} | ${b?.map((x) => x.data).join(",")}`), true)) as any, projects: { tally: { name: "tally", repo: dir, deploy: "bun run deploy", base: "main", install: "true" } } as any }
+  setConfig({ ...base, safety: { ...base.safety, deploy: "ask" } })
+  try {
+    assert.match(await deployProject(db, "tally", o), /waits for your tap/)
+    assert.equal(ran.length, 0)
+    assert.match(cards[0], /ready to deploy \| deploynow tally$/)
+    assert.equal(await deployProject(db, "tally", { ...o, tapped: true }), "tally: deployed abc1234")
+  } finally { setConfig(undefined) }
+})

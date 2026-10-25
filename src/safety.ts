@@ -6,7 +6,7 @@
 //   (config safety.classifier: model (default) | jev | none). The classifier sees ticket text and a changed-files summary, never a diff.
 import { config, type Config } from "./config.ts"
 import { decide, DEFAULT_RULES, RULES, type Ctx, type Rule } from "./policy.ts"
-import { PRESETS, type Act, type Category } from "./presets.ts"
+import { EVERY_MERGE, PRESETS, type Act, type Category } from "./presets.ts"
 
 export { CATEGORIES, ACTIONS, PRESETS, PRESET_NAMES, type Act, type Category } from "./presets.ts"
 export type Safety = Config["safety"]
@@ -189,6 +189,14 @@ export function actionFor(r: Result, s: Safety = config().safety): Outcome {
   if (r.denied) per.unshift({ category: "client-sites", action: "owner", unsure: false, why: r.denied })
   const top = per.reduce<(typeof per)[number] | undefined>((a, b) => (!a || RANK[b.action] > RANK[a.action] ? b : a), undefined)
   return top ? { action: top.action, category: top.category, why: `${top.category}: ${top.why || "rule " + top.action}`, per } : { action: "auto", why: "nothing sensitive", per }
+}
+
+/** A merge's action with the every-merge floor on top (safety.everyMerge, else the preset's). Fix rounds don't merge, so they skip it. */
+export const everyMergeFloor = (s: Safety = config().safety) => s.everyMerge ?? EVERY_MERGE[s.preset]
+export function mergeAction<T extends { action: Act; why: string }>(o: T, s: Safety = config().safety): T {
+  const floor = everyMergeFloor(s)
+  if (RANK[floor] <= RANK[o.action]) return o
+  return { ...o, action: floor, why: `every merge ${floor === "owner" ? "waits for you" : "gets the strict review"} (${s.everyMerge ? "safety.everyMerge" : `the ${s.preset} preset`})` }
 }
 
 /**

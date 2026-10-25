@@ -3,3 +3,4 @@ foreman.db
 graphify-out/
 *.log
 .env*
+dist/

@@ -25,5 +25,14 @@ These files are copied from other projects and keep their own licenses. Each fil
 | `skills/verification-before-completion` | [github.com/obra/superpowers](https://github.com/obra/superpowers) | MIT |
 | `skills/writing-for-agents` | [github.com/mattpocock/skills](https://github.com/mattpocock/skills) | MIT |
 | `agent-kit/skills/graphify` | [github.com/safishamsi/graphify](https://github.com/safishamsi/graphify) | Apache-2.0 |
+| `agent-rules/ponytail.md` | [github.com/DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) (skill text, edited; Copyright (c) 2026 DietrichGebert) | MIT |
+
+Installed as a dependency (not copied):
+
+| Package | Source | License |
+| --- | --- | --- |
+| `claude-usage-limits` (reads your Claude 5-hour and weekly usage for pacing) | [github.com/ridelink0/claude-code-usage-limits](https://github.com/ridelink0/claude-code-usage-limits) | MIT |
 
 The license texts are in each source repository.
+
+Not shipped, only named: the tools graphify (Apache-2.0), rtk (Apache-2.0 per its Homebrew formula) and caveman (MIT, github.com/JuliusBrussee/caveman) are installed by the user; `agent-rules/caveman.md`, `graphify.md` and `rtk.md` are Dobby's own wording.

@@ -1,0 +1,2 @@
+## Read: graph first (hard rule)
+Your FIRST tool call is `graphify query "<question>" --budget 4000` (Bash), with no `ls` check first. "graph file not found" = this repo has no graph: go on with Grep/Read. Then `graphify path "A" "B"` or Read only the files/lines it names. Grep/Glob only for what the graph missed. Never ls/cat-survey a repo. Designer gave a file list? Start there. Graph misses a file or symbol that exists (stale)? Run `graphify update .` once, then query again.

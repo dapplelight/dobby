@@ -3,13 +3,14 @@
 import { spawnSync } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
+import { loginShell } from "./shell.ts"
 
 export type Detected = { dir: string; pm: string; install: string; test: string | null; deploy: string | null; base: string; remote: string | null }
 export type Verified = Detected & { checks: { step: "install" | "test"; ok: boolean; secs: number; last: string }[] }
 type Run = (cmd: string, cwd: string, timeoutMs: number) => { ok: boolean; out: string }
 
 const realRun: Run = (cmd, cwd, timeoutMs) => {
-  const r = spawnSync("zsh", ["-lc", cmd], { cwd, encoding: "utf8", timeout: timeoutMs })
+  const r = spawnSync(...loginShell(cmd), { cwd, encoding: "utf8", timeout: timeoutMs })
   return { ok: r.status === 0, out: `${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? `\n${r.error.message}` : ""}` }
 }
 const git = (dir: string, args: string[]) => spawnSync("git", ["-C", dir, ...args], { encoding: "utf8" })

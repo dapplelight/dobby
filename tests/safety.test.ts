@@ -272,3 +272,15 @@ test("size step: an owner outcome that rests on no classifier answer is asked ag
   await checkTwice(async () => (calls++, r("owner", []))) // a real verdict is final: one call
   assert.equal(calls, 1)
 })
+
+test("every-merge floor: strict makes every merge the owner's, balanced leaves it, everyMerge overrides, owner PRs too", async () => {
+  const { mergeAction, everyMergeFloor } = await import("../src/safety.ts")
+  const s = (preset: "strict" | "balanced" | "autonomous", everyMerge?: "auto" | "review" | "owner") => ({ preset, rules: {}, classifier: "none" as const, unsure: "ask" as const, ...(everyMerge ? { everyMerge } : {}) })
+  const plain = { action: "auto" as const, why: "nothing sensitive" }
+  assert.deepEqual(mergeAction(plain, s("balanced")), plain)
+  assert.equal(mergeAction(plain, s("strict")).action, "owner")
+  assert.match(mergeAction(plain, s("strict")).why, /every merge waits for you \(the strict preset\)/)
+  assert.equal(mergeAction(plain, s("autonomous", "review")).action, "review")
+  assert.equal(mergeAction({ action: "never" as const, why: "x" }, s("strict")).action, "never") // the floor never loosens
+  assert.equal(everyMergeFloor(s("balanced", "owner")), "owner")
+})

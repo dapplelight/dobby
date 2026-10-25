@@ -27,7 +27,7 @@ export type Proposal =
   | { type: "retro"; title: string; why: string; experiment?: string }
   | { type: "rule"; file: string; rule: string; why: string }
 /** Where a learned rule may go: every agent, one role, or one project's rules (all read fresh by the next run). */
-const RULE_FILE = /^(agent-rules\.md|roles\/[\w-]+\.md|projects\/[a-z]+\.md)$/
+const RULE_FILE = /^(agent-rules\.md|agent-rules\/[\w-]+\.md|roles\/[\w-]+\.md|projects\/[a-z]+\.md)$/
 const SAFE = /^(MIT|Apache-2\.0|BSD-[23]-Clause|ISC)$/
 
 /** The Scout's JSON lines, strictly: unknown shapes, bad licenses and odd names are dropped. */

@@ -1,11 +1,11 @@
-#!/bin/zsh
+#!/bin/sh
 # Dobby CLI. Runs on Node (LangGraph's SQLite checkpointer needs better-sqlite3).
 # Inside GitHub Actions (the Mac runner service) gh cannot reach the login Keychain: use the copy in secrets.env.
-if [[ -n "$GITHUB_ACTIONS" && -z "$GH_TOKEN" && -r ~/.config/dobby/secrets.env ]]; then
+if [ -n "$GITHUB_ACTIONS" ] && [ -z "$GH_TOKEN" ] && [ -r ~/.config/dobby/secrets.env ]; then
   export GH_TOKEN="$(sed -n 's/^GH_TOKEN=//p' ~/.config/dobby/secrets.env)"
 fi
 # Same for git over https: drop the Keychain helper and let gh hand git the token.
-if [[ -n "$GITHUB_ACTIONS" ]]; then
+if [ -n "$GITHUB_ACTIONS" ]; then
   export GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0="" \
     GIT_CONFIG_KEY_1=credential.helper GIT_CONFIG_VALUE_1="!gh auth git-credential"
 fi
@@ -13,5 +13,17 @@ fi
 # Appended, never prepended: a Homebrew node ahead of fnm's breaks better-sqlite3's native build.
 export PATH="$PATH:$HOME/.bun/bin"
 # Env from before the rename: FOREMAN_X still works as DOBBY_X
-for v in ${(k)parameters[(I)FOREMAN_*]}; do [[ -z "${(P)${v/FOREMAN_/DOBBY_}}" ]] && export "${v/FOREMAN_/DOBBY_}=${(P)v}"; done
-exec node --no-warnings "${0:A:h}/../src/cli.ts" "$@"
+for v in $(printenv | sed -n 's/^\(FOREMAN_[A-Za-z0-9_]*\)=.*/\1/p'); do
+  n="DOBBY_${v#FOREMAN_}"
+  eval "[ -z \"\${$n}\" ] && export $n=\"\${$v}\""
+done
+# Resolve symlinks (npm links bin/dobby into .bin) to find the package root.
+self="$0"
+while [ -L "$self" ]; do
+  t="$(readlink "$self")"
+  case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
+done
+root="$(cd "$(dirname "$self")/.." && pwd)"
+# dist/ is built into the npm package (node will not strip types under node_modules); a dev checkout runs src/ directly.
+if [ -f "$root/dist/cli.js" ]; then exec node --no-warnings "$root/dist/cli.js" "$@"; fi
+exec node --no-warnings "$root/src/cli.ts" "$@"

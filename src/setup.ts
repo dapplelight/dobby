@@ -12,6 +12,7 @@ import { detectRepo, draftFor, verifyRepo, type Detected } from "./detect.ts"
 import { installJobs } from "./jobs.ts"
 import { setPause } from "./pause.ts"
 import { clip, readSecrets } from "./telegram.ts"
+import { detect, INFO } from "./tools.ts"
 import type { DB } from "./db.ts"
 
 type Opts = { yes?: boolean; projects?: string; noJobs?: boolean; root: string }
@@ -102,27 +103,41 @@ export async function setup(db: DB, o: Opts): Promise<void> {
     }
   }
 
+  // 4b. free tools (graphify, rtk): the exact install commands are shown; they run only on a yes (never with --yes)
+  const missing = (["graphify", "rtk"] as const).filter((t) => !detect(t))
+  if (missing.length) {
+    const cmds = missing.flatMap((t) => INFO[t].install!)
+    p.log.message(`Recommended free tools, not installed (${missing.join(", ")}):\n${cmds.map((c) => `  ${c}`).join("\n")}`)
+    if (!o.yes && cancelled<boolean>(await p.confirm({ message: "Install recommended free tools (graphify, rtk)?", initialValue: true }))) {
+      for (const c of cmds) p.log.message(spawnSync(c, { shell: true, stdio: "inherit" }).status === 0 ? `✓ ${c}` : `✗ ${c} failed; run it yourself`)
+    }
+  }
+
   // 5. settings (question 3)
   const mode = o.yes ? "recommended" : cancelled<string>(await p.select({
     message: "Settings",
     options: [
-      { value: "recommended", label: "Recommended", hint: "asks before merging auth, payments, secrets or migrations; reviews run when you comment @dobby review" },
+      { value: "recommended", label: "Recommended", hint: "asks before data migrations, client sites and releases; strict review for login, payments and secrets; deploys wait for your tap" },
       { value: "customize", label: "Customize", hint: "safety and reviews" },
     ],
   }))
-  let preset = "balanced", auto = "off"
+  let preset = "balanced", auto = "off", deploy = "ask"
   if (mode === "customize") {
     preset = cancelled<string>(await p.select({ message: "Safety", initialValue: "balanced", options: [
-      { value: "strict", label: "Strict", hint: "asks before every merge" }, { value: "balanced", label: "Balanced", hint: "asks before risky merges" }, { value: "autonomous", label: "Autonomous", hint: "asks only for what is never agent work" },
+      { value: "strict", label: "Strict", hint: "every merge waits for you" }, { value: "balanced", label: "Balanced", hint: "data migrations, client sites and releases wait for you; login, payments and secrets get the strict review" }, { value: "autonomous", label: "Autonomous", hint: "never waits for you; risky changes get the strict review" },
     ] }))
     auto = cancelled<string>(await p.select({ message: "Automatic reviews of your own PRs", initialValue: "off", options: [
       { value: "off", label: "Off", hint: "only when you comment @dobby review" }, { value: "drafts", label: "Drafts too" }, { value: "on", label: "Every PR" },
+    ] }))
+    deploy = cancelled<string>(await p.select({ message: "After a merge", initialValue: "ask", options: [
+      { value: "ask", label: "Ask", hint: "a Deploy tap; nothing goes live until you tap it" }, { value: "auto", label: "Deploy at once" },
     ] }))
   }
   const tz = localZone()
   const owners = [...new Set([login, ...ready.map((d) => d.remote!.split("/")[0])].filter(Boolean))]
   const have = existsSync(privatePath()) ? JSON.parse(readFileSync(privatePath(), "utf8")) : {}
-  const next = fillConfig(have, { timezone: tz, timezoneLabel: zoneLabel(tz), github: { owner: login, accounts: owners }, safety: { preset }, review: { auto } })
+  const next = fillConfig(have, { timezone: tz, timezoneLabel: zoneLabel(tz), github: { owner: login, accounts: owners }, safety: { preset, deploy }, review: { auto } })
+  if (o.projects) next.paths = { ...(next.paths as object), projects: o.projects } // an explicit --projects folder is the owner's choice: it replaces the default
   mkdirSync(configDir(), { recursive: true })
   writeFileSync(privatePath(), `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 })
   p.log.success(`Settings saved in ${tidy(privatePath())}${have.timezone ? " (your existing values kept)" : ""}`)

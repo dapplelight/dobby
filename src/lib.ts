@@ -1,9 +1,12 @@
 // Shared pieces: shell, roles, projects (dobby.md), the usage budget, tickets, and one claude call that always logs itself.
 import { paused } from "./pause.ts"
+import { loginShell } from "./shell.ts"
 import { spawn, spawnSync } from "node:child_process"
 import { apiKey, callApi, useApi } from "./api.ts"
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
+import { createRequire } from "node:module"
+import { dirname, join } from "node:path"
 import { format } from "node:util"
 import { logRun, type DB } from "./db.ts"
 import { parseResult } from "./run.ts"
@@ -12,16 +15,16 @@ import { ticketGate, unsureOwner } from "./safety.ts"
 import { clip, outbound, readSecrets, shortTitle } from "./telegram.ts"
 import { builderEnv, INSTALL_DOMAINS, SAFE_GIT, sandboxMode, sandboxSettings, scratchDir, stepSettings, withGitConfig } from "./sandbox.ts"
 import { withTelemetry } from "./telemetry.ts"
-import { config, draftDirs, zoned } from "./config.ts"
+import { rules } from "./tools.ts"
+import { config, draftDirs, zoned, zonedDay } from "./config.ts"
 import { CEILING, contextTokens, lastAssistantText, repoSlug, runUsage, transcriptDir } from "./savings.ts"
 export { repoSlug }
 
 export const ROOT = new URL("..", import.meta.url).pathname
 // Every git this process and its children start runs without hooks or fsmonitor (SAFE_GIT in sandbox.ts).
 Object.assign(process.env, withGitConfig(process.env, SAFE_GIT))
-// The owner's tooling for every agent (owner, 18 Oct): caveman ultra between agents, graph first, ponytail. Rules go in as
+// Rules for every agent (src/tools.ts, agent-rules/): core plus caveman, graph first, rtk, ponytail, jev when on and found. They go in as
 // text, not via the caveman/ponytail plugins: their hooks write the owner's global mode flag and would flip their sessions.
-const AGENT_RULES = readFileSync(`${ROOT}agent-rules.md`, "utf8")
 export const home = (p: string) => p.replace(/^~/, homedir())
 /**
  * Secret files no agent reads. Read rules are the ones Claude Code applies to Grep and Glob too ("Claude makes a best-effort
@@ -51,7 +54,7 @@ export const istDay = (ms = Date.now()) => ist(ms).toISOString().slice(0, 10)
 
 /** Run a shell command. Output keeps its last `keep` chars (logs); pass Infinity when the whole output matters (diffs). Blocks: tiny local calls only. */
 export function sh(cmd: string, cwd: string, keep = 4000) {
-  const r = spawnSync("zsh", ["-lc", cmd], { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
+  const r = spawnSync(...loginShell(cmd), { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
   return { ok: r.status === 0, out: ((r.stdout ?? "") + (r.stderr ?? "")).slice(-keep) }
 }
 
@@ -142,8 +145,8 @@ export function runAsync(cmd: string, args: string[], o: RunOpts = {}): Promise<
     })
   })
 }
-/** sh() without blocking: a project's own command line (install, verify, deploy from dobby.md) under zsh -lc. */
-export const shAsync = (cmd: string, cwd: string, keep = 4000, o: Omit<RunOpts, "cwd" | "keep" | "all"> = {}) => runAsync("zsh", ["-lc", cmd], { ...o, cwd, keep, all: true })
+/** sh() without blocking: a project's own command line (install, verify, deploy from dobby.md) under a login shell (zsh, else bash, else sh). */
+export const shAsync = (cmd: string, cwd: string, keep = 4000, o: Omit<RunOpts, "cwd" | "keep" | "all"> = {}) => runAsync(...loginShell(cmd), { ...o, cwd, keep, all: true })
 /**
  * A project's install or verify line on code an agent or a PR wrote, with the builder's protections (audit 24 Oct H1): the
  * credential-scrubbed env and, where the OS sandbox is available, srt with the builder's read rules. `net` = install: package
@@ -152,10 +155,10 @@ export const shAsync = (cmd: string, cwd: string, keep = 4000, o: Omit<RunOpts, 
 export function stepSh(cmd: string, cwd: string, net: "install" | "verify", keep = 4000, o: Omit<RunOpts, "cwd" | "keep" | "all" | "env"> = {}) {
   const box = isolation("build", cwd)
   if (box.mode === "off") return shAsync(cmd, cwd, keep, o)
-  if (box.mode === "env-only") return runAsync("zsh", ["-lc", cmd], { ...o, cwd, keep, all: true, env: box.env })
+  if (box.mode === "env-only") return runAsync(...loginShell(cmd), { ...o, cwd, keep, all: true, env: box.env })
   const file = `${scratchDir(cwd)}/srt-${net}.json`
   writeFileSync(file, JSON.stringify(stepSettings(cwd, net === "install" ? [...INSTALL_DOMAINS, ...(config().installDomains ?? [])] : [])))
-  return runAsync(`${ROOT}node_modules/.bin/srt`, ["-s", file, "zsh", "-lc", cmd], { ...o, cwd, keep, all: true, env: box.env })
+  return runAsync(`${ROOT}node_modules/.bin/srt`, ["-s", file, ...loginShell(cmd).flat()], { ...o, cwd, keep, all: true, env: box.env })
 }
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
@@ -355,7 +358,7 @@ export function loadProjects(): Record<string, Project> {
   const out: Record<string, Project> = {}
   const root = config().paths.projects
   const draft = (name: string) => draftDirs().map((d) => `${d}/${name}.md`).find((p) => existsSync(p))
-  const names = new Set([...readdirSync(home(root)).filter((n) => repoDoc(`${root}/${n}`)), ...draftDirs().flatMap((d) => readdirSync(d).filter((f) => /^[^.]+\.md$/.test(f)).map((f) => f.slice(0, -3)))])
+  const names = new Set([...(existsSync(home(root)) ? readdirSync(home(root)) : []).filter((n) => repoDoc(`${root}/${n}`)), ...draftDirs().flatMap((d) => readdirSync(d).filter((f) => /^[^.]+\.md$/.test(f)).map((f) => f.slice(0, -3)))])
   for (const name of names) {
     const d = parseDoc(readFileSync(repoDoc(`${root}/${name}`) ?? draft(name)!, "utf8"))
     out[name] = { name, repo: home(d.meta.repo ?? `${root}/${name}`), base: d.meta.base ?? "main", install: d.meta.install ?? "true", verify: d.meta.verify ?? "true", priority: Number(d.meta.priority ?? 5), jev: d.meta.jev !== "off", paused: d.meta.paused === "true", rules: d.body, deploy: d.meta.deploy, deploy_dir: d.meta.deploy_dir, deploy_copy: (d.meta.deploy_copy ?? "").split(",").map((x) => x.trim()).filter(Boolean), migrations: d.meta.migrations, areas: (d.meta.areas ?? "").split(",").map((x) => x.trim()).filter(Boolean), ownerWords: d.meta.owner_words !== "off", scoutMerge: d.meta.scout_merge === "auto" ? "auto" : "ask", autoPromote: d.meta.auto_promote !== "off" }
@@ -422,7 +425,14 @@ export function reviewBudget(g: { ok: boolean; why: string; cap: number }, u: Us
   return { ok: true, why: `5-hour ${u.fiveUsed}%/${reviewCap} (review cap; builders stop at ${g.cap}%)`, cap: reviewCap }
 }
 
-const USAGE_CLI = home(config().paths.usageCli)
+/** The usage reader: the owner's explicit paths.usageCli wins, else the claude-usage-limits package bundled in node_modules. */
+export function resolveUsageCli(explicit = config().paths.usageCli, bundled = bundledUsageCli) {
+  return explicit ? home(explicit) : bundled()
+}
+function bundledUsageCli() {
+  try { return join(dirname(createRequire(import.meta.url).resolve("claude-usage-limits/package.json")), "bin/cli.js") } catch { return "" }
+}
+const USAGE_CLI = resolveUsageCli()
 const USAGE_TIMEOUT_MS = 30_000 // audit #14: no timeout meant a hung CLI hung the tick while health said "running"
 const USAGE_STALE_MS = 30 * 60_000
 const usageCli = () => spawnSync("node", [USAGE_CLI, "--json", "--host", "claude"], { cwd: homedir(), encoding: "utf8", timeout: USAGE_TIMEOUT_MS }).stdout ?? ""
@@ -448,14 +458,31 @@ export function parseUsage(stdout: string): Usage | null {
  * Live numbers from the usage-limits plugin. null when unreadable: then nothing runs. With a db, an outage (unreadable, or a snapshot
  * older than 30 minutes) is tracked: after 30 minutes the owner hears about it once (audit #14: builds stopped silently).
  */
+/**
+ * Usage unreadable (no reader, or it errors): builders do not run unpaced; at most pacing.fallbackBuildsPerDay start per day in the
+ * configured timezone. One plain warning per day. `fallbackStarted` counts a started build.
+ */
+export const fallbackLimit = () => config().pacing?.fallbackBuildsPerDay ?? 3
+export function fallbackAllows(db: DB, tell: typeof fixed = fixed, now = Date.now()): { ok: boolean; why: string; cap: number } {
+  const day = zonedDay(now), n = fallbackLimit(), used = fallbackUsed(db, now)
+  if (kv(db, "usage:fallback-told") !== day) {
+    db.prepare("INSERT OR REPLACE INTO kv VALUES ('usage:fallback-told', ?)").run(day)
+    tell(db, `I cannot read your Claude usage, so I cannot pace builders. Until I can, at most ${n} builds start per day.`, "usage-fallback")
+  }
+  return used < n ? { ok: true, why: `usage unreadable: ${used}/${n} builds today`, cap: 100 } : { ok: false, why: `usage unreadable: ${n} builds today already`, cap: 0 }
+}
+const kv = (db: DB, k: string) => (db.prepare("SELECT v FROM kv WHERE k=?").get(k) as { v: string } | undefined)?.v
+const fallbackUsed = (db: DB, now: number) => { const [d, n] = (kv(db, "usage:fallback") ?? "").split(":"); return d === zonedDay(now) ? Number(n) : 0 }
+export const fallbackStarted = (db: DB, now = Date.now()) => void db.prepare("INSERT OR REPLACE INTO kv VALUES ('usage:fallback', ?)").run(`${zonedDay(now)}:${fallbackUsed(db, now) + 1}`)
+
 /** No usage reader installed (#194): builders run with no pacing instead of never starting. A reader that is there but fails still stops them. */
-export const noUsageReader = (path = USAGE_CLI) => !existsSync(path)
+export const noUsageReader = (path = USAGE_CLI) => !path || !existsSync(path)
 
 export function readUsage(db?: DB, read: () => string = usageCli, now = Date.now(), tell: typeof fixed = fixed, refresh: () => boolean = liveRefresh, missing = () => read === usageCli && noUsageReader()): Usage | null {
   if (missing()) {
     if (db && !db.prepare("SELECT 1 FROM kv WHERE k='usage:missing-told'").get()) {
       db.prepare("INSERT OR REPLACE INTO kv VALUES ('usage:missing-told', '1')").run()
-      tell(db, `No usage reader at ${config().paths.usageCli}, so builders run with no pacing: nothing slows them down near your Claude limits. Install the reader, or set paths.usageCli in the config, to turn pacing on.`, "usage-missing")
+      tell(db, `No usage reader (${USAGE_CLI || "claude-usage-limits is not installed"}), so I cannot pace builders against your Claude limits. Until it works they run at most ${fallbackLimit()} a day. Reinstall Dobby's dependencies, or set paths.usageCli in the config.`, "usage-missing")
     }
     return null
   }
@@ -728,7 +755,7 @@ async function claudeOnce(db: DB, o: { project: string; kind: string; ticket?: n
   return new Promise<{ ok: boolean; text: string; reason?: string; cost?: number }>((resolve) => {
     const role = roleArgs(o.args ?? [])
     const box = isolation(o.kind, o.cwd ?? process.cwd())
-    const p = spawn("claude", ["-p", ...(o.kind === "front-desk" ? [] : ["--strict-mcp-config"]), "--settings", box.settings, "--plugin-dir", `${ROOT}agent-kit`, "--append-system-prompt", AGENT_RULES, "--output-format", "json", "--model", o.model, ...(resume ? ["--resume", resume] : []), ...(o.effort ? ["--effort", o.effort] : []), ...role.args], { cwd: o.cwd, env: { ...withTelemetry(box.env, { project: o.project, kind: o.kind, ticket: o.ticket }), DOBBY_ROOT: ROOT, DOBBY_BASH_ALLOW: JSON.stringify(role.bash), DOBBY_ROLE: o.kind, ...(apiKeyMode() ? { ANTHROPIC_API_KEY: apiKey() } : {}) }, stdio: ["pipe", "pipe", "pipe"] })
+    const p = spawn("claude", ["-p", ...(o.kind === "front-desk" ? [] : ["--strict-mcp-config"]), "--settings", box.settings, "--plugin-dir", `${ROOT}agent-kit`, "--append-system-prompt", rules(), "--output-format", "json", "--model", o.model, ...(resume ? ["--resume", resume] : []), ...(o.effort ? ["--effort", o.effort] : []), ...role.args], { cwd: o.cwd, env: { ...withTelemetry(box.env, { project: o.project, kind: o.kind, ticket: o.ticket }), DOBBY_ROOT: ROOT, DOBBY_BASH_ALLOW: JSON.stringify(role.bash), DOBBY_ROLE: o.kind, ...(apiKeyMode() ? { ANTHROPIC_API_KEY: apiKey() } : {}) }, stdio: ["pipe", "pipe", "pipe"] })
     let raw = ""
     p.stdout.on("data", (d) => (raw += d))
     p.stdin.end(o.prompt)

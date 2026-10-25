@@ -1,4 +1,4 @@
-// Ship policy (owner, 16 Oct 2026): merged to main = deployed. A project opts in with `deploy:` in its dobby.md
+// Ship policy (owner, 16 Oct 2026): merged to main = deployed, or a Deploy tap first with safety.deploy ask. A project opts in with `deploy:` in its dobby.md
 // (`deploy_dir:` a clean checkout of its base branch, `migrations:` the folder of SQL migrations; with deployFrom worktree,
 // `deploy_copy:` the gitignored files besides .env* the deploy needs, comma-separated, copied from `repo:`).
 // Schema-only migrations run automatically; migrations that change existing data go to the owner first.
@@ -31,7 +31,7 @@ export const alive = (pid?: number) => { if (!pid) return true; try { process.ki
 export type DeploySh = (cmd: string, cwd: string, keep?: number, timeoutMs?: number) => Out | Promise<Out>
 const realSh: DeploySh = (cmd, cwd, keep = 4000, ms) => shAsync(cmd, cwd, keep, { timeoutMs: ms })
 /** onFailure/startFix: the deployOnFailure setting and the fix starter (`dobby run <id>`, detached); stubs in tests. */
-export type DeployOpts = { migrate?: boolean; at?: string; sh?: DeploySh; notify?: typeof notify; projects?: ReturnType<typeof loadProjects>; onFailure?: "notify" | "ticket" | "fix"; startFix?: (id: number) => void; fetcher?: typeof fetch; from?: "checkout" | "worktree" }
+export type DeployOpts = { tapped?: boolean; migrate?: boolean; at?: string; sh?: DeploySh; notify?: typeof notify; projects?: ReturnType<typeof loadProjects>; onFailure?: "notify" | "ticket" | "fix"; startFix?: (id: number) => void; fetcher?: typeof fetch; from?: "checkout" | "worktree" }
 
 export async function deployProject(db: DB, name: string, o: DeployOpts = {}): Promise<string> {
   const p = (o.projects ?? loadProjects())[name]
@@ -40,6 +40,10 @@ export async function deployProject(db: DB, name: string, o: DeployOpts = {}): P
   if (pz) { // held, not dropped: it runs when the pause ends (runQueuedDeploys, from the tick and from `resume`)
     kvSet(db, `deploy:queued:${name}`, String(Date.now()))
     return `${name}: deploy ${pz}; it is queued and runs on resume`
+  }
+  if (config().safety.deploy === "ask" && !o.tapped && !o.migrate) { // safety.deploy ask: a merge sends a Deploy tap, the tap deploys
+    await (o.notify ?? notify)(`🟡 Needs you · ${name} is merged and ready to deploy`, fetch, [{ text: "🚀 Deploy", data: `deploynow ${name}` }], { kind: "approval", key: `deploy:${name}` })
+    return `${name}: merged; the deploy waits for your tap`
   }
   const lock = `deploy:lock:${name}`
   // "<ms>:<pid>". A holder killed mid-deploy (listener restart) frees the lock at once, not after 45 minutes.

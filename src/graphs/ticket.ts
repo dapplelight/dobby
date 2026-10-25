@@ -44,7 +44,7 @@ import { existsSync } from "node:fs"
 import { processAllowed } from "../usage.ts"
 import { CEILING, overBudget, sameCause, shipPreflight, touchesManifest } from "../savings.ts"
 import { config, mergeFlags } from "../config.ts"
-import { check as safetyCheck, checkTwice, isMigrationFile, ownerLevel, sqlFromDiff } from "../safety.ts"
+import { check as safetyCheck, checkTwice, isMigrationFile, mergeAction, ownerLevel, sqlFromDiff } from "../safety.ts"
 import { hitLines, scanBranch } from "../scan.ts"
 import { seedGraph, buildsUsed, addTicket, repoArgsAsync, runAsync, claude, fixed, getTicket, heavy, label, isDuplicate, loadProjects, loadRole, netRun, parseVerdict, policyCtx, riskPath, ROOT, setTicket, shAsync, signedOut, stepSh, timeoutMs, type ARun, type Project } from "../lib.ts"
 
@@ -394,23 +394,24 @@ export function buildTicketGraph(db: DB) {
       return { outcome: `owner: ${safe.why}`, log: [`size: fix round ${safe.action}, ${safe.why}`] }
     }
     if (t.onto) return { big: false, bigWhy: `fixes for the open PR on ${t.onto}: no merge`, plain: "", log: [`size: skipped, pushes to ${t.onto} (no PR, no merge)`] }
-    if (ownerLevel(safe.action)) {
+    const m = mergeAction(safe) // every-merge floor: strict = every merge waits for the owner
+    if (ownerLevel(m.action)) {
       // owner: the finished work goes up as a DRAFT PR (no automerge wait, never merged by Dobby) so the owner has something to open and merge.
       // never, or a change to CI workflows (a pushed branch runs them with the repo's secrets): nothing leaves this machine.
-      const local = safe.action === "never" || paths.some((f) => f.startsWith(".github/workflows/"))
+      const local = m.action === "never" || paths.some((f) => f.startsWith(".github/workflows/"))
       // same lease rule as ship: only when what origin has is an ancestor of what we built, else a plain push (refused if diverged, the work stays local)
       const lease = local ? "" : await ownerLease(lsh, p.repo, s.branch)
       const push = local ? { ok: false, out: "kept local" } : await netRun("git", pushArgs(s.branch, lease), p.repo)
       const repoFlag = await repoArgsAsync(p.repo)
-      const pr = push.ok ? await createPr(() => gh(["pr", "create", "--draft", ...repoFlag, "--head", s.branch, "--base", p.base, "--title", redact(t.title.slice(0, 250)), "--body", redact(`${s.summary}\n\nNeeds the owner: ${safe.why}. Dobby will not merge this.\n\nBuilt by Dobby, ticket #${t.id}.`)], p.repo), () => gh(["pr", "view", s.branch, ...repoFlag, "--json", "url", "-q", ".url"], p.repo)) : push
+      const pr = push.ok ? await createPr(() => gh(["pr", "create", "--draft", ...repoFlag, "--head", s.branch, "--base", p.base, "--title", redact(t.title.slice(0, 250)), "--body", redact(`${s.summary}\n\nNeeds the owner: ${m.why}. Dobby will not merge this.\n\nBuilt by Dobby, ticket #${t.id}.`)], p.repo), () => gh(["pr", "view", s.branch, ...repoFlag, "--json", "url", "-q", ".url"], p.repo)) : push
       const url = pr.out.match(/https:\/\/github\.com\/\S+\/pull\/\d+/)?.[0]
       const um = url?.match(/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/)
       if (url && um) { // a PR reused from an earlier ship must not be merged by the sweep: drop its automerge wait, back to draft
         db.prepare("DELETE FROM kv WHERE k=?").run(`automerge:${um[1]}#${um[2]}`)
         await gh(["pr", "ready", "--undo", url], p.repo)
       }
-      await toOwner(t, `${safe.why}. ${url ? `The finished work is a draft PR: ${url}. Dobby will not merge it; merge it yourself if you agree.` : `The finished work is on branch ${s.branch} (${local ? "kept local on purpose" : push.ok ? "the PR could not be opened" : "the push failed"}).`}`)
-      return { outcome: `owner: ${safe.why}`, log: [`size: ${safe.action}, ${safe.why}`] }
+      await toOwner(t, `${m.why}. ${url ? `The finished work is a draft PR: ${url}. Dobby will not merge it; merge it yourself if you agree.` : `The finished work is on branch ${s.branch} (${local ? "kept local on purpose" : push.ok ? "the PR could not be opened" : "the push failed"}).`}`)
+      return { outcome: `owner: ${m.why}`, log: [`size: ${m.action}, ${m.why}`] }
     }
     const { big, why } = await mergeIsBig(t.title, files, p.jev)
     const lines = files.reduce((n, f) => n + f.lines, 0)
@@ -418,7 +419,7 @@ export function buildTicketGraph(db: DB) {
     db.prepare("INSERT OR REPLACE INTO kv VALUES (?, ?)").run(`plain:${t.id}`, plain) // for the evening digest
     // Ship policy: a sensitive change no longer waits for the owner; it gets the strict (Opus) review in ship.
     if (big) await say(t, "check", `🔍 Sensitive change (${clip(why, 120)}): strict review before it merges`)
-    return { big, bigWhy: why, review: safe.action === "review", plain, log: [`size: ${big ? "sensitive, strict review" : "small"} (${why})`] }
+    return { big, bigWhy: why, review: m.action === "review", plain, log: [`size: ${big ? "sensitive, strict review" : "small"} (${why})`] }
   }
 
   const gate = (s: S): Partial<S> => {
@@ -515,7 +516,7 @@ export function buildTicketGraph(db: DB) {
       }
     }
     setTicket(db, t.id, { status: ok ? "shipped" : "failed", note: ok ? `${url}${knownBroken(s)}${stale ? `\n${stale}` : ""}${s.deps ? `\nNew or changed dependencies: ${s.deps}` : ""}` : `ship: ${clip(merged.out, 300)} ${url}` })
-    if (ok) console.log(await deployProject(db, t.project)) // ship policy: merged = deployed (its own notify)
+    if (ok) console.log(await deployProject(db, t.project)) // ship policy: merged = deployed, or a Deploy tap (safety.deploy ask; its own notify)
     await say(t, "check", "", { status: ok ? "Step 5 of 5: merged ✅" : "Stuck: could not merge" })
     await notify(ok ? `✅ Merged · ${label(db, t.id)}\n\n${s.plain ?? ""}\n\n${url}` : `🔴 Couldn't merge · ${label(db, t.id)}\n${plainGh(merged.out)}\n${url}`, fetch, undefined, { kind: "ticket", project: t.project, ticket: t.id, title: t.title, step: ok ? "merged" : "failed" })
     return { outcome: ok ? "shipped" : "failed: ship", log: [`ship: ${ok ? `merged ${url}` : "FAILED"}`] }

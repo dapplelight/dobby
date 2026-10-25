@@ -1,6 +1,6 @@
 # Dobby
 
-An AI dev team that runs on your own machine. You file tickets, and Dobby builds, tests, reviews and ships them as pull requests on your GitHub repos. Merges and deploys wait for you unless you say otherwise.
+An AI dev team that runs on your own machine. You file tickets, and Dobby builds, tests, reviews and ships them as pull requests on your GitHub repos. Merges are off until you turn them on, and each deploy waits for your tap unless you choose otherwise.
 
 Each role is a Claude Code run with its own rules: Lead, Builder, QA, Code Reviewer, Product Manager and Chief of Staff. Builders work inside an OS sandbox with no credentials and no network.
 
@@ -45,7 +45,13 @@ dobby doctor       # checks the setup and prints the fix for anything wrong
 - A command guard checks every shell command an agent runs.
 - Pull requests from strangers on public repos are never reviewed by a model.
 - Tickets an agent files (for example from an email) wait for your tap.
-- Merges need your account as author, a pinned head commit and a passing review. Deploys wait for you by default.
+- What waits for you is one setting, `safety` in your config:
+  - **Balanced** (recommended): data migrations, client sites and releases wait for you; login, payments and secrets get the strict review; everything else merges after a passing review.
+  - **Strict**: every merge waits for you. Dobby opens a draft PR and you merge it.
+  - **Autonomous**: nothing waits for you; risky changes get the strict review.
+  - Each category can be set on its own, and `safety.everyMerge` sets the floor for every merge.
+- Deploys: after a merge, Dobby sends a Deploy tap and nothing goes live until you tap it (`safety.deploy: "ask"`, the default for new installs). Set it to `"auto"` to deploy on merge. Migrations that change existing data always wait for you.
+- Dobby merges only its own PRs and your own PRs, after a passing review and at the exact commit that passed.
 
 ## Docs
 

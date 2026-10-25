@@ -184,3 +184,10 @@ test("guard: brace lists and variable expansion are refused before the path and 
   for (const c of ["ls $HOME/x", 'ls "${HOME}"', "find . -name x -exec ls {} \;", "git show HEAD@{1}", 'echo "$(git rev-parse HEAD)"', "git log --format=%H", "cat <<'EOF'\n$X\nEOF"])
     assert.equal(denied(c, all), undefined, c)
 })
+
+test("guard: rtk rewrites after the guard, and a denied command stays denied behind an rtk prefix", () => {
+  for (const c of ["git push", "gh pr merge 3", "git reset --hard origin/main", "git -C /tmp log"]) {
+    for (const p of ["rtk ", "rtk proxy ", "FOO=1 rtk ", "rtk rtk "]) assert.ok(denied(p + c, ["*"]), p + c)
+    assert.ok(denied(`echo hi && rtk ${c}`, ["*"]), c)
+  }
+})

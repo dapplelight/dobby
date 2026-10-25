@@ -89,7 +89,7 @@ test("policy: deny beats ask beats allow; policy.json overrides by id; explain n
 
 test("policy: agent prompts and guards are sensitive paths, markdown included (audit 20 Oct, item 5)", () => {
   // New on 20 Oct, on purpose beyond the old ALWAYS_BIG oracle: these force the strict (Opus) review.
-  const NEW_SENSITIVE = ["roles/builder.md", "roles/front-desk.md", "skills/tdd/SKILL.md", "agent-rules.md", "agent-settings.json", "src/graphs/ticket.ts",
+  const NEW_SENSITIVE = ["roles/builder.md", "roles/front-desk.md", "skills/tdd/SKILL.md", "agent-rules.md", "agent-rules/graphify.md", "agent-settings.json", "src/graphs/ticket.ts",
     "src/graphs/review.ts", "src/lib.ts", "src/frontdesk.ts", "src/scout.ts", "src/policy.ts", "projects/foreman.md", "projects/tally.md", "bin/guard-hook.mjs",
     "bin/dobby", "src/telegram.ts", "src/discord.ts", "src/cli.ts", "src/scan.ts", "src/merge.ts"]
   for (const p of NEW_SENSITIVE) assert.equal(decide("changed-path", p).action, "ask", p)

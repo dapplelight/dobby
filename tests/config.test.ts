@@ -19,7 +19,7 @@ test("defaults are neutral: the given time zone, nobody's names; the owner's val
     timezone: "Asia/Kolkata", timezoneLabel: "GMT+5:30", quietHours: { start: 23, end: 8 }, eveningPostHour: 21,
     github: { owner: "", accounts: [] }, clientNames: [], clientProjects: [], frontDeskDenyMcp: [],
     safety: { preset: "balanced", rules: {}, classifier: "model", unsure: "ask" },
-    paths: { projects: "~/projects", data: "~/.local/share/dobby", memory: "~/.claude/projects/-Users-me/memory", usageCli: "~/claude-code-usage-limits/bin/cli.js", dashboardDist: "" },
+    paths: { projects: "~/projects", data: "~/.local/share/dobby", memory: "~/.claude/projects/-Users-me/memory", usageCli: "", dashboardDist: "" },
     discord: { hq: ["needs-you", "daily-update", "system-status", "assistant"], apps: {}, extraChannels: {} },
   })
   assert.equal(defaults("/x", "darwin", "America/New_York").timezoneLabel, "EST")

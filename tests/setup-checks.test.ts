@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { test } from "node:test"
 import { basics, formatChecks, nodeOk } from "../src/checks.ts"
+import { loginShell, shellName } from "../src/shell.ts"
 import { installJobs, JOBS, loadedProbe, plistFor, plistPath, uninstallJobs, unitFor, unitsFor } from "../src/jobs.ts"
 
 test("checks: every tool, sign-in and add-on gets a row and a fix; optional add-ons never fail setup", async () => {
@@ -14,7 +15,7 @@ test("checks: every tool, sign-in and add-on gets a row and a fix; optional add-
   assert.deepEqual([by["Node"].ok, by["git"].detail, by["GitHub sign-in"].detail], [true, "2.47.1", "signed in as alice"])
   assert.deepEqual([by["Claude Code"].ok, by["Claude sign-in"].ok, by["config"].ok], [false, false, false])
   assert.equal(by["Claude Code"].fix, "npm install -g @anthropic-ai/claude-code")
-  assert.deepEqual(rows.filter((r) => !r.required).map((r) => r.name), ["graphify", "Discord", "Jev"])
+  assert.deepEqual(rows.filter((r) => !r.required).map((r) => r.name), ["shell", "graphify", "Discord", "Jev"])
   assert.equal(rows.some((r) => r.name === "background jobs"), false) // only with jobs: true
   const text = formatChecks(rows)
   assert.match(text, /✗ Claude Code: not installed\n    fix: npm install -g @anthropic-ai\/claude-code/)
@@ -104,4 +105,13 @@ test("API-key mode: dollar caps over 24 hours and 7 days replace plan pacing; do
   const rows = (k: string) => basics({ probe, node: "22.12.0", platform: "darwin", secrets: k ? { DOBBY_API_KEY: k } : {}, env: {}, configPath: `${dir}/c.json`, apiKeyMode: true })
   assert.deepEqual((await rows("sk")).filter((r) => r.name === "API key" || r.name === "Claude sign-in").map((r) => [r.name, r.ok]), [["API key", true]])
   assert.equal((await rows("")).find((r) => r.name === "API key")!.ok, false)
+})
+
+test("shell: zsh when on PATH, else bash, else plain sh without the login flag", () => {
+  const bin = mkdtempSync(`${tmpdir()}/dobby-shell-`)
+  assert.deepEqual(loginShell("x", bin), ["sh", ["-c", "x"]])
+  writeFileSync(`${bin}/bash`, "")
+  assert.deepEqual(loginShell("x", bin), ["bash", ["-lc", "x"]])
+  writeFileSync(`${bin}/zsh`, "")
+  assert.equal(shellName(bin), "zsh")
 })

@@ -5,6 +5,7 @@ import { homedir } from "node:os"
 import { config } from "./config.ts"
 import type { DB } from "./db.ts"
 import { toCall } from "./usage.ts"
+import { loginShell } from "./shell.ts"
 
 /** A run ended at the context ceiling has this reason; it does not count as a build. */
 export const CEILING = "context ceiling"
@@ -134,7 +135,7 @@ export async function shipPreflight(run: (cmd: string, args: string[], cwd?: str
   }
   const cmd = o.verify.trim().split(/\s+/).find((w) => !/^\w+=/.test(w))
   if (cmd && cmd !== "true" && /^[\w./$~{}-]+$/.test(cmd)) {
-    const v = await r("zsh", ["-lc", `command -v -- ${cmd} >/dev/null 2>&1 || test -x ${cmd}`])
+    const v = await r(...loginShell(`command -v -- ${cmd} >/dev/null 2>&1 || test -x ${cmd}`))
     if (!v.ok) return `the verify command cannot run here: ${cmd} was not found in the workspace`
   }
   return ""

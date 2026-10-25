@@ -23,7 +23,7 @@ import { inWorktree, landPr, rebaseAndPush } from "../merge.ts"
 import { asIs, clip, needsYou, notify, outbound, redact, shortTitle, silentAt, type Buttons } from "../telegram.ts"
 import { alive, deployProject } from "../deploy.ts"
 import { discordOn, edit, kv, plainGh, teamStatus, upsert } from "../discord.ts"
-import { check, isMigrationFile, ownerLevel, sqlFromDiff } from "../safety.ts"
+import { check, everyMergeFloor, isMigrationFile, ownerLevel, sqlFromDiff } from "../safety.ts"
 import { config, mergeFlags } from "../config.ts"
 import { autoSkip, handleGuard, pathReviewed, resolve, risky, type PrBrief, type Settings } from "../reviewer/settings.ts"
 import { contextPack, extras, learnKey, roleFor, type Learning } from "../reviewer/prompt.ts"
@@ -841,6 +841,7 @@ export const landsOnReview = (repo: string, i: { headRefName?: string; author?: 
 export async function ownerLand(db: DB, d: Deps, repo: string, pr: number): Promise<string> {
   const proj = projectFor(repo, d.run, d.projects)
   if (!proj || config().clientProjects.includes(proj.name) || proj.paused) return "not landed: no active Dobby project (client work is never merged by agents)"
+  if (everyMergeFloor() === "owner") return "not landed: every merge waits for you (safety); merge it yourself"
   const v = d.run("gh", ["pr", "view", String(pr), "-R", repo, "--json", "state,isDraft,author,title,headRefName,baseRefName,isCrossRepository,headRefOid"])
   if (!v.ok) return `gh pr view: ${clip(v.out, 120)}`
   const i = JSON.parse(v.out) as Pr & { state: string; isCrossRepository?: boolean; headRefOid?: string }

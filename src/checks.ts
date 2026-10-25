@@ -4,6 +4,7 @@ import { spawn } from "node:child_process"
 import { existsSync } from "node:fs"
 import { privatePath } from "./config.ts"
 import { JOBS, loadedProbe } from "./jobs.ts"
+import { shellName } from "./shell.ts"
 import { readSecrets } from "./telegram.ts"
 
 export type Check = { name: string; ok: boolean; detail: string; fix?: string; required: boolean }
@@ -30,8 +31,10 @@ export async function basics(o: { probe?: Probe; node?: string; platform?: NodeJ
     probe("claude", ["--version"]), probe("claude", ["auth", "status"]), probe("graphify", ["--help"]),
     ...(o.jobs && (platform === "darwin" || platform === "linux") ? JOBS.map((j) => probe(...loadedProbe(j, platform, o.uid ?? process.getuid?.() ?? 0))) : []),
   ])
+  const shell = shellName(env.PATH)
   const rows: Check[] = [
     { name: "Node", ok: nodeOk(node), detail: node, fix: "install Node 24: brew install node (or fnm install 24)", required: true },
+    { name: "shell", ok: shell !== "sh", detail: shell === "sh" ? "sh (no zsh or bash found: project commands run without a login shell)" : `${shell} (runs project commands)`, fix: "install zsh or bash", required: false },
     { name: "git", ok: git.ok, detail: git.ok ? ver(git.out) : "not installed", fix: "xcode-select --install", required: true },
     { name: "GitHub CLI", ok: gh.ok, detail: gh.ok ? ver(gh.out) : "not installed", fix: "brew install gh", required: true },
     { name: "GitHub sign-in", ok: gh.ok && ghUser.ok, detail: ghUser.ok ? `signed in as ${first(ghUser.out)}` : "not signed in", fix: "gh auth login --web", required: true },

@@ -17,6 +17,7 @@
 //   ideas [project]           idea cards, best first
 //   pm <project> [--area]     Product Manager now: ranked problems by goal, PRDs for L, idea cards (--area: today's Area PM)
 //   dedupe <project>          merge tickets and ideas that are the same work (Haiku); run after onboard
+//   tools [on|off <name>]     agent tools (graphify, rtk, caveman, ponytail, jev): on/off, found or not, install command; on/off edits your config
 //   company                   distil the founder's global Claude memory into company.md (work rules only)
 //   init <project>            join a project: draft its dobby.md, then onboard it (also runs by itself before a project's first ticket)
 //   onboard <project>         read all the project's docs and skills into Dobby (rules draft, backlog tickets, ideas, knowledge map)
@@ -48,7 +49,7 @@
 //   dashboard open [--port 4710]   open the running dashboard in your browser, signed in (token goes in an HttpOnly cookie; you never see or paste it)
 import { capacityFromDb, DATA, noteWindow, open } from "./db.ts"
 import { syncBoard } from "./board.ts"
-import { doctor, fixed, agentFiledKey, prDone, addTicket, dropIdea, label, undoIdea, syncGoals, milestonesOf, apiKeyMode, spendAllows, budgetAllows, reviewBudget, claude, company, getTicket, setTicket, home, ideaToTicket, isDuplicate, loadProjects, loadRole, memoryDir, nextTicket, orphanedParents, parseGroups, queueTicket, readUsage, noUsageReader, ROOT, runAsync, semaphore, stampLogs, sweepOrphanProcesses, sweepRebaseWorktrees, timeoutMs, doTimeoutMs, claimKey, windowIdle } from "./lib.ts"
+import { doctor, fixed, agentFiledKey, prDone, addTicket, dropIdea, label, undoIdea, syncGoals, milestonesOf, apiKeyMode, spendAllows, budgetAllows, reviewBudget, claude, company, getTicket, setTicket, home, ideaToTicket, isDuplicate, loadProjects, loadRole, memoryDir, nextTicket, orphanedParents, parseGroups, queueTicket, readUsage, fallbackAllows, fallbackStarted, ROOT, runAsync, semaphore, stampLogs, sweepOrphanProcesses, sweepRebaseWorktrees, timeoutMs, doTimeoutMs, claimKey, windowIdle } from "./lib.ts"
 import { actionArgs, discardProposal, FRONT_DESK_ARGS, parseProposal, preview, runForeman, sendProposal, storeProposal, typedNeedsTap, type Proposal } from "./frontdesk.ts"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { spawn, spawnSync } from "node:child_process"
@@ -99,7 +100,7 @@ const capOverride = () => {
   const o = JSON.parse((db.prepare("SELECT v FROM kv WHERE k='budget:override'").get() as { v: string } | undefined)?.v ?? "null") as { until: number; cap: number } | null
   return o && o.until > Date.now() ? o.cap : undefined
 }
-const allowed = (u: ReturnType<typeof readUsage>) => (apiKeyMode() ? spendAllows(db) : u ? budgetAllows(u, new Date().getHours(), capOverride(), weekPerFive(db)) : noUsageReader() ? { ok: true, why: "no usage reader: no pacing", cap: 100 } : { ok: false, why: "usage unreadable", cap: 0 })
+const allowed = (u: ReturnType<typeof readUsage>) => (apiKeyMode() ? spendAllows(db) : u ? budgetAllows(u, new Date().getHours(), capOverride(), weekPerFive(db)) : fallbackAllows(db))
 
 /** Once per 5-hour window: tell the owner the builders paused for budget, with a button to keep going. */
 async function pausePing(u: ReturnType<typeof readUsage>, why: string) {
@@ -201,6 +202,7 @@ async function tick() {
         if (seen.has(t.id)) return console.log(`[w${w}] #${t.id} came back ready in this run; stopping so it cannot loop`)
         seen.add(t.id)
         if (u2) noteWindow(db, u2.fiveUsed, u2.fiveMsToReset, { build: true })
+        else if (!apiKeyMode()) fallbackStarted(db)
         if ((await buildTicket(t, `w${w}`, g2.why)) === "stop") return
       }
     }
@@ -401,7 +403,7 @@ async function act(text: string, replyTo = ""): Promise<string | null> {
   if (rv) return rv[1].toLowerCase() === "reviewfix" ? fixReview(db, rv[2], Number(rv[3])) : acceptReview(db, rv[2], Number(rv[3]))
   // "deploynow <project> [migrate <sha>]": the 🚀 / 🔁 buttons on deploy pings (migrate = owner OK'd the data migrations shown for <sha>)
   const dn = text.trim().match(/^deploynow\s+([\w-]+)(\s+migrate(?:\s+([0-9a-f]{7,40}))?)?$/i)
-  if (dn) return (await import("./deploy.ts")).deployProject(db, dn[1], { migrate: Boolean(dn[2]), at: dn[3] })
+  if (dn) return (await import("./deploy.ts")).deployProject(db, dn[1], { tapped: true, migrate: Boolean(dn[2]), at: dn[3] })
   const sk = text.trim().match(/^stuck(retry|decline)\s+(\d+)$/i) // the buttons on a "stuck in fixing" card
   if (sk) return stuckTap(db, sk[1].toLowerCase() as "retry" | "decline", Number(sk[2]))
   const r = parseReply(text, replyTo)
@@ -857,7 +859,7 @@ switch (cmd) {
   }
   case "service": // dobby service install|uninstall [--dry]: run `dobby start` as a launchd (macOS) or systemd user (Linux) service
     service(a[0], a.includes("--dry"), servicePlan(process.platform, {
-      exec: [process.execPath, "--no-warnings", `${ROOT}src/cli.ts`, "start"], path: [dirname(process.execPath), process.env.PATH ?? ""].join(delimiter), // the folder of this node first: a per-shell fnm PATH entry is gone after a reboot
+      exec: [process.execPath, "--no-warnings", import.meta.filename, "start"], path: [dirname(process.execPath), process.env.PATH ?? ""].join(delimiter), // the folder of this node first: a per-shell fnm PATH entry is gone after a reboot
       log: `${home("~/.local/share/dobby/logs")}/service.log`, home: homedir(), uid: process.getuid?.() ?? 0,
     }))
     break
@@ -915,6 +917,11 @@ switch (cmd) {
   case "graphify": // daily 05:30 (before the PMs at 06:00): refresh every repo's code graph, no LLM; agents run `graphify update .` on demand
     for (const p of Object.values(loadProjects())) console.log(`${p.name}: ${spawnSync("graphify", ["update", p.repo], { encoding: "utf8" }).status === 0 ? "updated" : "FAILED"}`)
     break
+  case "tools": { // dobby tools [on|off <name>]: agent tooling (graphify, rtk, caveman, ponytail, jev)
+    const t = await import("./tools.ts")
+    console.log(a[0] === "on" || a[0] === "off" ? t.setTool(a[1] ?? "", a[0] === "on") : t.toolsTable())
+    break
+  }
   case "config":
     console.log((await import("./migrate.ts")).configCmd(a[0]))
     break

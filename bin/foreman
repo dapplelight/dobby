@@ -1,3 +1,8 @@
-#!/bin/zsh
+#!/bin/sh
 # Old name; Dobby is the command now. Kept for scripts and habits from before the rename.
-exec "${0:A:h}/dobby" "$@"
+self="$0"
+while [ -L "$self" ]; do
+  t="$(readlink "$self")"
+  case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
+done
+exec "$(dirname "$self")/dobby" "$@"

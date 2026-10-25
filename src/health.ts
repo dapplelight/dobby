@@ -7,6 +7,7 @@ import { DATA, dailyPrune, logCheck, open, type DB } from "./db.ts"
 import { config, zoned, zonedDay } from "./config.ts"
 import { paused } from "./pause.ts"
 import { loadProjects, signedOut, unblocked } from "./lib.ts"
+import { loginShell } from "./shell.ts"
 
 // Dobby's own launchd jobs, plus any the owner asks it to watch (config watchJobs)
 const prefixes = () => ["com.dobby.", ...(config().watchJobs?.prefixes ?? [])]
@@ -195,7 +196,7 @@ if (import.meta.main || process.argv[2] === "health") {
   const { notify: tell, asIs } = await import("./telegram.ts")
   await briefWatch(db, (t) => tell(t, fetch, undefined, { kind: "approval" }, asIs)).catch((e) => console.log(`brief watch: ${e}`))
   const { notify: say } = await import("./telegram.ts")
-  const claudeFound = () => spawnSync("zsh", ["-lc", "command -v claude"], { encoding: "utf8" }).status === 0
+  const claudeFound = () => spawnSync(...loginShell("command -v claude"), { encoding: "utf8" }).status === 0
   await pipelineWatch(db, (t) => say(t, fetch, undefined, { kind: "approval" }), { claudeFound }).catch((e) => console.log(`pipeline checks: ${e}`))
   try { const p = dailyPrune(db); if (p) console.log(p) } catch (e) { console.log(`prune: ${(e as Error).message}`) }
   const sure = confirmed(bad, prevRaw)

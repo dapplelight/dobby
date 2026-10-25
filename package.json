@@ -16,6 +16,8 @@
     "foreman": "bin/foreman"
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json && cp src/dashboard.html dist/",
+    "prepack": "npm run build",
     "test": "node --no-warnings --test tests/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
@@ -26,11 +28,28 @@
     "@langchain/langgraph": "1.4.19",
     "@langchain/langgraph-checkpoint-sqlite": "1.0.4",
     "better-sqlite3": "12.10.0",
+    "claude-usage-limits": "1.41.1",
     "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.0.0",
     "typescript": "5.9.3"
-  }
+  },
+  "files": [
+    "bin/dobby",
+    "bin/foreman",
+    "bin/guard-hook.mjs",
+    "dist",
+    "roles",
+    "skills",
+    "agent-kit",
+    "templates",
+    "agent-rules/",
+    "agent-settings.json",
+    "docs",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY.md"
+  ]
 }

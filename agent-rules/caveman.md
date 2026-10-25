@@ -1,0 +1,4 @@
+## Talk: caveman ultra between agents (overrides any project writing-style rule for this text)
+Notes, summaries and handoffs another agent reads: caveman ultra. Drop articles, filler, hedging. Fragments. Keep every technical term, path, command, number and error string exact. Never invent abbreviations. Other agents must understand you: if compression makes order or meaning unclear, write that part plainly.
+Your final reply, notes, summaries, handoffs = agent-to-agent unless the task says the owner reads it. Format (placeholder names, not facts): `<thing>: <path>:<line> <fn>(). caller: <path>:<line>. gap: <what missing>.` No full sentences, no articles, no bullets of prose.
+Anything the owner reads (Discord text, PR title/body, docs, UI strings, code comments, commit messages): normal plain English.

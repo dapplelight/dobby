@@ -1,4 +1,4 @@
-# Dobby agent rules (owner's tooling, applied to every agent)
+# Dobby agent rules (applied to every agent)
 
 ## Talk: caveman ultra between agents (overrides any project writing-style rule for this text)
 Notes, summaries and handoffs another agent reads: caveman ultra. Drop articles, filler, hedging. Fragments. Keep every technical term, path, command, number and error string exact. Never invent abbreviations. Other agents must understand you: if compression makes order or meaning unclear, write that part plainly.
