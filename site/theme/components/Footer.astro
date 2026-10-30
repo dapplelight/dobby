@@ -15,6 +15,7 @@ import Pagination from "virtual:starlight/components/Pagination"
     <span class="sd-footer-links">
       <a href={`/${config.base}/llms.txt`}>llms.txt</a>
       <a href={`https://github.com/${config.repo}`}>GitHub</a>
+      {config.repo !== "dapplelight/signet" && <a href="https://github.com/dapplelight/signet">Built with Signet</a>}
       {config.license && <span>{config.license}</span>}
     </span>
   </div>
