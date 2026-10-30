@@ -124,7 +124,7 @@ The dashboard and these docs are built on [Signet](https://github.com/dappleligh
 
 ## Contributing
 
-Dobby is not taking pull requests yet. Bug reports and ideas are welcome as [issues](https://github.com/dapplelight/dobby/issues).
+Dobby is not taking pull requests yet. Bug reports are welcome as [issues](https://github.com/dapplelight/dobby/issues); questions and ideas go to [Discussions](https://github.com/dapplelight/dobby/discussions).
 
 ## License
 
