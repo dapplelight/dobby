@@ -1,0 +1,2467 @@
+<!-- manual/install.md -->
+# Install
+
+> Install Dobby on macOS or Linux, connect your repos and start the background jobs.
+
+:::note
+Dobby is in public beta.
+:::
+
+## You need
+
+- macOS or Linux
+- Node 24 or newer
+- GitHub CLI
+- Claude Code on a Pro or Max plan, or an Anthropic API key
+
+On Windows or a Linux server, start with [Install on Linux or WSL2](install-linux.md).
+
+## Install
+
+1. Run the setup and answer its questions. Enter takes the recommended choice.
+
+   ```bash title="Terminal"
+   npx dobby-ai init
+   ```
+
+2. Say yes when it offers a copy that stays. The background jobs need it.
+
+   ```bash title="Terminal"
+   npm i -g dobby-ai
+   ```
+
+3. Check the install. A failed row prints its fix.
+
+   ```bash title="Terminal"
+   dobby doctor
+   ```
+
+## Turn merges on
+
+A fresh install opens pull requests but does not merge them until you run:
+
+```bash title="Terminal"
+dobby resume merges
+```
+
+:::tip
+[Your first hour](first-hour.md) walks through the first ticket up to this step.
+:::
+
+<details>
+<summary>Set up in your browser instead</summary>
+
+```bash title="Terminal"
+dobby init --ui
+```
+
+You still enter tokens and keys in the terminal.
+
+</details>
+
+<details>
+<summary>Add repos from other folders</summary>
+
+```bash title="Terminal"
+dobby init --projects ~/code,~/work
+dobby init ~/code/shop
+```
+
+Repos must be on github.com, with the GitHub remote named `origin`.
+
+</details>
+
+<details>
+<summary>npm says better-sqlite3 has install scripts that are not allowed</summary>
+
+```bash title="Terminal"
+npm approve-scripts better-sqlite3
+```
+
+</details>
+
+<details>
+<summary>Install without admin rights</summary>
+
+```bash title="Terminal"
+curl -fsSL https://fnm.vercel.app/install | bash
+fnm install 24
+curl -fsSL https://claude.ai/install.sh | bash
+```
+
+Download `gh` from cli.github.com.
+
+</details>
+
+<!-- manual/install-linux.md -->
+# Install on Linux or WSL2
+
+> Prepare a Linux machine, a headless server or Windows with WSL2 for Dobby: systemd, the sandbox, sign-ins over SSH and jobs that survive logout.
+
+Do these steps first, then follow [Install](install.md).
+
+## On Windows, turn on systemd in WSL2
+
+1. Add this to `/etc/wsl.conf` inside WSL2.
+
+   ```ini title="/etc/wsl.conf"
+   [boot]
+   systemd=true
+   ```
+
+2. Restart WSL from Windows.
+
+   ```bash title="Terminal"
+   wsl --shutdown
+   ```
+
+:::caution
+Keep your repos in the Linux home folder. Under `/mnt/c`, installs and tests are too slow.
+:::
+
+## Install the sandbox
+
+1. Install bubblewrap and socat.
+
+   ```bash title="Terminal"
+   sudo apt install bubblewrap socat
+   ```
+
+2. On Ubuntu 24.04 and later, let bubblewrap past AppArmor.
+
+   ```bash title="Terminal"
+   sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+   ```
+
+Add that setting to a file in `/etc/sysctl.d/` to keep it after a reboot. On Fedora, use `dnf` in step 1.
+
+## Install Node and Claude Code
+
+```bash title="Terminal"
+curl -fsSL https://fnm.vercel.app/install | bash
+fnm install 24
+curl -fsSL https://claude.ai/install.sh | bash
+```
+
+Install the GitHub CLI with the steps at cli.github.com.
+
+<details>
+<summary>Alpine and other musl systems</summary>
+
+The database driver compiles during install. Install python3 and a C++ toolchain first.
+
+</details>
+
+## Sign in without a browser
+
+1. Sign in to GitHub. Open the URL it prints on any device.
+
+   ```bash title="Terminal"
+   gh auth login --web
+   ```
+
+2. Sign in to Claude Code. Type `/login` and open the link on another device.
+
+   ```bash title="Terminal"
+   claude
+   ```
+
+## Keep jobs running after you log out
+
+Run this if `dobby jobs install` says it could not turn lingering on.
+
+```bash title="Terminal"
+sudo loginctl enable-linger $USER
+```
+
+## Open the dashboard from your laptop
+
+1. Forward the port from your laptop.
+
+   ```bash title="Laptop"
+   ssh -L 4710:127.0.0.1:4710 you@server
+   ```
+
+2. Print a sign-in link on the server and open it on your laptop.
+
+   ```bash title="Server"
+   dobby dashboard link
+   ```
+
+## If there is no user systemd
+
+Containers and plain `su` shells cannot install the jobs. Run Dobby inside tmux instead.
+
+```bash title="Terminal"
+dobby start
+```
+
+<!-- manual/first-hour.md -->
+# Your first hour
+
+> A guided first run: set Dobby up, write one small ticket, watch it become a reviewed pull request, and merge it.
+
+You will give Dobby one small ticket and follow it to a merged pull request. Most of the hour is waiting.
+
+Pick a repo you own on GitHub that has tests.
+
+## Set up
+
+1. Pick your repo and take the recommended answers. Say yes to the background jobs.
+
+   ```bash title="Terminal"
+   npx dobby-ai init
+   ```
+
+   To try Dobby without the background jobs, run `dobby init --no-jobs` instead. Then keep `dobby start` open in a terminal. Nothing builds while it is closed.
+
+2. Check that every required row has a tick.
+
+   ```bash title="Terminal"
+   dobby doctor
+   ```
+
+## Write a ticket
+
+Use your repo's folder name in place of `shopfront`.
+
+```bash title="Terminal"
+dobby add shopfront "Fix the footer spacing" "the footer has 16px padding on phones"
+```
+
+```text title="Output"
+#1 size M, risk medium (words)
+```
+
+The last part is the done-when line. The [Tester](glossary.md#tester) checks the work against it.
+
+## Watch it build
+
+1. See what is building.
+
+   ```bash title="Terminal"
+   dobby status
+   ```
+
+2. Follow your ticket's steps. Run it every few minutes.
+
+   ```bash title="Terminal"
+   dobby show 1
+   ```
+
+You will see the build, your tests, then the Tester. On a new repo, Dobby first reads the repo once. To read it and build the ticket right away, run `dobby run 1`.
+
+:::note
+If `dobby status` says `Paused: 5-hour window at ... (pace cap)`, Dobby is leaving room in your plan. It prints the command that lifts the cap for this window. See [Pacing](pacing.md).
+:::
+
+## Read the pull request
+
+Open your repo's Pull requests tab on GitHub. Dobby's pull request has the review's findings, a summary and a cost comment.
+
+## Merge it
+
+1. Turn merges on. A fresh install keeps them paused.
+
+   ```bash title="Terminal"
+   dobby resume merges
+   ```
+
+2. Wait for the review. When it passes, Dobby merges the pull request itself. The review runs in `dobby start` or the background jobs.
+
+3. If your safety preset holds it for you instead, merge it yourself:
+
+   ```bash title="Terminal"
+   dobby merge 1
+   ```
+
+Refresh the pull request on GitHub. It is merged.
+
+:::tip
+Your [safety preset](what-waits.md) decides which pull requests wait for you.
+:::
+
+## Next
+
+- [Write a good ticket](write-a-ticket.md)
+- [Answer what waits for you](answer-what-waits.md)
+- [The loop: ticket to merge](how-it-works.md)
+
+<!-- manual/how-it-works.md -->
+# The loop: ticket to merge
+
+> How a ticket becomes a merged pull request: tickets and their states, goals, and each step a build goes through.
+
+Every change goes through the same steps. Each step is a separate Claude Code run that can only do its own job.
+
+```text
+ticket → build → tests → Tester → pull request → review → merge or wait for you → deploy
+```
+
+## Tickets
+
+A ticket has a project, a title, a done-when line, a size and a priority. You write them, and the Engineering Manager and Product Manager propose them.
+
+The Tester checks the finished work against the done-when line. That line decides whether a build counts as done.
+
+| State | Meaning |
+|---|---|
+| `backlog` | Written, not queued. |
+| `ready` | Queued, waiting for a free builder. |
+| `running` | A builder is working on it. |
+| `fixing` | Its pull request is open, with a fix round or merge pending. |
+| `shipped` | Merged. |
+| `failed` | Out of builds or fix rounds. The branch keeps the work. |
+| `declined` | You declined or cancelled it. |
+| `split` | Replaced by smaller tickets. |
+
+Your own tickets start in `ready`. Tickets from agents start in `backlog`.
+
+With several builders, the next one takes work from the project with the fewest builds running. One project cannot take every builder.
+
+## Goals
+
+A goal is a larger outcome that tickets belong to. Dobby reads goals from GitHub milestones or from a project file's Goals list.
+
+## From ticket to merge
+
+| Step | What happens | If it fails |
+|---|---|---|
+| Build | A builder writes the change on its own branch and worktree. | |
+| Tests | Your install and test commands run in the sandbox. | One fix attempt. |
+| Tester | Checks the work against the done-when line. | Sent back once. |
+| Pull request | Dobby pushes the branch and opens it. | |
+| Review | The Code Reviewer reads it. | Up to 2 fix rounds, then it waits for you. |
+| Merge | Dobby merges the exact commit that passed. | Held if your safety preset says so. |
+| Deploy | Sends you a Deploy tap and waits, unless `safety.deploy` is `"auto"`. | |
+
+A ticket gets at most 3 builds. A branch that no longer merges cleanly goes to you instead of a builder.
+
+## Why each step is separate
+
+The builder has no network and no credentials. Only Dobby's own process can push, open pull requests and merge.
+
+So a builder misled by a ticket or a dependency still cannot push or deploy. See [Security and the sandbox](security.md).
+
+<!-- manual/roles.md -->
+# Roles
+
+> The six main roles, the supporting roles that run when needed, and why each one is a separate run with its own rules.
+
+Dobby has six main roles, plus supporting roles that run when needed. Each is a separate Claude Code run with its own rules, model and tools.
+
+A role cannot do another role's job. The Tester cannot change code, and the builder cannot merge.
+
+```bash title="Terminal"
+dobby role show builder
+```
+
+The Team page in the dashboard shows the same rules. Role files use the short names in the table.
+
+## The six main roles
+
+| Role | Short name | Does |
+|---|---|---|
+| Engineering Manager | `lead` | Queues up to 3 backlog tickets per run and writes up to 3 new ones. |
+| Builder | `builder` | Writes one ticket's change on its own branch, in the sandbox. |
+| Tester | `checker` | Checks the work against the done-when line. Reads files only. |
+| Code Reviewer | `reviewer` | Reviews every pull request Dobby opens. |
+| Product Manager | `product-manager` | Ranks problems against your goals and writes specs for large tickets. |
+| Chief of Staff | `chief-of-staff` | Sends a brief every morning and evening. |
+
+### Engineering Manager
+
+Plans the work. For a new project, it lets you choose which first tickets to queue.
+
+### Builder
+
+Has no network and no credentials. For some tickets it works as a web, mobile or backend engineer.
+
+### Tester
+
+Tries to find why a change should not pass, before the review. On UI tickets it can take Playwright screenshots.
+
+### Code Reviewer
+
+Posts findings on GitHub. It reviews your pull requests too when you ask. See [Review commands in a PR](reviews.md).
+
+### Product Manager
+
+Turns problems into idea cards. You turn an idea into a ticket or drop it.
+
+### Chief of Staff
+
+The brief says what needs you, what shipped and what is building.
+
+## Supporting roles
+
+| Role | Does |
+|---|---|
+| Designer | Writes the screen spec for a UI ticket. |
+| Onboarder | Reads a new project and writes its rules, tickets and ideas. |
+| Front Desk | Answers your chat messages and proposes actions. |
+| Program Manager | Checks a finished program of tickets against its plan. |
+| Product Manager (one area) | Digs into one product area. |
+| Brainstorm | Talks an idea through with you. It never builds. |
+| Company | Turns your notes into work rules for every agent. |
+| Engineer (web, mobile, backend) | The builder's specialties. |
+
+### Talent Scout
+
+Once a day it picks one role and looks for skills and rules that would improve it. Any change it makes arrives as a pull request.
+
+Turn it off with `scout.enabled` in the [configuration](config.md#scout).
+
+<!-- manual/what-waits.md -->
+# What waits for you
+
+> Which merges, deploys and questions wait for your tap, how the three safety presets decide, and what waits whatever you set.
+
+Dobby does most work without asking. A few things wait for you, because a wrong guess there costs more than a short wait.
+
+## Needs you
+
+Everything that waits lands in one list: Needs you on the dashboard, and `#needs-you` in Discord.
+
+- A pull request your preset holds for you
+- A Deploy tap, or a failed deploy
+- A builder's question
+- A stuck ticket
+- A ticket an agent filed
+
+## Safety presets
+
+Dobby sorts each change into categories such as payments, auth and data migrations. The preset decides what happens in each.
+
+| Preset | What waits for you | Strict review | Merges after a normal review |
+|---|---|---|---|
+| Balanced, the default | Data migrations, client sites, releases | Auth, payments, secrets | Everything else |
+| Strict | Every merge | | |
+| Autonomous | Nothing | Risky changes | Everything else |
+
+```bash title="Terminal"
+dobby config set safety.preset strict
+```
+
+Strict suits your first weeks with Dobby. Autonomous suits repos where a bad merge is cheap to revert.
+
+The full table is in [Safety categories](safety-categories.md).
+
+## The floor for every merge
+
+`safety.everyMerge` sets the minimum for changes in no category. Strict sets it to your merge, and the others to a normal review.
+
+## Deploys
+
+After a merge, a project with a `deploy:` command sends you a Deploy tap and waits, also when `safety.deploy` is unset. Only an explicit `"auto"` deploys at once.
+
+## What waits whatever you set
+
+:::caution
+These wait under every preset:
+
+- Running a migration that changes existing data
+- A ticket an agent filed from outside input, such as an email
+- The first merge on a fresh install
+:::
+
+<!-- manual/pacing.md -->
+# Pacing against your plan
+
+> How Dobby spreads its work across your Claude plan's weekly and 5-hour limits, so part of the week always stays yours.
+
+On a Pro or Max plan, Dobby shares your weekly and 5-hour limits. It paces itself so you can still use Claude.
+
+Dobby reads your usage every 10 minutes and checks it before each run.
+
+```text title="dobby limits"
+Running · 5-hour 34% (cap 60%) · week 49% of 95%
+5-hour ▕███░░░░░░░▏ 34%
+week   ▕█████░░░░░▏ 49% (cap 95%)
+```
+
+## The weekly cap
+
+Dobby stops starting work at `pacing.weekCap`, 95% by default. The rest of the week stays yours.
+
+The cap covers every role, reviews included. The dashboard calls it Stop at. To change it, see [Cap spend](cap-spend.md).
+
+## The 5-hour window
+
+Dobby spreads what is left of the week across the 5-hour windows before the reset. One busy window cannot use up the week.
+
+When work is held, `dobby limits` says why and when it resumes:
+
+```text title="dobby limits"
+Paused: 5-hour window at 60% (pace cap), resumes 14:20 IST
+```
+
+To lift the cap for the rest of this window, run the command it prints:
+
+```bash title="Terminal"
+dobby do keepgoing 90
+```
+
+With Discord set up, the pause message has buttons that do the same.
+
+## When usage cannot be read
+
+Dobby starts at most 3 builds a day and tells you once. Change the number with `pacing.fallbackBuildsPerDay`.
+
+## On an API key
+
+There is no plan to pace against, so Dobby caps dollars instead. See [Plan or API key](billing.md).
+
+<!-- manual/security.md -->
+# Security and the sandbox
+
+> What a builder can and cannot reach, how commands are checked, how strangers' pull requests are handled, and where the limits are.
+
+Dobby lets agents run code they wrote themselves on your machine. A prompt injection in a ticket, an issue or a dependency could make a builder try something you did not ask for. The rules below are built so that such a builder cannot push, deploy or send your data out.
+
+## What a builder can reach
+
+A builder is a `claude -p` run started by Dobby. Every shell command it runs goes through Claude Code's OS sandbox: Seatbelt on macOS, bubblewrap and socat on Linux.
+
+| | Builder |
+|---|---|
+| Write files | Its own worktree, a scratch folder, the temp folder. Nothing else. |
+| Read files | Everything except the denied paths below. |
+| Network | None. Localhost only on macOS, so tests can start local servers. |
+| Credentials | None in its environment. |
+| `git push`, `wrangler`, `rm -rf`, web fetch and web search | Denied. |
+
+Paths a builder cannot read:
+
+```
+~/.config/dobby      ~/.config/gh     ~/.ssh        ~/.aws
+~/.netrc             ~/.npmrc         ~/.git-credentials
+~/.docker            ~/.wrangler      Dobby's data folder
+```
+
+The sandbox settings are passed on the command line, so a repo's own `.claude/settings.json` cannot loosen them. If the sandbox cannot start, the run stops. It does not fall back to running without one.
+
+## No credentials in the builder's environment
+
+Before a builder starts, Dobby removes from its environment:
+
+- GitHub, npm, Cloudflare, AWS, Discord and Telegram tokens, and every other variable whose name contains `TOKEN`, `SECRET`, `PASSW`, `API_KEY`, `PRIVATE_KEY`, `CREDENTIAL` or `AUTH`.
+- The SSH agent socket, so it cannot use your SSH keys.
+- git's credential helpers and askpass.
+
+`gh` and `wrangler` point at empty config folders, so they are not signed in. Claude Code keeps its own sign-in, but the sandbox hides it from the commands the builder runs.
+
+Builders commit without signing, because a signing agent such as 1Password or gpg cannot be reached from inside the sandbox. GitHub signs the squash merge.
+
+## Installs and tests
+
+Dobby runs each project's install and test commands itself, inside the same sandbox, after the builder finishes. Installs may reach package registries only: npm, Yarn, PyPI, crates.io, the Go proxy and GitHub. Tests get no network. To allow another registry host, add it to `installDomains` in your config.
+
+## Pushing, merging and deploying
+
+Only Dobby's own process pushes, opens pull requests, merges and deploys. Builders cannot, because they have no credentials and no network.
+
+- Dobby merges only its own pull requests and yours. It never merges a pull request from anyone else.
+- A merge needs a passing review of the exact commit being merged. If the branch moved after the review, the merge does not happen.
+- What waits for your tap is set by your safety preset. See [What waits for you](what-waits.md).
+- `dobby init` turns merges off on a fresh install until you run `dobby resume merges`. An install that skipped `init` has no such pause.
+- After a merge, the deploy waits for your tap, also when `safety.deploy` is unset. Only an explicit `"auto"` makes a project with a `deploy:` command deploy at once.
+
+## The command guard
+
+A hook checks every shell command an agent runs before it runs. It splits the command line at `&&`, `;`, pipes, `$( )`, `sh -c`, `xargs` and `find -exec`, and checks each part:
+
+1. Each part must be on the role's allowlist. A role with no list gets no shell at all.
+2. A set of guard rules denies dangerous commands even when the role's list would allow them.
+
+A refused command is not run, and the agent sees the reason.
+
+The sandbox is the real boundary. The guard is a second layer that catches mistakes early and makes refusals readable.
+
+## Strangers' pull requests
+
+On a public repo, anyone can open a pull request, and its text and code may be written to steer a model.
+
+- Automatic reviews are off by default: `review.auto` is `off`.
+- On a public repo, `@dobby` commands that run a model are refused on a pull request whose author is not you or a collaborator.
+- Only users with write access can give commands at all. Other comments are ignored and cost nothing.
+- Comment text is treated as data. It can pick one command from a fixed list or become the question of a read-only run. A read-only run can only read files and run `git diff`, `git log` and `git show`, gets no MCP servers, and cannot read secret files.
+
+## Secrets and private words
+
+- Secrets live in `~/.config/dobby/secrets.env`. No command prints them, and `dobby config show` redacts them.
+- Text Dobby posts to a public repo is checked against your private words: your GitHub accounts, client names, home folder paths, email addresses, and any word you add to `~/.config/dobby/private-terms.txt`. A push to a public repo whose diff or commit messages contain one of them is refused.
+- Comment bodies go to `gh` through a temp file, never on a command line.
+
+## Limits
+
+- Native Windows has no sandbox. Dobby supports macOS and Linux, including WSL2.
+- On Linux without bubblewrap and socat, builders run with credentials removed but without the OS sandbox. On Ubuntu 24.04 and later, AppArmor can block bubblewrap even when it is installed, and Dobby falls back the same way. `dobby doctor` shows the sandbox row and the fix. See [Install on Linux or WSL2](install-linux.md).
+- On macOS, a builder's commands can connect to any service listening on localhost, such as a local database. Do not keep production data in a local service on the machine that runs Dobby.
+- The sandbox limits what a builder can reach. It does not check whether the code is correct. That is the job of the tests, the Tester and the review.
+
+<!-- manual/billing.md -->
+# Plan or API key
+
+> The two ways Dobby pays for Claude, how each is capped, and how to choose.
+
+Dobby runs Claude Code for every role. It pays with your Claude plan or with an Anthropic API key.
+
+| | Your plan | An API key |
+|---|---|---|
+| Costs | Nothing beyond the plan | Per token |
+| Capped by | A share of your week, `pacing.weekCap` | Dollars, `billing.dailyUsd` and `billing.weeklyUsd` |
+| Default cap | 95% of the week | $20 a day |
+| Cost comment on a PR | Share of your week | Dollars |
+| Key variable | | `DOBBY_API_KEY` |
+
+## Which one
+
+- You pay for Pro or Max: use the plan. Dobby uses the part you don't.
+- You have no plan, or Dobby runs on a server: use an API key with a daily cap.
+
+To set either one up, see [Cap spend](cap-spend.md).
+
+:::note
+Dobby reads `DOBBY_API_KEY`, never `ANTHROPIC_API_KEY`. That keeps your own Claude Code sessions on your plan.
+:::
+
+## How estimates work on a plan
+
+A pull request's share of the week is an estimate, converted at $26 per 1% of the week. The numbers in `dobby limits` come straight from Anthropic.
+
+Dobby runs on Claude Code only today. Amazon Bedrock and Google Vertex AI are not supported.
+
+<!-- manual/write-a-ticket.md -->
+# Write a good ticket
+
+> Write a ticket Dobby can finish: a done-when line the Tester can check, the right size and a priority.
+
+```bash title="Terminal"
+dobby add shopfront "Show stock on the product page" "the page shows In stock or Sold out" S 70
+```
+
+| Part | Example |
+|---|---|
+| Project | `shopfront` |
+| Title | `"Show stock on the product page"` |
+| Done when | `"the page shows In stock or Sold out"` |
+| Size | `S` |
+| Priority | `70` |
+
+The ticket goes straight into the queue.
+
+## Write a done-when line you could check yourself
+
+The Tester passes a build only when this line is true. Name one thing you can see or run.
+
+| Weak | Better |
+|---|---|
+| `improve the footer` | `the footer has 16px padding on phones` |
+| `fix login` | `a wrong password shows "Wrong email or password"` |
+| `add tests for cart` | `npm test covers an empty cart and passes` |
+
+:::tip
+Two outcomes are two tickets.
+:::
+
+## Pick a size
+
+| Size | Use it for |
+|---|---|
+| `S` | Under an hour, one or two files. |
+| `M` | A few hours, several files. The default. |
+| `L` | A day or more. Never built as it is: split it first. |
+
+## Set a priority
+
+Higher numbers run sooner. The default is 50.
+
+## Skip the GitHub issue
+
+Each ticket is also filed as an issue on the repo. To skip it for one ticket:
+
+```bash title="Terminal"
+dobby add shopfront "Fix the footer spacing" --no-issue
+```
+
+To skip it for every ticket:
+
+```bash title="Terminal"
+dobby config set board.issues false
+```
+
+## Queue a backlog ticket
+
+Tickets from Dobby's own roles start in the backlog.
+
+```bash title="Terminal"
+dobby queue 41
+dobby unqueue 41
+```
+
+<!-- manual/answer-what-waits.md -->
+# Answer what waits for you
+
+> Approve, decline, merge, deploy, answer or retry the items in Needs you, from the terminal, the dashboard, Discord or Claude.
+
+Everything that waits is in Needs you on the dashboard's Home page. Each row has its actions on it.
+
+## From the terminal
+
+```bash title="Terminal"
+dobby approve 41
+dobby decline 41
+dobby merge 41
+dobby deploy shopfront
+```
+
+| Command | Does |
+|---|---|
+| `approve <id>` | Approves a waiting ticket. |
+| `decline <id>` | Declines it. On a ticket that is not waiting, it cancels it. |
+| `merge <id>` | Merges a pull request that waits for you. |
+| `deploy <project>` | The Deploy tap. |
+| `answer <id> "<words>"` | Answers a builder's question and queues the ticket again. |
+| `hint <id> "<words>"` | Adds a hint for the next build. |
+| `retry <id>` | Queues a failed ticket again, or restarts a stuck one. |
+| `allowround <id>` | Allows one more fix round on its pull request. |
+| `takeover <id>` | Pauses the ticket and leaves its branch to you. |
+| `cancel <id>` | Stops the build and closes its pull request and branch. |
+
+:::caution
+A migration that changes existing data still waits for its own tap.
+:::
+
+## Elsewhere
+
+| Where | How |
+|---|---|
+| Dashboard | Merge, deploy, decline and retry wait 8 seconds with an Undo. |
+| Discord | Each item in `#needs-you` has Approve and Decline buttons. |
+| Claude | `dobby_decide` asks you to confirm every time. |
+
+<!-- manual/pause-and-resume.md -->
+# Pause and resume
+
+> Stop Dobby taking new work, pause one part, one project or one ticket, for a set time or until you resume.
+
+```bash title="Terminal"
+dobby pause
+dobby resume
+```
+
+Builders stop taking new tickets. Running builds finish their current step.
+
+## Pause one part
+
+```bash title="Terminal"
+dobby pause merges
+dobby pause project shopfront
+dobby pause ticket 41
+dobby resume merges
+```
+
+| Part | Stops |
+|---|---|
+| `builders` | New builds. |
+| `reviews` | Reviews. |
+| `merges` | Merges. |
+| `deploys` | Deploys. |
+| `planning` | The Engineering Manager and Product Manager. |
+| `scout` | The Talent Scout. |
+| `notify` | Messages to you. |
+
+## Stop everything now
+
+```bash title="Terminal"
+dobby pause all
+```
+
+:::caution
+This also stops running builds.
+:::
+
+## Pause for a set time
+
+```bash title="Terminal"
+dobby pause reviews for 2h
+```
+
+The pause ends by itself. Use `30m`, `2h` or `1d`.
+
+## See what is paused
+
+```bash title="Terminal"
+dobby pause status
+```
+
+```text title="Output"
+Nothing is paused.
+```
+
+<!-- manual/background-jobs.md -->
+# Run in the background
+
+> Install the background jobs so Dobby builds, reviews and reports while you work on other things, or run it in a terminal instead.
+
+1. Install the jobs from the copy you installed with `npm i -g dobby-ai`.
+
+   ```bash title="Terminal"
+   dobby jobs install
+   ```
+
+2. Check that every job has a tick.
+
+   ```bash title="Terminal"
+   dobby jobs status
+   ```
+
+| Job | Runs |
+|---|---|
+| `tick` | Always. Plans and builds the next ticket, and runs the review scan when Discord is off. |
+| `listener` | Always, with Discord only. Messages and the review scan. |
+| `dashboard` | Always. The dashboard at `http://127.0.0.1:4710`. |
+| `health` | Hourly. Checks jobs, disk and pipeline. |
+| `cos` | Daily at 08:05. The morning brief. |
+| `graphify` | Daily at 05:30. Refreshes code maps. |
+
+:::note
+Nothing runs while the computer sleeps. Missed jobs run when it wakes.
+:::
+
+## After you change Node or move Claude Code
+
+Jobs only know the folders they had at install. Install them again:
+
+```bash title="Terminal"
+dobby jobs install
+```
+
+## Read the logs
+
+```bash title="Terminal"
+tail -f ~/.local/share/dobby/logs/tick.log
+```
+
+## Run in a terminal instead
+
+```bash title="Terminal"
+dobby start
+```
+
+It runs until Ctrl-C. It refuses to start while this install's jobs are running.
+
+<!-- manual/discord.md -->
+# Use Discord
+
+> Connect a Discord bot so Dobby posts what waits for you with buttons, sends the daily brief and answers messages.
+
+:::tip
+The easiest way is to choose Discord during `dobby init`.
+:::
+
+To add it later:
+
+1. Add the bot token to your secrets file.
+
+   ```bash title="~/.config/dobby/secrets.env"
+   DISCORD_BOT_TOKEN=<your bot token>
+   ```
+
+2. Turn Discord on.
+
+   ```bash title="Terminal"
+   dobby add discord
+   ```
+
+3. Create the channels. It is safe to run again.
+
+   ```bash title="Terminal"
+   dobby discord setup
+   ```
+
+4. Add the `listener` job.
+
+   ```bash title="Terminal"
+   dobby jobs install
+   ```
+
+Prefer Slack? See [Use Slack (beta)](slack.md).
+
+Dobby reads Discord through the Chat SDK. If the listener misbehaves, set `discord.listener` to `"legacy"` in your config to go back to the previous gateway code (kept for one release).
+
+| Channel | What comes there |
+|---|---|
+| `#needs-you` | What waits for you, with Approve and Decline buttons. |
+| `#daily-update` | The morning and evening brief. |
+| `#system-status` | Health checks and pauses. |
+| `#dobby-tickets` | One thread per ticket. |
+
+## If the buttons do nothing
+
+Turn on the bot's Message Content intent. It is under Bot, Privileged Gateway Intents, in the Discord developer portal.
+
+## If setup fails with 403
+
+The bot needs Manage Channels and Manage Webhooks. Invite it again:
+
+```bash title="Terminal"
+dobby discord invite
+```
+
+<!-- manual/dashboard.md -->
+# Use the dashboard
+
+> Open the local dashboard, act on what needs you, use its keys, and reach it safely from your phone.
+
+```bash title="Terminal"
+dobby add dashboard
+dobby dashboard open
+```
+
+This opens `http://127.0.0.1:4710`, signed in. Home lists what needs you, with its actions on each row.
+
+| Key | Does |
+|---|---|
+| `J`, `K` | Move down and up a list. |
+| `Enter` | The row's main action. |
+| `U` | Undo the last held action. |
+| `Cmd+K` or `Ctrl+K` | Search actions, tickets, settings and docs. |
+| `?` | Every key. |
+
+:::note
+Merge, deploy, decline and retry wait 8 seconds with an Undo before they run.
+:::
+
+## Open it from your phone
+
+Tailscale keeps the address private to your devices.
+
+1. Install Tailscale on this machine and your phone, on the same account.
+
+2. Start a tunnel copy of the dashboard and leave it running.
+
+   ```bash title="Terminal"
+   dobby dashboard --tunnel --port 4711
+   ```
+
+3. Serve it on your tailnet.
+
+   ```bash title="Terminal"
+   tailscale serve --bg --https=443 http://127.0.0.1:4711
+   ```
+
+4. Print a sign-in link and open it on your phone.
+
+   ```bash title="Terminal"
+   dobby dashboard link --host <machine>.<tailnet>.ts.net
+   ```
+
+:::caution
+Never put a tunnel in front of a dashboard started without `--tunnel`. It serves plain HTTP.
+:::
+
+<details>
+<summary>Use a Cloudflare tunnel instead</summary>
+
+```bash title="Terminal"
+cloudflared tunnel --url http://127.0.0.1:4711
+dobby dashboard link --host <the trycloudflare address>
+```
+
+The address is public, so put Cloudflare Access in front of it.
+
+</details>
+
+<!-- manual/mcp.md -->
+# Drive Dobby from Claude (MCP)
+
+> Connect Dobby to Claude Code or Claude Desktop over MCP, so Claude can read status, file tickets and ask you before it merges or deploys.
+
+1. Connect Dobby to Claude Code. Say yes when it asks.
+
+   ```bash title="Terminal"
+   dobby add mcp
+   ```
+
+2. Restart Claude Code and ask it for your Dobby status.
+
+| Tool | Does |
+|---|---|
+| `dobby_read` | Status, limits, tickets, cost, scoreboard and pauses. |
+| `dobby_docs` | Lists, reads and searches these docs. |
+| `dobby_ticket` | Adds or queues tickets. A ticket Claude adds waits for your tap. |
+| `dobby_pause` | Pauses or resumes a part of Dobby. |
+| `dobby_decide` | Approves, declines, cancels, retries, merges or deploys. Asks you first every time. |
+
+:::note
+If Claude cannot ask you, the item goes to Needs you and waits for your tap. Dobby never runs a data migration from MCP.
+:::
+
+<details>
+<summary>Claude Desktop</summary>
+
+`dobby add mcp` also prints this block for `claude_desktop_config.json`, with the full path to `dobby`:
+
+```json title="claude_desktop_config.json"
+{
+  "mcpServers": {
+    "dobby": { "command": "<path to dobby>", "args": ["mcp"] }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary>All values for each tool</summary>
+
+| Tool | Argument | Values |
+|---|---|---|
+| `dobby_read` | `view` | `status`, `limits`, `list`, `show`, `job`, `cost`, `scoreboard`, `receipt`, `pauses`, `stats-report` |
+| `dobby_docs` | `op` | `list`, `read`, `search` |
+| `dobby_ticket` | `op` | `add`, `queue`, `answer`, `hint`, `take-over`, `allow-round`, `apply-finding`, `dismiss-finding`, `rule-from-finding`, `unqueue`, `reorder`, `make-ticket`, `dismiss-idea` |
+| `dobby_pause` | `op` | `pause`, `resume`, `status`, `config-set` |
+| `dobby_decide` | `op` | `approve`, `decline`, `cancel`, `retry`, `merge`, `deploy` |
+
+Resources: `dobby://docs/<topic>`, `dobby://ticket/<id>/log`, `dobby://ticket/<id>/diff`. Prompts: `morning_status`, `triage_inbox`.
+
+</details>
+
+<details>
+<summary>Connect over HTTPS from a phone or remote Claude</summary>
+
+The dashboard serves the same tools at `/mcp`. Export `DASHBOARD_TOKEN` from your secrets file first.
+
+```bash title="Terminal"
+dobby add mcp --http --url <tunnel address>
+```
+
+Over HTTP, merge, deploy, approve, decline and cancel always wait in Needs you.
+
+</details>
+
+<!-- manual/reviews.md -->
+# Review commands in a PR
+
+> Get a pull request reviewed by Dobby, steer the review from a PR comment, and change how strict and how automatic reviews are.
+
+Dobby reviews every pull request it opens. Other pull requests are reviewed when you ask.
+
+## Ask for a review
+
+Comment on the pull request:
+
+```text title="PR comment"
+@dobby review
+```
+
+Dobby replies within 15 minutes. [PR comment commands](pr-commands.md) lists every command.
+
+To review now from the terminal:
+
+```bash title="Terminal"
+dobby review acme/shop 412
+```
+
+:::caution
+Comments are read by the `listener` job, which is installed with Discord. Without Discord, keep `dobby start` running.
+:::
+
+## Mark a finding as intentional
+
+Reply in the reviewer's thread. Later reviews of the repo leave it out.
+
+```text title="PR comment"
+@dobby learn
+```
+
+## Review every pull request
+
+```bash title="Terminal"
+dobby config set review.auto drafts
+```
+
+| `review.auto` | Reviews |
+|---|---|
+| `off` | Dobby's own pull requests and the ones you ask for. The default. |
+| `drafts` | Every open pull request except drafts. |
+| `on` | Every open pull request. |
+
+## Make reviews stricter or looser
+
+```bash title="Terminal"
+dobby config set review.strictness chill
+```
+
+| `review.strictness` | Reports |
+|---|---|
+| `chill` | High and medium findings. |
+| `default` | The default set. |
+| `assertive` | Low findings too, such as missing tests. |
+
+Every review setting is in the [configuration reference](config.md#review). To gate merges on another reviewer, see [Add an external reviewer](external-reviewer.md).
+
+<!-- manual/external-reviewer.md -->
+# Add an external reviewer
+
+> Gate Dobby's merges on CodeRabbit, Greptile or GitHub Copilot code review, alone or together with Dobby's own reviewer.
+
+1. Set the reviewer in your config.
+
+   ```json title="config.json"
+   { "review": { "provider": "external", "external": "coderabbit" } }
+   ```
+
+2. After the first external review, copy the check name from the pull request.
+
+   ```bash title="Terminal"
+   dobby config set review.externalCheck "<check name>"
+   ```
+
+| `review.provider` | Who gates merges |
+|---|---|
+| `local` | Dobby's reviewer. The default. |
+| `external` | Only the external reviewer. |
+| `both` | Both, and either one can block. |
+
+A pull request merges once the external reviewer reports on its latest commit with nothing blocking.
+
+:::note
+If no report comes within 30 minutes, you get a card in Needs you. Sensitive changes always get Dobby's strict review as well.
+:::
+
+<!-- manual/cap-spend.md -->
+# Cap spend
+
+> Keep more of your Claude plan for yourself, switch to an API key with a dollar cap, limit one ticket, and see what each pull request cost.
+
+## Keep more of your weekly plan
+
+Dobby stops starting work at this share of your week. The default is 95.
+
+```bash title="Terminal"
+dobby config set pacing.weekCap 80
+```
+
+```text title="dobby limits"
+Running · 5-hour 34% (cap 60%) · week 49% of 80%
+```
+
+## Run on an API key
+
+:::tip
+The quickest way is `dobby init`. When Claude Code is not signed in, it asks "Plan or API key?".
+:::
+
+To set it up by hand:
+
+1. Add the key to your secrets file.
+
+   ```bash title="~/.config/dobby/secrets.env"
+   DOBBY_API_KEY=<key>
+   ```
+
+2. Set the mode and the dollar caps.
+
+   ```json title="config.json"
+   { "billing": { "mode": "apiKey", "dailyUsd": 20, "weeklyUsd": 100 } }
+   ```
+
+3. Check the key. The "API key" row makes one small real call.
+
+   ```bash title="Terminal"
+   dobby doctor
+   ```
+
+<details>
+<summary>Anthropic says "This API key is not scoped to a workspace"</summary>
+
+Create the key inside a workspace in Console, or set the workspace id:
+
+```bash title="Terminal"
+dobby config set billing.workspaceId wrkspc_...
+```
+
+</details>
+
+## Cap one ticket
+
+Set the most one ticket may spend, by size, in percent of your week. A ticket over it goes to you.
+
+```json title="config.json"
+{ "ticketBudget": { "S": 1, "M": 3, "L": 8 } }
+```
+
+:::note
+These numbers are an example. No ticket is capped until you set them.
+:::
+
+## See what a pull request cost
+
+Each pull request Dobby opens gets a comment like this:
+
+```text title="PR comment"
+Cost of this PR: 0.42% of your week
+| Stage    | Cost  | Runs            |
+| Planning | 0.03% | 1               |
+| Build    | 0.30% | 2 (1 fix round) |
+| Tester   | 0.05% | 2               |
+| Review   | 0.04% | 2 heads         |
+```
+
+| Command | Shows |
+|---|---|
+| `dobby cost <id>` | The same table for one ticket. |
+| `dobby usage [days]` | Spend by model, from the Claude logs on this computer. |
+| `dobby receipt [days]` | A one-line receipt and an image card. |
+
+<!-- manual/troubleshooting.md -->
+# Fix common problems
+
+> What to do when nothing builds, pull requests never merge, a ticket fails, or the background jobs or dashboard do not run.
+
+Start here. Each failed row prints its fix.
+
+```bash title="Terminal"
+dobby doctor
+```
+
+```text title="Output"
+✗ background jobs: not loaded: dashboard
+    fix: dobby jobs install
+```
+
+Every row is in [Doctor checks](doctor.md).
+
+## Nothing is building
+
+```bash title="Terminal"
+dobby status
+```
+
+| First line says | Do |
+|---|---|
+| `Paused at 95% of your week (your cap), resumes ...` | Wait for the reset, or raise `pacing.weekCap`. |
+| `Paused: 5-hour window at 60% (pace cap), resumes ...` | Wait until that time, or lift the cap for this window with `dobby do keepgoing 90`. |
+| `Builders paused by owner since ...` | Run `dobby resume`. |
+| `Plan usage unknown ...` | Check the Claude sign-in row in `dobby doctor`. |
+| `Running` | Check that tickets are queued with `dobby list`. |
+
+## Pull requests never merge
+
+A fresh install keeps merges paused:
+
+```bash title="Terminal"
+dobby resume merges
+```
+
+If that is not it, look at the ticket. It may be waiting for you, or its review failed.
+
+```bash title="Terminal"
+dobby show 41
+```
+
+## A ticket failed
+
+```bash title="Terminal"
+dobby show 41
+dobby queue 41
+```
+
+The first command shows why it stopped. Fix the ticket text, then queue it again.
+
+## Jobs fail after `npx dobby-ai init`
+
+The jobs need a copy that stays.
+
+```bash title="Terminal"
+npm i -g dobby-ai
+dobby jobs install
+```
+
+## A job exits with "node: not found"
+
+You changed Node or moved Claude Code after installing the jobs.
+
+```bash title="Terminal"
+dobby jobs install
+```
+
+## Jobs stop when you log out
+
+```bash title="Terminal"
+sudo loginctl enable-linger $USER
+```
+
+<details>
+<summary>On a Mac you only use over SSH</summary>
+
+Log in on the Mac's screen once, or turn on auto-login. Then run `dobby jobs install`.
+
+</details>
+
+## The dashboard does not load
+
+```bash title="Terminal"
+dobby jobs status
+```
+
+If `dashboard` is not loaded, run `dobby jobs install`.
+
+## Ask Claude to help
+
+Copy Dobby's setup skill into your own Claude Code, then ask Claude about the problem.
+
+```bash title="Terminal"
+dobby add skill
+```
+
+<!-- manual/second-install.md -->
+# Run a second install
+
+> Run a separate Dobby beside your real one, for a trial or another account, without the two sharing projects, pauses or jobs.
+
+1. Point the second install at its own folders.
+
+   ```bash title="Terminal"
+   export DOBBY_CONFIG=~/dobby-test/config/config.json
+   export DOBBY_DIR=~/dobby-test/data
+   ```
+
+2. Set it up without background jobs.
+
+   ```bash title="Terminal"
+   dobby init --no-jobs
+   ```
+
+3. Run it in a terminal.
+
+   ```bash title="Terminal"
+   dobby start
+   ```
+
+:::caution
+Skip the jobs. Job names are per user, so a second set would replace your real install's jobs.
+:::
+
+Keep both variables set in every shell where you use the second install. To remove it, see [Uninstall](uninstall.md#remove-a-second-install).
+
+<!-- manual/upgrade.md -->
+# Upgrade
+
+> Upgrade Dobby to the latest version and point the background jobs at it.
+
+1. Install the latest version.
+
+   ```bash title="Terminal"
+   npm i -g dobby-ai@latest
+   ```
+
+2. Point the background jobs at it.
+
+   ```bash title="Terminal"
+   dobby jobs install
+   ```
+
+3. Check the version.
+
+   ```bash title="Terminal"
+   dobby --version
+   ```
+
+If you use `dobby start` instead of the jobs, restart it after the upgrade.
+
+<!-- manual/uninstall.md -->
+# Uninstall
+
+> Remove Dobby's background jobs, its Claude connections, its data and the package, and clean up what it set on GitHub.
+
+1. See what would be removed.
+
+   ```bash title="Terminal"
+   dobby uninstall --dry
+   ```
+
+2. Remove the background jobs. Your data and config stay.
+
+   ```bash title="Terminal"
+   dobby uninstall
+   ```
+
+3. Remove the Claude connections, if you added them.
+
+   ```bash title="Terminal"
+   claude mcp remove --scope user dobby
+   rm -rf ~/.claude/skills/dobby-setup
+   ```
+
+4. Delete your data and config.
+
+   ```bash title="Terminal"
+   rm -rf ~/.config/dobby ~/.local/share/dobby
+   ```
+
+5. Remove the package last.
+
+   ```bash title="Terminal"
+   npm rm -g dobby-ai
+   ```
+
+:::danger
+Step 4 deletes your tickets, history, settings and secrets. It cannot be undone.
+:::
+
+:::note
+If you set `DOBBY_DIR` at install, set it again before step 2. Dobby only removes jobs that belong to the install it runs as.
+:::
+
+## Clean up GitHub
+
+`dobby init` set a `DOBBY_OWNER` variable on each repo. Remove it per repo:
+
+```bash title="Terminal"
+gh variable delete DOBBY_OWNER -R acme/shop
+```
+
+Issues Dobby filed stay on GitHub.
+
+## Remove a second install
+
+```bash title="Terminal"
+export DOBBY_CONFIG=~/dobby-test/config/config.json
+export DOBBY_DIR=~/dobby-test/data
+dobby uninstall
+rm -rf ~/dobby-test
+```
+
+<!-- manual/providers.md -->
+# Try other model providers (preview)
+
+> An early, off-by-default preview that routes some roles to other agent CLIs or local model servers.
+
+:::caution
+Dobby runs on Claude Code today. This is an early preview, off by default.
+:::
+
+1. See what Dobby finds and where each role would run. Both commands only read.
+
+   ```bash title="Terminal"
+   dobby providers detect
+   dobby providers explain
+   ```
+
+2. Turn routing on.
+
+   ```bash title="Terminal"
+   dobby config set providers.enabled true
+   ```
+
+| Role | Can run on |
+|---|---|
+| Builders | `claude` or `codex` only, sandboxed. |
+| Reviews and testing | Claude only. |
+| Roles that see your private data | A local server such as Ollama or LM Studio, unless `policy.allowUnsafe` allows more. |
+| Other roles | `codex`, `gemini` or a local server. |
+
+Config stores the names of key variables, never their values. Every key is in the [configuration reference](config.md#providers).
+
+<!-- manual/timelapse.md -->
+# Timelapse of a day
+
+> Make a private 15-second clip of a day of agents working, with a manifest and a signature anyone can check.
+
+`dobby timelapse` turns one day of Dobby's work into a 15-second video. It is made on your machine from Dobby's own event log. It is never a screen recording, and nothing is uploaded.
+
+## Make a clip
+
+```
+dobby timelapse                  # today
+dobby timelapse 2026-10-27       # a day you name
+dobby timelapse --show myapp     # also show the repo name and ticket titles of a public repo
+```
+
+Dobby prints a preview first: how many events, the time range, and every event that will go in the file. Then it asks before it writes anything. In a script there is no question, so the command refuses to write unless you pass `--yes`. `--dry` shows the preview and stops.
+
+Three files are written, next to each other (change the place with `--out <path>`, no extension):
+
+- `dobby-timelapse-<day>.mp4`: the clip.
+- `dobby-timelapse-<day>.manifest.json`: the events the clip was drawn from.
+- `dobby-timelapse-<day>.sig`: a signature over the clip and the manifest.
+
+The clip needs `ffmpeg`. If it is missing, Dobby says so and writes nothing.
+
+## What goes in
+
+Only these fields: time of day, role, what happened (done, failed, passed, changes requested, merged), and how long it took. The counters on screen are counted from those. Code, prompts, diffs, file paths, user names, emails and keys are never read into it.
+
+Repo names and ticket titles are off. `--show <project>` turns them on for one project, and only if its repo is public. Dobby refuses for a private repo. A ticket title that holds a path, an email, a long token or one of your private words is left out even for a public repo.
+
+Before the file is written, the manifest goes through the same privacy check Dobby runs before anything is posted to a public repo. If it finds one of your private words, nothing is written.
+
+For a public repo you opted in, the manifest also lists each merged pull request with the commit that was reviewed and the merge time. Anyone can look those up on GitHub.
+
+## Check a clip
+
+```
+dobby timelapse verify clip.mp4 clip.manifest.json
+```
+
+Dobby draws the clip again from the manifest and compares it with your clip frame by frame, then checks the signature. Any change to the video or the manifest fails. Keep the `.sig` file next to the clip, or name it with `--sig <file>`.
+
+The signature uses a key made on your machine the first time you export. It lives next to your secrets file as `timelapse-key.pem`, readable only by you. Dobby never prints it.
+
+## What a signature proves
+
+A valid signature proves the clip and the manifest are the files that were exported with that key: nothing was cut, re-timed or edited afterwards. It does not prove the log was honest. The log is on your machine, and you could have changed it before exporting. For merged pull requests in public repos, the commits and merge times in the manifest are the part a stranger can check against GitHub.
+
+<!-- manual/slack.md -->
+# Use Slack (beta)
+
+> Connect a Slack app so Dobby posts what waits for you with buttons, sends the daily brief and answers messages, over Socket Mode with no public URL.
+
+:::caution
+Slack is in beta. Discord is the default and works as before. Pick one: Dobby talks to a single chat platform.
+:::
+
+Slack works the same way as [Discord](discord.md): one channel per job, each team member posts under its own name and icon, and the owner taps buttons. It uses Socket Mode, so nothing has to be reachable from the internet.
+
+1. Run the setup and choose Slack.
+
+   ```bash title="Terminal"
+   dobby init
+   ```
+
+   To add it later, run `dobby add slack`.
+
+2. Dobby prints an app manifest. In Slack, open https://api.slack.com/apps, choose Create New App, From a manifest, pick your workspace and paste it. The manifest turns on Socket Mode and interactivity and asks for these scopes: `chat:write`, `chat:write.customize`, `channels:read`, `groups:read`, `groups:write`, `groups:history`, `reactions:read`, `reactions:write`, `im:history`, `app_mentions:read` and `users:read`. It also turns on the Messages tab, so you can write to the bot in a direct message.
+
+3. Install the app to your workspace and copy the Bot User OAuth Token (starts with `xoxb-`) from OAuth & Permissions.
+
+4. Under Basic Information, App-Level Tokens, generate a token with the `connections:write` scope (starts with `xapp-`).
+
+5. Paste both tokens when Dobby asks. They are hidden and saved in your secrets file, never printed.
+
+   ```bash title="~/.config/dobby/secrets.env"
+   SLACK_BOT_TOKEN=<xoxb token>
+   SLACK_APP_TOKEN=<xapp token>
+   ```
+
+6. Dobby asks for your Slack member ID. In Slack, open your profile, choose the three dots, then Copy member ID. It looks like `U01ABC2DEF3`. Dobby only obeys this person and never guesses it from the workspace.
+
+Dobby then creates the same channels as on Discord, as private channels, invites you, and sets `chat.platform` to `"slack"`. If a channel with the same name already exists, Dobby leaves it alone and creates `dobby-` plus the name instead (for example `#dobby-needs-you`) and tells you. Run `dobby slack setup` to create missing channels later; it is safe to run again. `dobby slack test` posts a hello in each channel. If `dobby jobs install` has not run yet, run it so the `listener` job starts.
+
+The member ID is stored in Dobby's database, not in the secrets file. If an app was created from an older manifest, add the `groups:*` scopes and the `message.groups` event under Event Subscriptions, then reinstall the app.
+
+## What differs from Discord
+
+- Each role posts as the bot with its own name and icon. This needs the `chat:write.customize` scope.
+- A ticket's first message is its status line. Later messages for that ticket reply in its thread.
+- 👍 and 👎 on an idea card work as on Discord. A 👍 starts the brainstorm in a thread on the card.
+- Slack has no silent send, so quiet hours do not apply. Use Slack's own Do Not Disturb.
+- Messages you send to the bot in a direct message are answered by the front desk, like messages in `#assistant`.
+
+## If the buttons do nothing
+
+Check that Interactivity is on (Interactivity & Shortcuts) and Socket Mode is enabled (Socket Mode). The manifest sets both.
+
+## If setup fails
+
+- `missing_scope`: the app lacks a scope from the list above. Add it under OAuth & Permissions and reinstall the app.
+- `name_taken`: another channel, possibly one you cannot see, has the name. Dobby retries with the `dobby-` prefix.
+- `invalid_auth`: one of the tokens is wrong or was revoked. Replace it in the secrets file.
+
+<!-- manual/cli.md -->
+# CLI reference
+
+> Every dobby command and what it does.
+
+Run `dobby help` for the short list and `dobby help --all` for everything below. `dobby <command> --help` prints that command's line and never runs it.
+
+## Getting started
+
+| Command | What it does |
+| --- | --- |
+| `init [--ui] [--projects a,b]` | set up Dobby on this machine, with no name: checks, sign-ins, your repos, settings, background jobs (asks first); --ui does it in your browser |
+| `add <project> "<title>" ["<done when>"] [S\|M\|L] [priority]` | write a ticket |
+| `status` | the plan limits line, then what is building, shipped today and stuck |
+| `limits` | how much of the 5-hour and weekly plan is used, and when paused work resumes |
+| `list [--all]` | open tickets by stage (Building, Ready, Waiting, Failed), 10 per stage; --all = every open ticket (adds backlog), old format; shipped and declined are left out |
+| `docs [topic]` | the manual: list the pages, or print one (works offline) |
+| `--version` | print the version (the jobs run it once at install to prove node and the path work) |
+| `doctor [--json]` | checks tools, sign-ins, background jobs and the pipeline (exit 1 on any failure) |
+| `uninstall [--dry]` | stop and remove the background jobs; your data, config and secrets stay |
+
+## Everyday
+
+| Command | What it does |
+| --- | --- |
+| `cancel <id>` | stop the ticket: kill its build, remove its worktree, close its own PR and branch, mark it declined |
+| `pause \| resume` | stop / allow builders claiming new tickets (running ones finish their step, nothing is killed) |
+| `queue <id>` | move a backlog ticket to ready |
+| `run <id>` | build this ticket now, in this process (no worker cap, budget gate or tick lock; a new project is onboarded first; exit 1 if nothing was built) |
+| `show <id>` | every step the ticket's graph took, with tokens and cost |
+| `cost <id>` | what the ticket's PR cost, by stage (the same table Dobby posts on the PR) |
+| `receipt [days]` | "Shipped N PRs on your plan, $0 extra" for the last 7 days, and the card at <data>/receipt.svg |
+| `approve <id> \| decline <id>` | answer a ticket waiting for you (decline on any other ticket = cancel) |
+| `merge <id>` | merge a waiting ticket's PR now (a ticket at its gate is approved) |
+| `deploy <project>` | the Deploy tap from the terminal (a migration that changes data still waits for its own tap) |
+| `answer <id> <words>` | answer a ticket's question: your words join its done rule and it is queued again |
+| `hint <id> <words>` | add a hint for the ticket's next build |
+| `retry <id>` | a ticket stuck in fixing starts over (its PR is closed); a failed one is queued again |
+| `done <id> [--pr N]` | work finished outside Dobby: mark the ticket shipped (and note its PR); nothing is closed, merged or posted |
+| `takeover <id>` | pause one ticket and leave its branch to you |
+| `allowround <id>` | one more automatic fix round on the ticket's PR |
+| `unqueue <id>` | a queued ticket goes back to the backlog |
+| `reorder <id> [before]` | move a queued ticket above another (or last) |
+| `applyfinding <id>` | a fix ticket on the PR's branch for one review finding |
+| `dismissfinding <id>` | a review finding is intentional (later reviews leave it out) |
+| `findingrule <id> [words]` | a review finding becomes a rule for the repo |
+| `ideaticket <id>` | an idea becomes a ticket and is queued |
+| `ideadrop <id>` | drop an idea |
+| `dashboard [--port 4710] [--host 127.0.0.1]` | local web dashboard (auto-refresh); makes DASHBOARD_TOKEN in secrets.env on first start |
+| `add discord\|slack\|dashboard\|jobs` | switch on an add-on: Discord or Slack (beta) buttons, the local dashboard job, or all six background jobs |
+| `add skill [--yes]` | copy the dobby-setup skill into ~/.claude/skills (asks first), for fixing a setup problem in your own Claude Code |
+| `mcp` | the MCP server on stdio, so Claude can read status and file tickets; asks you before it merges, deploys or cancels. dobby add mcp [--yes] connects it to Claude Code; --http prints the command for the dashboard's /mcp instead |
+| `jobs install\|uninstall\|status [--dry]` | the six background jobs (launchd on macOS, systemd --user on Linux) |
+| `config [show\|path]` | the merged config (secrets redacted) / where the private config file lives |
+| `timelapse [day] [--yes]` | a private 15-second clip of a day of agents, from the event log (preview first, nothing uploaded); timelapse verify <clip> <manifest> checks one |
+| `stats [on\|off [crashes\|usage]]` | opt-in crash reports and usage stats: status, or turn them on or off (both are off until you say yes) |
+| `config set <key> <value>` | change one setting in your private config, checked against the schema (config unset <key> puts it back to the default) |
+| `start` | run Dobby in this terminal: the Discord listener and the queue loop (Ctrl-C stops it) |
+
+## More commands
+
+| Command | What it does |
+| --- | --- |
+| `goals [app] \| goals import <app>` | the goals in rank order; import turns the project file's goals into GitHub milestones |
+| `stats show\|log\|reset-id\|report [--days 30]` | usage stats: the next payload exactly as it would be sent / every payload sent so far / a new random install id / the report from your own Worker (needs DOBBY_STATS_REPORT_TOKEN) |
+| `tick` | one scheduler step: run the top ticket if the budget allows (the background job calls this) |
+| `pause [all\|builders\|reviews\|merges\|deploys\|planning\|scout\|notify\|project <name>\|ticket <id>] [for 30m\|2h\|1d]` | one pause system with levels; resume takes the same target; all also kills the running builds; "for" auto-resumes |
+| `pause status` | what is paused, since when, until when |
+| `graph` | the ticket graph as a Mermaid diagram |
+| `idea <project> "<idea>"` | drop a seed idea for the Product Manager |
+| `ideas [project]` | idea cards, best first |
+| `pm <project> [--area]` | Product Manager now: ranked problems by goal, PRDs for L, idea cards (--area: today's Area PM) |
+| `dedupe <project>` | merge tickets and ideas that are the same work (Haiku); run after onboard |
+| `tools [on\|off <name>]` | agent tools (graphify, rtk, caveman, ponytail, jev): on/off, found or not, install command; on/off edits your config |
+| `company` | distil your global Claude memory into company.md (work rules only) |
+| `init <project>` | add one repo by name or path, without the machine setup: draft its dobby.md, then onboard it and ask which of the first backlog tickets to queue (also runs by itself before a project's first ticket; with --yes or no terminal nothing is queued) |
+| `onboard <project>` | read all the project's docs and skills into Dobby (rules draft, backlog tickets, ideas, knowledge map) |
+| `lead [project] [--dry]` | the Lead plans: promotes up to 3 backlog tickets, writes up to 3 new ones (all active projects if none given) |
+| `cos [--dry]` | the Chief of Staff's morning summary (Discord #daily-update), plus Approve/Decline for waiting tickets |
+| `brief [YYYY-MM-DD] [--dry]` | print a day's sent summary (<data>/briefs/<day>.md); --dry builds today's from live facts, sends nothing |
+| `ask <message>` | talk to the front desk from the terminal ("status" answers at once, no AI) |
+| `listen` | always-on Discord listener (the listener background job); also runs the telemetry receiver |
+| `telemetry-serve [port]` | only the Claude Code telemetry receiver (127.0.0.1, default 4711 or DOBBY_OTEL_PORT), for testing |
+| `service install\|uninstall [--dry]` | run `start` as a background service (launchd on macOS, systemd --user on Linux); refuses while the tick/listener background jobs exist |
+| `discord invite\|setup\|test` | the bot invite link; create channels + webhooks (idempotent); one hello per channel |
+| `review <owner/repo> <pr> [--full]` | the Reviewer on one PR by hand (a draft too): PR comment + "Claude Review" status; --full = the whole PR |
+| `review-scan [--dry]` | review new heads of open PRs on the repos that matter (the listener runs this every 15 min; the tick job does when Discord is off) |
+| `usage [days]` | Claude usage report: API-$ by model, cache hit, $ per 1% of each limit (reads this computer's ~/.claude logs, whatever DOBBY_DIR is) |
+| `scoreboard [days]` | PRs opened, needed changes, merged (default 7 days) |
+| `usage-log` | usage reading stored every 10 min by the listener: 5h %, weekly %, API-$ by model and token kind |
+| `capacity` | how full the 5-hour windows got this week, and what to change |
+| `touch <ticket\|-> <decision\|broke\|unclear\|permission> [note]` | log a fix you made by hand (counted in the autonomy line) |
+| `api [on\|off\|status]` | Max plan API credits for text-only jobs |
+| `health` | the hourly self-check |
+| `graphify` | refresh every project's code graph (daily 05:30) |
+| `scout` | Talent Scout now (normally once a night) |
+| `safety explain "<ticket text>"\|<pr>` | categories, rule, action and why from the safety config |
+| `policy explain "<text or path>"` | which of your rules match, per kind, and which one wins |
+| `migrate [--dry-run]` | move an older setup into the new config (never overwrites) |
+| `providers [detect\|models\|explain]` | read-only: agent CLIs, API key env var NAMES and local servers found; live model lists; planned routing per role |
+| `role show\|save\|reset <name> [text]` | read a role (your edit, else the built-in), save your edit into the config folder (text as an argument, or on stdin; without a --- block at the top it keeps the role's model line), or reset puts the built-in back |
+| `dashboard link [--host <name>] [--port 4710]` | print the sign-in link for another device (a tunnel or Tailscale name with --host); no QR code |
+| `dashboard --tunnel [--port 4710]` | for a phone behind an HTTPS tunnel: every request needs the token. Port 4710 is the job's, so use --port 4711 beside it |
+| `dashboard open [--port 4710]` | open the running dashboard in your browser, signed in (the token goes in an HttpOnly cookie; this command does not print it) |
+
+<!-- manual/config.md -->
+# Configuration reference
+
+> Every config key with its type and default.
+
+Dobby reads built-in defaults, then `dobby.config.json` in the code folder (it can only tighten safety keys), then your private file (`dobby config path` prints where it is). A later layer wins. Run `dobby config show` for the merged result. `dobby config set <key> <value>` changes one setting in your private file after checking it against this schema (`dobby config unset <key>` puts it back to the default); the dashboard's Settings page does the same.
+
+## timezone
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `timezone` | string | your system's time zone | the clock Dobby reads times and daily hours in; an IANA name like Asia/Kolkata (the default is this Mac's own). |
+
+## timezoneLabel
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `timezoneLabel` | string | its short name, like `PDT` | shown after clock times ("14:03 IST") |
+
+## quietHours
+
+notifications go out silent
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `quietHours.start` | integer (0–23) | `23` |  |
+| `quietHours.end` | integer (0–23) | `8` |  |
+
+## eveningPostHour
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `eveningPostHour` | integer (0–23) | `21` | the daily usage post in #system-status |
+
+## github
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `github.owner` | string | `""` | the person whose @dobby PR chat is answered ("" = nobody) |
+| `github.accounts` | list of string | `[]` | users/orgs whose repos get reviewed |
+| `github.mergeMethod` | `squash` \| `merge` \| `rebase` | unset | how Dobby merges a PR (default squash) |
+| `github.deleteBranch` | boolean | unset | delete the PR branch after Dobby merges it (default true) |
+| `github.mirrorPublic` | boolean | unset | mirror tickets as issues on public repos too (default false: the backlog stays private until you say) |
+
+## board
+
+board.issues false: new tickets are not filed as GitHub issues (existing ones still sync status and close). `dobby add --no-issue` does it per ticket.
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `board.issues` | boolean | unset |  |
+
+## clientNames
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `clientNames` | list of string | `[]` | real clients: tickets naming them are never agent work (policy rule client-name) |
+
+## clientProjects
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `clientProjects` | list of string | `[]` | the projects those client rules apply to |
+
+## frontDeskDenyMcp
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `frontDeskDenyMcp` | list of string | `[]` | MCP servers the front desk may never call (the owner's money, health or shopping apps) |
+
+## watchJobs
+
+other launchd jobs the hourly health check watches: label prefixes, and long-running ones (no pid = died)
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `watchJobs.prefixes` | list of string | unset |  |
+| `watchJobs.daemons` | list of string | unset |  |
+
+## paths
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `paths.projects` | string | `~/projects` | where project clones live |
+| `paths.projectRoots` | list of string | unset | more folders that hold project clones; setup looks in these too (each must be inside your home folder) |
+| `paths.data` | string | `~/.local/share/dobby` | Dobby's data dir (DOBBY_DIR still wins) |
+| `paths.memory` | string | `~/.claude/projects/<your home folder>/memory` | the owner's Claude Code memory folder (dobby company) |
+| `paths.usageCli` | string | `""` | the claude-code-usage-limits reader; "" = the copy bundled in node_modules |
+| `paths.dashboardDist` | string | `""` | the built dashboard app (DOBBY_DASHBOARD_DIST still wins) |
+| `paths.agentRules` | string | unset | your own rules file, appended to every agent's rules after Dobby's |
+
+## tools
+
+Agent tooling (`dobby tools`). A tool's rules reach agents only when it is on AND found on this machine. Absent = graphify, rtk, caveman, ponytail on (free); jev on only when safety.classifier is "jev" (paid: opt in).
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `tools.graphify` | boolean | unset |  |
+| `tools.rtk` | boolean | unset |  |
+| `tools.caveman` | boolean | unset |  |
+| `tools.ponytail` | boolean | unset |  |
+| `tools.jev` | boolean | unset |  |
+
+## chat
+
+where Dobby talks to you; absent = "discord". "slack" is beta (docs/manual/slack.md); the channel layout still comes from discord.*
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `chat.platform` | `discord` \| `slack` | unset |  |
+
+## discord
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `discord.hq` | list of string | 4 entries | channels in the HQ category |
+| `discord.apps.<name>.label` | string | unset |  |
+| `discord.apps.<name>.ideas` | boolean | unset |  |
+| `discord.extraChannels` | map of string to list of string | `{}` | more channels in an app's category |
+| `discord.listener` | `chat-sdk` \| `legacy` | unset | how the listener job reads Discord: "legacy" (default, the hand-written gateway) or "chat-sdk" (opt-in until a live test passes) |
+
+## providers
+
+Model providers and routing (docs/manual/providers.md). Absent = unused: Dobby calls claude exactly as before. strip, not strict: an unknown key here warns and is ignored like everywhere else, instead of discarding the whole file.
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `providers.enabled` | boolean | `false` | off = Dobby keeps calling claude exactly as today |
+| `providers.acp` | boolean | unset | ACP harnesses (gemini-cli...) in live routing; off until verified against a real agent |
+| `providers.providers.<name>.enabled` | boolean | `true` |  |
+| `providers.providers.<name>.keyEnv` | list of string | unset | pool of key NAMES, values stay in the environment |
+| `providers.providers.<name>.baseUrl` | string | unset | relay or custom endpoint |
+| `providers.providers.<name>.headers` | map of string to string | unset |  |
+| `providers.providers.<name>.strategy` | `fill_first` \| `round_robin` \| `least_used` | `fill_first` |  |
+| `providers.providers.<name>.limit.dailyUsd` | number > 0 | unset |  |
+| `providers.providers.<name>.limit.dailyRuns` | integer > 0 | unset |  |
+| `providers.roster` | list of object | unset | replaces/extends the seed roster by name |
+| `providers.main` | string | unset |  |
+| `providers.roles.<name>.primary` | string | unset |  |
+| `providers.roles.<name>.fallback` | list of string | unset |  |
+| `providers.roles.<name>.effort` | `low` \| `medium` \| `high` | unset |  |
+| `providers.roles.<name>.maxCostUsd` | number (0+) | unset |  |
+| `providers.policy.allowUnsafe` | list of `unsandboxed-builders` \| `sensitive-below-top` \| `private-remote` \| `owner-data-to-providers` | `[]` |  |
+
+## review
+
+The PR reviewer (docs/manual/reviews.md): overrides of its DEFAULTS (everything on, safety limits kept). Absent = the defaults. provider: who gates merges (docs/manual/external-reviewer.md); absent = "local", Dobby's own reviewer.
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `review.auto` | `on` \| `drafts` \| `off` | `off` | on = auto-review every open PR, drafts too; drafts = auto-review all but drafts (what Dobby always did); off = only on request |
+| `review.includePaths` | list of string | `[]` | globs; non-empty = only these files are reviewed |
+| `review.excludePaths` | list of string | `[]` | globs never reviewed (lockfiles, generated code) |
+| `review.branches` | list of string | `[]` | base-branch globs auto-reviewed; empty = every base branch |
+| `review.skipLabel` | string | `no-review` | a PR with this label is not auto-reviewed ("" = none) |
+| `review.mentionOnly` | boolean | `false` | no auto reviews; only `@<handle> review` (turns commands on) |
+| `review.handle` | string | `dobby` | On a public repo @dobby may be a real GitHub user who gets pinged: pick a handle you control (a bot account, your org's name). |
+| `review.botLogin` | string | `""` | also answer `@<botLogin> <verb>` (the GitHub App or bot account you review as); "" = only the handle |
+| `review.commands` | boolean | `true` | PR comment commands from users with write access |
+| `review.fullReviewsPerDay` | integer (0+) | `3` | `full review` per PR per day |
+| `review.maxPerScan` | integer (1+) | `4` | auto reviews per review-scan |
+| `review.maxChats` | integer (0+) | `3` | owner @foreman chat answers per scan |
+| `review.maxCommandsPerScan` | integer (0+) | `5` | commands, thread questions and learnings handled per scan |
+| `review.ask` | boolean | `true` | `@<handle> ask` and replies in our review threads get an answer |
+| `review.describe` | boolean | `true` | `@<handle> describe` fills an EMPTY PR description (off: the suggestion goes in the walkthrough) |
+| `review.maxFindings` | integer (0+) | `0` | 0 = no cap (ranked, most severe first) |
+| `review.strictness` | `chill` \| `default` \| `assertive` | `default` |  |
+| `review.riskBump` | boolean | `false` | a haiku/sonnet pick on a diff touching riskPaths becomes opus |
+| `review.riskPaths` | list of string | 29 entries |  |
+| `review.contextPack` | boolean | `true` | callers, tests and history of the changed files from graphify-out/graph.json, when present |
+| `review.contextFiles` | integer (1+) | `10` | changed files the context pack covers |
+| `review.learn` | boolean | `true` | a 👎 or "won't fix" reply on our thread = a "known intentional" hint for later reviews of the repo |
+| `review.maxLearnings` | integer (1+) | `30` | kept per repo, newest first |
+| `review.fix` | boolean | `true` | `@<handle> fix` queues the open high/medium findings as a builder ticket (never pushes itself) |
+| `review.fixesPerDay` | integer (0+) | `1` | `@<handle> fix` per PR per day (the 2 auto-fix rounds per PR still apply) |
+| `review.jevReplies` | boolean | `false` | Send replies in our threads to Jev (redacted) to tell a "won't fix" from a question. Off: no Jev call; every reply that is not a plain "thanks" is answered as a question and never becomes a learning (comment text stays on the Mac). |
+| `review.repos` | map of `owner/name` to review settings | unset | the same keys as `review`, for one repo |
+| `review.provider` | `local` \| `external` \| `both` | unset |  |
+| `review.external` | `coderabbit` \| `greptile` \| `copilot` | unset |  |
+| `review.externalCheck` | string | unset |  |
+| `review.externalBots` | list of string | unset |  |
+| `review.externalFix` | boolean | unset |  |
+| `review.externalFixCap` | integer (0–10) | unset |  |
+| `review.externalTimeoutMin` | integer (1+) | unset |  |
+
+## ticketBudget
+
+Token savings. Every key is absent by default = Dobby behaves as before; the private config turns each on. ticketBudget: most one ticket may spend, by size, in percent-of-the-week points (usdPerWeekPoint dollars = 1 point; default 26, measured). Over it, the ticket goes to the owner.
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `ticketBudget.S` | number > 0 | unset |  |
+| `ticketBudget.M` | number > 0 | unset |  |
+| `ticketBudget.L` | number > 0 | unset |  |
+| `ticketBudget.usdPerWeekPoint` | number > 0 | unset |  |
+
+## pacing
+
+pacing.fallbackBuildsPerDay: builds started per day (configured timezone) while the Claude usage cannot be read (default 3). pacing.weekCap: most of your weekly plan Dobby may use, in percent; the rest is always yours (default 95).
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `pacing.fallbackBuildsPerDay` | integer (0+) | unset |  |
+| `pacing.weekCap` | integer (10–100) | unset |  |
+
+## scout
+
+scout: the Talent Scout's daily run, at `scout.hour`. enabled false = never runs on its own (`dobby scout` still works); hour = when its 7-hour window opens, configured timezone (default on, 23).
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `scout.enabled` | boolean | unset | Whether the Talent Scout runs on its own each day. |
+| `scout.hour` | integer (0–23) | unset | The hour its 7-hour window opens, in your time zone. |
+
+## lead
+
+lead.onboardPromote: what happens to the first backlog of a newly onboarded project. ask (default) = `dobby init <project>` shows the tickets the Lead would queue (up to 3) and asks; with --yes, no terminal or a scheduled start nothing is queued until you run `dobby queue <id>`. auto = the Lead queues them as before. none = never at onboarding.
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `lead.onboardPromote` | `ask` \| `auto` \| `none` | unset | What happens to the first tickets of a new project. ask: you choose which to queue. auto: the Lead queues them. none: nothing is queued. |
+
+## stats
+
+stats: opt-in crash reports and usage stats (docs/manual/stats.md). Both are off until you say yes; no answer is off. DO_NOT_TRACK, DOBBY_STATS=off and CI force them off. stats.crashes: send the error class, the place in Dobby's own code and the command when Dobby fails (never the message). stats.usage: send how far setup got and daily counts (what you can see with `dobby stats show`). stats.endpoint: where they go (default: the owner's collector, dobby-stats.nimitharia1.workers.dev); empty string = nothing is sent.
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `stats.crashes` | boolean | `false` |  |
+| `stats.usage` | boolean | `false` |  |
+| `stats.endpoint` | string | the owner's collector; `""` sends nothing |  |
+
+## retryLimit
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `retryLimit` | integer (1+) | unset | builds one ticket may use before it goes to the owner instead of being rebuilt. |
+
+## builderContextCeiling
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `builderContextCeiling` | integer (20000+) | unset | tokens of context at which a builder run is ended and continued in a fresh run with a short handoff. |
+
+## shipPreflight
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `shipPreflight` | boolean | unset | before a builder starts, check gh auth, the remote, push access and the verify command; a failure blocks the ticket with the reason. On by default; false = off. |
+
+## sameFailure
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `sameFailure` | boolean | unset | a failure with the same cause as the last build's goes to the owner instead of another build. |
+
+## harnessInstall
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `harnessInstall` | boolean | unset | when a build changes a dependency manifest, Dobby runs the project's install step itself (with network) before verify. |
+
+## installDomains
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `installDomains` | list of string | unset | hosts an install may reach from inside the sandbox, besides the public package registries (a private registry). |
+
+## freshRetries
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `freshRetries` | boolean | unset | a retry or fix build starts a fresh run (Tester notes + work so far in the prompt) instead of resuming the old, large session. |
+
+## recoverOutput
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `recoverOutput` | boolean | unset | a builder whose output cannot be read is recovered from its session transcript instead of counting as a wasted build. |
+
+## deployOnFailure
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `deployOnFailure` | `notify` \| `ticket` \| `fix` | unset | what a failed deploy does. notify (default) = the Retry card only; ticket = also a top-priority fix ticket; fix = that ticket is built at once (`dobby run <id>`), one message, and the fix's merge deploys again. One open fix per project. |
+
+## deployFrom
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `deployFrom` | `checkout` \| `worktree` | unset | checkout (default) = the project's deploy_dir, pulled; worktree = a fresh worktree of origin/<base> from the project's repo for each deploy (its .env* files copied in), removed afterwards, so no separate release checkout is needed. |
+
+## mergeChecks
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `mergeChecks` | `all` \| `required` | unset | which PR checks gate a merge. required (default) = the repo's required checks only (every check but Dobby's review when it requires none); all = every check. DOBBY_CHECKS=all\|required overrides. |
+
+## reviewCap
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `reviewCap` | number (1–100) | unset | the 5-hour % review-scan may use, when looser than the builders' pace cap (reviews unblock merges). Unset = the builders' cap, as before. The week stays under pacing.weekCap either way. |
+
+## billing
+
+billing: plan (default) = a Claude Pro/Max sign-in, paced by its 5-hour and weekly windows. apiKey = no plan: every run, builders included, pays by the token through DOBBY_API_KEY, capped at dailyUsd per 24 hours and weeklyUsd per 7 days (the plan limits pacing.weekCap and the 5-hour pace do not apply; over the cap, `dobby limits` says Paused). workspaceId: the Console workspace id (wrkspc_...), for an organisation-level key not scoped to a workspace; sent as the anthropic-workspace-id header. Not a secret.
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `billing.mode` | `plan` \| `apiKey` | unset |  |
+| `billing.dailyUsd` | number > 0 | `20` |  |
+| `billing.weeklyUsd` | number > 0 | unset |  |
+| `billing.workspaceId` | string | unset |  |
+| `billing.planUsd` | number > 0 | unset |  |
+
+## costComment
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `costComment` | boolean | unset | false = no cost comment on Dobby PRs (default on). billing.planUsd = what the owner pays for the plan; only the receipt card reads it. |
+
+## safety
+
+Safety (README "Safety"). preset: strict (every sensitive category waits for the owner) | balanced | autonomous. rules: per-category override of the preset: auto (normal review, then merge) | review (strict Opus review) | owner (needs-you card, no fix, no merge) | never (agents do not touch it). classifier: model (default) | jev | none. jev = the TypeSafe classifier (@typesafe-ai/sdk), optional: needs JEV_API_KEY in the environment, else the model is used. none = words only. unsure: what a classifier that cannot decide means: ask (send the owner a card) | allow (go on, at most a strict review).
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `safety.preset` | `strict` \| `balanced` \| `autonomous` | `balanced` |  |
+| `safety.rules` | map of `migrations.schema` \| `migrations.data` \| `payments` \| `auth` \| `secrets` \| `deploys` \| `config` \| `client-sites` \| `releases` to `auto` \| `review` \| `owner` \| `never` | `{}` |  |
+| `safety.classifier` | `jev` \| `model` \| `none` | `model` |  |
+| `safety.unsure` | `ask` \| `allow` | `ask` |  |
+| `safety.everyMerge` | `auto` \| `review` \| `owner` | unset | everyMerge: the floor for every merge, including changes in no category: auto \| review (strict review) \| owner (draft PR, the owner merges). Unset = the preset's (strict: owner, else auto). deploy: after a merge, ask (a Deploy tap; also when unset) \| auto (deploy at once, only when you set it). |
+| `safety.deploy` | `auto` \| `ask` | unset |  |
+
+## migrated
+
+What `dobby migrate` found in the setup it migrated (a record; nothing reads it). Secret key NAMES only. launchdJobs is the file names of the com.dobby.* and com.foreman.* launch agents that were in ~/Library/LaunchAgents when it ran; Dobby does not install, remove or read them from here (`dobby jobs` does that).
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `migrated.at` | string | unset |  |
+| `migrated.projects` | list of string | unset |  |
+| `migrated.secretKeys` | list of string | unset |  |
+| `migrated.discord` | map of string to string | unset |  |
+| `migrated.launchdJobs` | list of string | unset |  |
+
+<!-- manual/glossary.md -->
+# Glossary
+
+> The Dobby words you meet in the dashboard, the terminal and these docs, each with a link to the page that explains it.
+
+The dashboard shows the same text behind its info icons.
+
+## 5-hour window
+
+Your plan also has a 5-hour limit. Dobby spreads the week across these windows so one busy window does not use up the week. [More](pacing.md#the-5-hour-window)
+
+## Backlog
+
+Tickets that are written but not queued. Nothing is built until you or the Engineering Manager queues one. [More](how-it-works.md#tickets)
+
+## Billing
+
+Plan mode runs on the part of your Claude plan you do not use. API key mode spends dollars, with a daily cap. [More](billing.md#which-one)
+
+## Builder
+
+The role that writes the code for a ticket, on its own branch, inside the sandbox. [More](roles.md#builder)
+
+## Chief of Staff
+
+The role that sends you a short brief every morning and evening. [More](roles.md#chief-of-staff)
+
+## Classifier
+
+What decides which safety category a change belongs to, such as payments or auth. The model is the default. [More](safety-categories.md#categories)
+
+## Code Reviewer
+
+The role that reviews every pull request Dobby opens and posts its findings on GitHub. [More](roles.md#code-reviewer)
+
+## Done when
+
+The line the Tester checks the finished work against. [More](how-it-works.md#tickets)
+
+## Engineering Manager
+
+The role that plans the work. It moves tickets from the backlog to the queue and writes new ones. [More](roles.md#engineering-manager)
+
+## Goals
+
+The larger outcomes your tickets belong to. They come from GitHub milestones or the Goals list in a project's dobby.md. [More](how-it-works.md#goals)
+
+## Ideas
+
+Suggestions from the Product Manager, the Engineering Manager and the Talent Scout. Turn one into a ticket or dismiss it. [More](roles.md#product-manager)
+
+## Merging
+
+The minimum every merge must meet: merge on its own, a strict review first, or you merge it yourself. [More](what-waits.md#the-floor-for-every-merge)
+
+## Needs you
+
+Things Dobby will not do alone: a merge you asked to approve, a deploy, or a question from a builder. [More](what-waits.md#needs-you)
+
+## Paused
+
+Stopped on purpose. A pause can cover everything, one part, one project or one ticket, and ends when you resume it. [More](pause-and-resume.md#pause-one-part)
+
+## Product Manager
+
+The role that ranks problems against your goals and writes idea cards and specs for large tickets. [More](roles.md#product-manager)
+
+## Queue
+
+Tickets marked ready, in the order builders will take them. Reorder it to change what gets built first. [More](how-it-works.md#tickets)
+
+## Ready
+
+Queued and waiting for a free builder. [More](how-it-works.md#tickets)
+
+## Review cap
+
+How much of the 5-hour window reviews may use. It can be higher than the builders' share, because reviews unblock merges. [More](config.md#reviewcap)
+
+## Safety preset
+
+How much Dobby may merge without you. Balanced, Strict or Autonomous. You can override single categories. [More](what-waits.md#safety-presets)
+
+## Size
+
+S, M or L, a rough measure of how big a ticket is. It sets how much of your week Dobby expects the ticket to use. [More](write-a-ticket.md#pick-a-size)
+
+## Stop at
+
+The share of your weekly plan Dobby may use. The rest of the week is yours. [More](pacing.md#the-weekly-cap)
+
+## Supporting role
+
+A smaller role that runs only when a ticket or a command needs it. [More](roles.md#supporting-roles)
+
+## Talent Scout
+
+A daily run that picks one role, looks for better skills for it and reviews the last 24 hours. Any change it makes arrives as a pull request. [More](roles.md#talent-scout)
+
+## Tester
+
+The role that checks a finished build against the ticket's done-when line. It can read files but not change them. [More](roles.md#tester)
+
+## Ticket
+
+A unit of work with a project, a title, a done-when line, a size and a priority. Everything Dobby builds starts as one. [More](how-it-works.md#tickets)
+
+<!-- manual/safety-categories.md -->
+# Safety categories
+
+> The nine safety categories, the action each preset gives them, and what always waits for you.
+
+The preset is `safety.preset` in your config. `safety.rules` overrides single categories, and `safety.everyMerge` sets the floor for every merge. [What waits for you](what-waits.md) explains how they fit together. To see how one ticket would be treated:
+
+```sh
+dobby safety explain "Add Stripe refunds to the orders page"
+```
+
+## Actions
+
+| Action | What happens |
+| --- | --- |
+| `auto` | Normal review, then merge. |
+| `review` | A strict review on the strongest model, then merge. |
+| `owner` | Dobby opens a draft pull request and reviews it, and you merge it with `dobby merge <id>` or the Merge button on the dashboard. |
+| `never` | Agents do not take the ticket. |
+
+## Presets
+
+| Category | Strict | Balanced | Autonomous |
+| --- | --- | --- | --- |
+| `migrations.schema` | `owner` | `auto` | `auto` |
+| `migrations.data` | `owner` | `owner` | `review` |
+| `payments` | `owner` | `review` | `review` |
+| `auth` | `owner` | `review` | `review` |
+| `secrets` | `owner` | `review` | `review` |
+| `deploys` | `owner` | `auto` | `auto` |
+| `config` | `owner` | `auto` | `auto` |
+| `client-sites` | `owner` | `owner` | `review` |
+| `releases` | `owner` | `owner` | `review` |
+| Every other merge | `owner` | `auto` | `auto` |
+
+The last row is the floor that `safety.everyMerge` replaces. A change in several categories gets the strictest action among them.
+
+## Categories
+
+| Category | Covers |
+| --- | --- |
+| `migrations.schema` | A migration file that only changes the shape of the database, such as a new table, column or index. |
+| `migrations.data` | A migration file that changes existing data: it updates, inserts or deletes rows, drops or renames a table or column, or changes a column type. A migration whose SQL Dobby cannot read counts here too. |
+| `payments` | Code that handles real money: charging, billing, refunds, payouts, subscriptions or a payment provider. |
+| `auth` | How people sign in: sessions, passwords, tokens, permissions or access control. |
+| `secrets` | Secrets, tokens, API keys, passwords or credentials, or a change to a `.env` or `secrets` file. |
+| `deploys` | Deploys and CI: a ticket about a deploy, production or a pipeline, or a change to `wrangler.toml`, `.github/workflows/` or a Dockerfile. |
+| `config` | Config files such as `wrangler.toml`, `eas.json`, `app.json` or `*.config.*`, or a ticket about config. |
+| `client-sites` | A paying client's own site or data, in a project you list under `clientProjects`. |
+| `releases` | A release to users: an app store or Play Console release, a version publish, or a change to `eas.json` or `fastlane/`. |
+
+Migrations are sorted by the SQL in the changed files. Payments, auth, client sites and releases go through a word and path check first, then the classifier set in `safety.classifier` decides.
+
+## What always waits
+
+These wait for you whatever the preset and the rules say:
+
+- Running a migration that changes existing data. The deploy that would run it waits for its own tap.
+- A ticket an agent filed from outside input, such as an email or a Claude MCP call.
+- The first merge on a fresh install. `dobby init` pauses merges until you run `dobby resume merges`.
+
+<!-- manual/doctor.md -->
+# Doctor checks
+
+> Every row dobby doctor prints, when it fails and the fix, plus the repo access rows dobby init reads.
+
+`dobby doctor` exits with code 1 if any required check fails. `dobby doctor --json` prints every row as data. Rows marked optional never fail the exit code.
+
+## Setup checks
+
+| Row | Fails when | Fix |
+|---|---|---|
+| Node | Node is older than 24. The `dobby` command also says so before it starts. | `brew install node`, or `fnm install 24` (no admin rights needed, Linux too). |
+| shell | Neither zsh nor bash is installed. Project commands then run without a login shell. Optional. | Install zsh or bash. |
+| git | git is missing. | `xcode-select --install` on macOS, `sudo apt install git` or `sudo dnf install git` on Linux. |
+| git identity | git has no `user.email`, so builders cannot commit. | `git config --global user.email "<your GitHub email>"` |
+| GitHub CLI | `gh` is missing. | `brew install gh` on macOS, the steps at cli.github.com on Linux. |
+| GitHub sign-in | `gh` is not signed in. When GitHub cannot be reached, the row says so instead. | `gh auth login --web`, or check your connection. |
+| GitHub token scopes | The token lacks `workflow` (pushes that touch workflow files) or `project` (the board). Optional. Not shown for fine-grained tokens. | `gh auth refresh -s workflow,project` |
+| Claude Code | `claude` is missing. | `npm install -g @anthropic-ai/claude-code` |
+| Claude sign-in | Claude Code is not signed in (plan mode), or too old to have `claude auth status`. | Run `claude`, then `/login`, or `claude update`. |
+| API key | API key mode is set but there is no `DOBBY_API_KEY`, or the key fails a small real call. With no network the row stays green and says it was not checked. | Add the key to `~/.config/dobby/secrets.env`. See [Cap spend](cap-spend.md#run-on-an-api-key). |
+| config | There is no config file yet. | `dobby init` |
+| config warnings | A config key is unknown or has a bad value. The row names it and suggests the key you probably meant. | `dobby config path`, then edit that file. |
+| graphify | Not installed. Optional: builders and reviews get code maps from it. | `uv tool install graphifyy`, or `pipx install graphifyy`. |
+| disk | Under 15 GB free where Dobby keeps its data. Optional. | Free up space. |
+| Dobby | Never fails. Shows the installed version. | `npm i -g dobby-ai@latest && dobby jobs install` |
+| time zone | `timezone` in the config is not this machine's zone. Optional. | `dobby config set timezone <zone>` |
+| data folder | The data folder is on NFS or SMB. SQLite needs a local disk. Optional. | Set `DOBBY_DIR` to a local folder, then `dobby jobs install`. |
+| Discord | No bot token. Optional. | `dobby init` and choose Discord, or add `DISCORD_BOT_TOKEN` to the secrets file and run `dobby discord setup`. |
+| Jev | No key. Optional: a cheaper way to pick the review model. | Add `JEV_API_KEY` to the secrets file. |
+| sandbox runner | The program that sandboxes builders was not found next to Dobby. Optional: builders then get only the credential scrub. | `npm i -g dobby-ai` |
+| sandbox | On Linux, bubblewrap or socat is missing, or AppArmor blocks bubblewrap. On native Windows there is no sandbox. Optional: builders then get only the credential scrub. | The row prints the install or `sysctl` command. See [Install on Linux or WSL2](install-linux.md#install-the-sandbox). |
+| background jobs | A job is not loaded, its last run exited with an error, a job from an older install is still loaded, or the jobs run another copy of Dobby (a temporary `npx` copy is named in the row). | `dobby jobs install` |
+
+## Pipeline checks
+
+After the setup checks, `dobby doctor` prints one row per pipeline check. With no projects yet, the rows say "no projects yet".
+
+| Row | Fails when | Fix |
+|---|---|---|
+| stuck tickets | A ticket has been `running` for over 2 hours. | `dobby show <id>`, then `dobby retry <id>` or `dobby cancel <id>`. |
+| origin/base | A project's `origin/<base>` branch does not resolve in its clone. | `git fetch` in the repo, or fix `base` in its project file. |
+| claude session | Claude Code is signed out or did not answer in 60 seconds. | Run `claude`, then `/login`. |
+| tick lock | The tick lock is held by a process that no longer exists, or has had no heartbeat for 90 minutes. A live tick shows as ok with its age. | Nothing: the next tick, `dobby run` or `dobby retry` clears a stale lock and puts the cut-off ticket back in the queue. |
+| old pauses | A pause is over 7 days old. | `dobby pause status`, then `dobby resume <target>`. |
+| review scan | No review scan ran for 2 hours. It runs every 15 minutes inside the `listener` job, or the `tick` job when Discord is off. | `dobby jobs status`. |
+| stuck | A running or waiting ticket has not moved for over 24 hours. | `dobby show <id>`. |
+| reviews | Reviews have been skipped for over 2 hours because of the budget. | Wait for the window, or raise `reviewCap`. |
+| cap | Ready tickets have been held by the budget cap for over 3 hours. | Wait for the reset, or raise `pacing.weekCap`. |
+
+## Repo access, read by `dobby init`
+
+For each repo you pick, setup reads what Dobby's pull requests need. It only reads, and changes nothing on GitHub.
+
+| Row | Meaning | Fix |
+|---|---|---|
+| GitHub access | This account cannot push to the repo (read-only, or the wrong account is active). Setup leaves the repo out. An SSO block shows the page that authorizes the token. | `gh auth switch`, or ask for write access. |
+| Review rules | The base branch needs an approving or code-owner review. GitHub does not let you approve your own pull request, so Dobby's pull requests will wait for a second reviewer. | Add a reviewer who is not you, or loosen the rule. |
+| Merge method | The repo has turned off the merge method Dobby uses. Setup sets `github.mergeMethod` to one that is on, when you have not set it yourself. | Set `github.mergeMethod`. |
+| Signed commits | Signed commits are required and `github.mergeMethod` is `rebase`. GitHub does not sign rebase merges. | Use `squash` or `merge`. |
+| Merge queue | Merges go through GitHub's merge queue. Dobby waits up to 30 minutes for the pull request to show as merged. | Nothing to fix. |
+
+Before each build, Dobby also checks the `gh` sign-in, the remote and push access, and blocks the ticket with the reason instead of building and failing at the push. Set `"shipPreflight": false` to turn this off.
+
+<!-- manual/pr-commands.md -->
+# PR comment commands
+
+> Every @dobby command you can write in a pull request comment, and its limits.
+
+Commands are read by the review scan, every 15 minutes. Only users with write or admin access can give them. Comments from anyone else are ignored and cost nothing.
+
+| Command | What it does |
+|---|---|
+| `@dobby review` | Reviews the commits since the last review. Works on drafts. |
+| `@dobby full review` | Reviews the whole pull request again. 3 per pull request per day. |
+| `@dobby summary` | Rewrites the summary and risk line. |
+| `@dobby describe` | Suggests a title and description. |
+| `@dobby ask <question>` | A read-only answer about the pull request or the line the thread is on. |
+| `@dobby learn` | In a reviewer thread: marks that finding as intentional for later reviews of this repo. |
+| `@dobby resolve` | Resolves the reviewer's open threads. |
+| `@dobby fix` | Queues a builder ticket for the open high and medium findings. Once per pull request per day. |
+| `@dobby pause` | Stops automatic reviews on this pull request. |
+| `@dobby resume` | Restarts automatic reviews on this pull request. |
+| `@dobby quota` | Full reviews left today, and whether the plan allows work now. |
+| `@dobby configuration` | The review settings in force for this repo. |
+| `@dobby help` | This list. |
+
+## Outside a comment
+
+| Where | What it does |
+|---|---|
+| `@dobby ignore` in the pull request description | No automatic reviews of this pull request. |
+| The `no-review` label (`review.skipLabel`) | No automatic reviews of this pull request. |
+| 👎 on a reviewer comment, from someone with write access | Same as `@dobby learn`. |
+
+## Limits
+
+- On a public repo, commands stay off until you set `review.handle` or `review.botLogin`, because `dobby` may be someone's GitHub username.
+- On a public repo, commands that run a model are refused on a pull request whose author is not you or a collaborator.
+- `@dobby fix` needs `review.fix` on (the default). `@dobby learn` and 👎 need `review.learn` on (the default).
+
+<!-- manual/stats.md -->
+# Crash reports and usage stats
+
+> Two optional switches, both off until you turn them on: what each one sends, every field, and how to turn them off.
+
+Dobby asks two questions during `dobby init`: crash reports and usage stats. Pressing Enter answers no, `--yes` answers no, and no answer is off. They exist to show where installs stop in setup, what gets used and what breaks, without anything private leaving your machine.
+
+## Turn them on or off
+
+- `dobby stats` shows the status. `dobby stats on` or `dobby stats off` changes both; add `crashes` or `usage` to change one.
+- `dobby stats show` prints exactly the usage payload the next daily send would carry.
+- `dobby stats log` prints every payload that left this machine; the same lines are in `<data>/stats/sent.jsonl`.
+- `dobby stats reset-id` makes a new random install id.
+- The Settings page in the dashboard has the same two switches.
+- Nothing is sent when `DO_NOT_TRACK` is set, when `DOBBY_STATS=off`, or when `CI` is set, whatever the switches say.
+- Nothing is sent while `stats.endpoint` is empty.
+
+## What is sent
+
+Crash reports are sent when an unexpected error happens, at most 10 a day. An expected refusal (a typo in a command, a missing ticket) is not a crash. Usage stats are one batch a day at most, sent by the background tick job.
+
+### every event
+
+Added to every event below.
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `install` | text | random id made when you said yes; `dobby stats reset-id` makes a new one |
+| `v` | text | Dobby version |
+| `os` | darwin \| linux | operating system |
+| `node` | number | Node major version |
+| `day` | text | UTC date, no time |
+
+### setup_started
+
+Sent: once, when `dobby init` starts (usage stats).
+
+### setup_step
+
+Sent: once per setup step (usage stats).
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `props.step` | checks \| repos \| chat \| tools \| settings \| jobs \| first_ticket | which setup step |
+| `props.ok` | true \| false | whether it passed |
+| `props.reason` | gh_missing \| gh_signed_out \| claude_missing \| claude_signed_out \| git_missing \| node_old \| no_repos \| tests_failed \| skipped \| other | why it did not pass, from a fixed list |
+
+### setup_done
+
+Sent: once, when `dobby init` finishes (usage stats).
+
+### first_ticket
+
+Sent: once, the first time a ticket exists (usage stats).
+
+### first_pr
+
+Sent: once, the first time a ticket has a pull request (usage stats).
+
+### first_merge
+
+Sent: once, the first time a ticket has merged (usage stats).
+
+### first_week_report
+
+Sent: once, the first time the 7-day scoreboard or receipt was read (usage stats).
+
+### setup_help
+
+Sent: once, the first time you click Ask Claude in setup (usage stats).
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `props.kind` | no-commands \| verify-failed \| check | what the help was asked about: a repo with no commands, a repo that failed to verify, or a failed machine check |
+| `props.ok` | true \| false | whether Claude gave an answer that could be read |
+
+### heartbeat
+
+Sent: at most once a day (usage stats).
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `props.plan` | pro \| max \| max20 \| api \| unknown | your Claude plan, from billing.planUsd (20 pro, 100 max, 200 max20) or api in API-key mode |
+| `props.projects` | 0 \| 1 \| 2-3 \| 4+ | how many projects, as a range |
+| `props.shipped` | 0 \| 1-2 \| 3-5 \| 6+ | tickets shipped in the last 24 hours, as a range |
+| `props.sent_back` | 0 \| <25 \| 25-50 \| 50+ | share of pull requests the reviewer sent back in the last 7 days, in percent, as a range |
+| `props.safety` | strict \| balanced \| autonomous | safety.preset |
+| `props.review_auto` | off \| drafts \| on | review.auto |
+| `props.merges_paused` | true \| false | whether merging is paused |
+| `props.chat` | terminal \| discord | where Dobby asks you things |
+| `props.week_cap` | number | pacing.weekCap, rounded down to a multiple of 10 |
+| `props.week_used` | number | absent when no reading exists |
+| `props.features` | object | which of these were used in the last 24 hours: dashboard, mcp_stdio, mcp_http, discord_buttons, brief_sent, deploy_tap, role_override, config_set |
+| `props.roles` | object | runs per role in the last 24 hours, as a range; only roles that ran |
+
+### crash
+
+Sent: when Dobby fails with an unexpected error, at most 10 a day (crash reports).
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `props.kind` | text | the error's class name, like TypeError |
+| `props.where` | list of text | file:line of frames inside Dobby's own package, paths relative to the package; other frames are dropped |
+| `props.command` | text | the dobby subcommand or job that failed |
+| `props.code` | text | Dobby's own error code, if the error had one |
+
+## Never sent
+
+Repo or project names, paths, ticket or pull request titles or text, prompts, model output, code, URLs, GitHub or Discord usernames, emails, hostnames, tokens, error messages and exact times. The collector stores no IP address.
+
+## The collector
+
+It is a small Cloudflare Worker with a D1 database on the owner's own account (`stats-worker/` in the code folder). It checks every event against the same list as this page and refuses anything else. Rows older than 180 days are deleted every day.
+
+<!-- manual/requirements.md -->
+# Requirements
+
+> The operating systems, tools, sign-ins and disk space Dobby needs.
+
+- macOS or Linux
+- Node 24 or newer
+- GitHub CLI, signed in
+- Claude Code on a Pro or Max plan, or an Anthropic API key
+
+| Need | Details |
+|---|---|
+| Operating system | macOS, or Linux with systemd. Windows through WSL2 with systemd on. |
+| Shell | zsh or bash. |
+| git | With `user.email` set. |
+| GitHub | Repos on github.com. GitLab, Bitbucket and GitHub Enterprise are not supported. |
+| Claude | Claude Code only today. Other agent harnesses are coming. Bedrock and Vertex AI are not supported. |
+| Linux sandbox | bubblewrap and socat. |
+| Alpine and other musl systems | python3 and a C++ toolchain, to build the database driver. |
+| Disk | 15 GB free on a local disk, not NFS or SMB. |
+| Admin rights | Not needed. |
+
+Optional: Discord for buttons and briefs, Tailscale for the dashboard on a phone, graphify for code maps.
+
+:::note
+Nothing runs while the computer sleeps.
+:::
+
+<!-- manual/data.md -->
+# Where data lives
+
+> Every folder and file Dobby writes on your machine, and the variables that move them.
+
+| Path | What |
+|---|---|
+| `~/.config/dobby/config.json` | Your settings. `dobby config path` prints where it is, and `dobby config show` prints the merged settings with secrets redacted. |
+| `~/.config/dobby/secrets.env` | Tokens and keys, readable only by you. No command prints them. |
+| `~/.config/dobby/projects/` | One project file per repo, with its knowledge and onboarding notes. |
+| `~/.config/dobby/private-terms.txt` | Words that must never appear in text Dobby posts to a public repo. |
+| `~/.local/share/dobby/` | The database (tickets, runs, pauses), worktrees and the receipt card. |
+| `~/.local/share/dobby/logs/<job>.log` | One log per background job. Logs over 5 MB are cut to the last 1 MB once a day. |
+| `~/.local/share/dobby/stats/sent.jsonl` | Every crash report or usage stat sent, if you turned them on. |
+| `~/Library/LaunchAgents/com.dobby.*.plist` | The background jobs on macOS. |
+| `~/.config/systemd/user/` | The background jobs on Linux. |
+| `dobby.config.json` in Dobby's own install folder | Optional shared defaults. It can only make safety settings stricter. |
+
+## Variables
+
+| Variable | Effect |
+|---|---|
+| `DOBBY_DIR` | Moves the data folder. Use it when your home folder is on a network drive: SQLite's write-ahead log breaks on NFS and SMB. |
+| `DOBBY_CONFIG` | Names the private config file. Its folder then holds the project files and secrets for that install. |
+
+After you set or change either one, run `dobby jobs install` so the jobs use it.
+
+## Settings order
+
+Dobby reads its built-in defaults, then `dobby.config.json` in its install folder, then your private config file. A later layer wins, except that `dobby.config.json` can only tighten safety settings. All keys are in the [configuration reference](config.md).

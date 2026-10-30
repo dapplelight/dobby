@@ -1,0 +1,28 @@
+---
+// Title row (H1 + page actions), the page summary as a lede, and the llms.txt pointer agents look for first.
+import config from "virtual:signet-docs/config"
+import { urlOf } from "../links.ts"
+import PageActions from "./PageActions.astro"
+
+const { entry, id } = Astro.locals.starlightRoute
+const isDoc = id === config.base || id.startsWith(`${config.base}/`)
+// Descriptions are plain text that may carry `code`; render only that.
+const lede = entry.data.description
+  ?.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/`([^`]+)`/g, "<code>$1</code>")
+const md = isDoc ? urlOf(config.base, id.slice(config.base.length + 1), "md") : undefined
+---
+
+{
+  md && (
+    <p class="sd-agent-note">
+      For agents: an index of these docs is at <a href={`/${config.base}/llms.txt`}>/{config.base}/llms.txt</a>, and this page as
+      markdown is at <a href={md}>{md}</a>.
+    </p>
+  )
+}
+<div class="sd-title-row">
+  <h1 id="_top">{entry.data.title}</h1>
+  {md && <PageActions md={md} />}
+</div>
+{lede && <p class="sd-lede" set:html={lede} />}

@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process"
 import { homedir } from "node:os"
 import { config, expand, quietAt, zoned } from "./config.ts"
 import type { DB } from "./db.ts"
-import { windowIdle, type Usage } from "./lib.ts"
+import { apiKeyMode, resolveUsageCli, spendAllows, windowIdle, type Usage } from "./lib.ts"
 
 const PROJECTS = `${homedir()}/.claude/projects`
 
@@ -170,8 +170,8 @@ export function logReading(db: DB, r: { five: number; week: number } | null, now
   })()
 }
 
-function readLimits() {
-  const p = spawnSync("node", [expand(config().paths.usageCli), "--json", "--host", "claude"], { cwd: homedir(), encoding: "utf8", timeout: 30_000 })
+export function readLimits(run: typeof spawnSync = spawnSync, cli = resolveUsageCli()) {
+  const p = run("node", [cli, "--json", "--host", "claude"], { cwd: homedir(), encoding: "utf8", timeout: 30_000 })
   try {
     const j = JSON.parse(p.stdout)
     const u = j.utilization, at = Number(j.snapshotFetchedAt ?? j.now)
@@ -230,15 +230,17 @@ export function report(db: DB, days = 1): string {
   return [
     `📊 Usage · last ${days === 1 ? "24 hours" : `${days} days`}`,
     `TLDR: ${usd(all.usd)} API-equivalent (${Math.round((100 * you.usd) / Math.max(all.usd, 1e-9))}% you, ${Math.round((100 * auto.usd) / Math.max(all.usd, 1e-9))}% Dobby/automated). Night ${usd(nightUsd)}.`,
+    ...(apiKeyMode() ? [`Spend: ${spendAllows(db, undefined, to).why}`] : [
     `1% of 5-hour ≈ ${isNaN(f.median) ? "measuring…" : usd(f.median)}${f.samples ? ` (${f.samples} ticks)` : ""} · 1% of week ≈ ${isNaN(w.median) ? "measuring…" : usd(w.median)}${w.samples ? ` (${w.samples} ticks)` : ""}${!isNaN(fullWindow) && !isNaN(fullWeek) ? ` · a full 5-hour window ≈ ${((100 * fullWindow) / fullWeek).toFixed(1)}% of the week` : ""}`,
-    `Measured per +1% (stored at each step): 5-hour ${step("five")} · week ${step("week")}`,
+    `Measured per +1% (stored at each step): 5-hour ${step("five")} · week ${step("week")}`
+    ]),
     `Tokens: ${k(tok.i)} fresh in · ${k((tok.w5 ?? 0) + (tok.w1 ?? 0))} cache write (${k(tok.w1)} of it 1-hour) · ${k(tok.r)} cache read (${(100 * hit).toFixed(1)}% hit) · ${k(tok.o)} out (${k(tok.th)} of it thinking)`,
     `By model: ${models.map((m) => `${m.model.replace("claude-", "")} ${usd(m.usd)}`).join(" · ") || "-"}`,
     `API credits (Dobby's own key): ${api.n} calls, ${usd(apiUsd)}`,
   ].join("\n")
 }
 
-// ---- builders first (owner, 17 Oct): Engineers, QA and reviews get at least 80% of Dobby's own spend --------------
+// ---- builders first (owner, 17 Oct): Engineers, Testers and reviews get at least 80% of Dobby's own spend --------------
 // Process roles (planning, design, launch checks, the Trainer, the brief) share at most 20%, and they are throttled first:
 // they stop 10 points of the 5-hour window before the builders do.
 export const PROCESS_KINDS = ["lead", "lead-week", "pm", "area-pm", "design", "launch-check", "scout", "cos"]
@@ -321,7 +323,8 @@ export function usageLine(db: DB, u: Usage | null, now = Date.now()) {
   const tok = db.prepare("SELECT COALESCE(SUM(input),0) i, COALESCE(SUM(write5m)+SUM(write1h),0) w, COALESCE(SUM(read),0) r FROM usage_calls WHERE at>=?").get(from) as { i: number; w: number; r: number }
   const hit = tok.r / Math.max(1, tok.r + tok.i + tok.w)
   const pace = u ? Math.round(100 * Math.min(1, Math.max(0, 1 - u.weekMsToReset / (7 * 86400_000)))) : 0
-  const limits = u ? `5-hour ${u.fiveUsed}%, weekly ${u.weekUsed}% (even pace by now: ${pace}%)` : "limits unreadable"
+  const key = apiKeyMode() // on a key there are no plan windows: dollars against the daily cap instead
+  const limits = key ? spendAllows(db, undefined, now).why : u ? `5-hour ${u.fiveUsed}%, weekly ${u.weekUsed}% (even pace by now: ${pace}%)` : "limits unreadable"
   const f = perPercent(db, "five"), w = perPercent(db, "week")
   const per = (x: number) => (isNaN(x) ? "measuring…" : `$${x.toFixed(2)}`)
   const roles = db.prepare("SELECT kind, COALESCE(SUM(cache_read),0) r, COALESCE(SUM(COALESCE(input_tokens,0)+COALESCE(cache_write,0)),0) o FROM runs WHERE at>=? GROUP BY kind HAVING r+o>0 ORDER BY kind").all(new Date(from).toISOString()) as { kind: string; r: number; o: number }[]
@@ -329,7 +332,7 @@ export function usageLine(db: DB, u: Usage | null, now = Date.now()) {
   const { day, night } = nightSplit(db, from, now)
   return [
     `📊 Usage: ${limits} · last 24h $${all.usd.toFixed(2)} API-equivalent, ${Math.round((100 * auto.usd) / Math.max(all.usd, 1e-9))}% Dobby · cache hit ${(100 * hit).toFixed(0)}%`,
-    `API-$ per 1%: 5-hour ${per(f.median)}, weekly ${per(w.median)} · cache hit by role (⚠️ under 80%): ${cache} · day (${hh(config().quietHours.end)}-${hh(config().quietHours.start)} ${config().timezoneLabel}) $${day.toFixed(2)}, night (${hh(config().quietHours.start)}-${hh(config().quietHours.end)} ${config().timezoneLabel}) $${night.toFixed(2)}`,
-    ...(u && windowIdle(u) ? [`⚠️ 5-hour window idle: ${u.fiveUsed}% used with under 2.5 hours left. Queue more work or that room is lost at reset.`] : []),
+    `${key ? "" : `API-$ per 1%: 5-hour ${per(f.median)}, weekly ${per(w.median)} · `}cache hit by role (⚠️ under 80%): ${cache} · day (${hh(config().quietHours.end)}-${hh(config().quietHours.start)} ${config().timezoneLabel}) $${day.toFixed(2)}, night (${hh(config().quietHours.start)}-${hh(config().quietHours.end)} ${config().timezoneLabel}) $${night.toFixed(2)}`,
+    ...(!key && u && windowIdle(u) ? [`⚠️ 5-hour window idle: ${u.fiveUsed}% used with under 2.5 hours left. Queue more work or that room is lost at reset.`] : []),
   ].join("\n")
 }

@@ -1,11 +1,13 @@
 // Token savings: small pure helpers behind config keys (ticketBudget, retryLimit, builderContextCeiling, shipPreflight, sameFailure,
 // harnessInstall, freshRetries, recoverOutput). Every key is off when absent, so Dobby behaves as before until the owner's config turns it on.
+import { classifyRemote } from "./detect.ts"
 import { existsSync, closeSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { config } from "./config.ts"
 import type { DB } from "./db.ts"
 import { toCall } from "./usage.ts"
 import { loginShell } from "./shell.ts"
+import { samlUrl } from "./repo-rights.ts"
 
 /** A run ended at the context ceiling has this reason; it does not count as a build. */
 export const CEILING = "context ceiling"
@@ -19,6 +21,36 @@ export function ticketUsd(db: DB, id: number): number {
   return Math.max(0, sum - Number(kvGet(db, `cost-base:${id}`) ?? 0))
 }
 export const weekPoints = (usd: number) => usd / usdPerPoint()
+
+// ---- 1b. cost per PR -------------------------------------------------------------------------------------------------------------
+export const PR_RE = /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/
+const STAGE_OF: Record<string, string> = { pm: "Planning", brainstorm: "Planning", explain: "Planning", design: "Planning", build: "Build", check: "Tester", test: "Tester", smoke: "Tester" }
+export type PrCost = { stages: { name: string; usd: number; runs: number; rounds?: number }[]; usd: number; weekPct: number }
+/** What a ticket's PR cost: its runs, its fix tickets' runs (onto = its branch) and its reviews' heads. `url` overrides the PR link in the note (read-only SQL). */
+export function prCost(db: DB, id: number, url?: string): PrCost {
+  const t = db.prepare("SELECT branch, note FROM tickets WHERE id=?").get(id) as { branch: string | null; note: string | null } | undefined
+  const ids = [id, ...(t?.branch ? (db.prepare("SELECT id FROM tickets WHERE onto=?").all(t.branch) as { id: number }[]).map((r) => r.id) : [])]
+  const by = new Map<string, { usd: number; runs: number; rounds?: number }>(["Planning", "Build", "Tester", "Review"].map((n) => [n, { usd: 0, runs: 0 }]))
+  for (const r of db.prepare(`SELECT kind, COALESCE(cost_usd,0) c FROM runs WHERE ticket IN (${ids.map(() => "?").join(",")})`).all(...ids) as { kind: string; c: number }[]) {
+    const n = STAGE_OF[r.kind] ?? "Other", g = by.get(n) ?? by.set(n, { usd: 0, runs: 0 }).get(n)!
+    g.usd += r.c; g.runs++
+  }
+  by.get("Build")!.rounds = by.get("Build")!.runs
+  const m = (url ?? t?.note ?? "").match(PR_RE)
+  const rv = by.get("Review")!
+  if (m) for (const r of db.prepare("SELECT repo, COALESCE(cost,0) c FROM reviews WHERE pr=?").all(Number(m[2])) as { repo: string; c: number }[]) if (r.repo === m[1] || r.repo.split("/")[1] === m[1].split("/")[1]) rv.usd += r.c, rv.runs++
+  rv.rounds = rv.runs
+  const stages = [...by].filter(([n, g]) => n !== "Other" || g.usd || g.runs).map(([name, g]) => ({ name, ...g }))
+  const usd = stages.reduce((a, g) => a + g.usd, 0)
+  return { stages, usd, weekPct: weekPoints(usd) }
+}
+/** The PR comment (marker first, so a later run finds and updates it). Plan mode: % of the week; API-key mode: dollars. */
+export const COST_MARK = "<!-- dobby-cost -->"
+export function prCostText(c: PrCost, apiKey: boolean): string {
+  const f = (usd: number) => apiKey ? (usd > 0 && usd < 0.005 ? "<$0.01" : `$${usd.toFixed(2)}`) : usd > 0 && weekPoints(usd) < 0.005 ? "<0.01%" : `${weekPoints(usd).toFixed(2)}%`
+  const runs = (g: PrCost["stages"][number]) => g.name === "Build" ? (g.rounds! > 1 ? `${g.runs} (${g.rounds! - 1} fix round${g.rounds! > 2 ? "s" : ""})` : `${g.runs}`) : g.name === "Review" ? `${g.runs} head${g.runs === 1 ? "" : "s"}` : `${g.runs}`
+  return [COST_MARK, `**Cost of this PR:** ${f(c.usd)}${apiKey ? "" : " of your week"}`, "| Stage | Cost | Runs |", "|---|---|---|", ...c.stages.map((g) => `| ${g.name} | ${f(g.usd)} | ${runs(g)} |`)].join("\n")
+}
 /** The cap in week points for this size, or undefined when the budget is off. */
 export const budgetCap = (size: string) => config().ticketBudget?.[size as "S" | "M" | "L"]
 /** "" when the ticket may go on, else the owner-facing reason. */
@@ -109,10 +141,12 @@ export function lastAssistantText(dir: string, since: number): { text: string; s
 }
 
 
-/** "owner/repo" from a GitHub remote URL (ssh or https); null for anything else. */
+/** "owner/repo" from a GitHub remote URL (ssh or https, or an ssh host alias resolved with ssh -G); null for anything else. */
 export function repoSlug(url: string): string | null {
   const m = url.trim().match(/github\.com[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/)
-  return m ? m[1] : null
+  if (m) return m[1]
+  const c = classifyRemote(url) // an alias such as git@github-work:org/repo.git; only reached when the URL is not plainly github.com
+  return "slug" in c ? c.slug : null
 }
 
 // ---- 4. ship pre-flight ----------------------------------------------------------------------------------------------------------
@@ -127,7 +161,7 @@ export async function shipPreflight(run: (cmd: string, args: string[], cwd?: str
   if (!remote.ok) return "the repo has no git remote called origin, so nothing can be pushed"
   const slug = repoSlug(remote.out) // explicit: with an upstream remote gh would check the wrong repo
   const view = await r("gh", ["repo", "view", ...(slug ? [slug] : []), "--json", "nameWithOwner,viewerPermission", "-q", '.nameWithOwner + " " + .viewerPermission'])
-  if (!view.ok) return `GitHub does not know this repo or cannot be reached (${first(view)})`
+  if (!view.ok) return samlUrl(view.out) ? `the organization requires SSO for this token; authorize it at ${samlUrl(view.out)}` : `GitHub does not know this repo or cannot be reached (${first(view)})`
   if (/\b(READ|TRIAGE)\s*$/.test(view.out.trim())) return `no write access to ${view.out.trim().split(" ")[0]}`
   if (!o.onto) {
     const push = await r("git", ["push", "--dry-run", "origin", `HEAD:refs/heads/${o.branch}`])

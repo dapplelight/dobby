@@ -1,4 +1,4 @@
-// Ship policy (owner, 16 Oct 2026): merged to main = deployed, or a Deploy tap first with safety.deploy ask. A project opts in with `deploy:` in its dobby.md
+// Ship policy (owner, 16 Oct 2026): merged to main = deployed, or a Deploy tap first (the default; safety.deploy auto skips the tap). A project opts in with `deploy:` in its dobby.md
 // (`deploy_dir:` a clean checkout of its base branch, `migrations:` the folder of SQL migrations; with deployFrom worktree,
 // `deploy_copy:` the gitignored files besides .env* the deploy needs, comma-separated, copied from `repo:`).
 // Schema-only migrations run automatically; migrations that change existing data go to the owner first.
@@ -8,13 +8,14 @@ import { readFileSync } from "node:fs"
 import { config } from "./config.ts"
 import { DATA, type DB } from "./db.ts"
 import { addTicket, home, loadProjects, ROOT, setTicket, shAsync, timeoutMs, type Out } from "./lib.ts"
-import { clip, notify } from "./telegram.ts"
-import { detailsBlock, upsert } from "./discord.ts"
+import { clip, notify } from "./notify.ts"
+import { detailsBlock } from "./chat/common.ts"
+import { chatPrefix, platform } from "./chat/platform.ts"
 import { paused } from "./pause.ts"
-import { decide } from "./policy.ts"
+import { sqlChangesData } from "./safety.ts"
 
 /** True when a migration rewrites, backfills or deletes existing data (owner decides), false for pure schema adds. Rule: src/policy.ts, kind deploy. */
-export const changesData = (sql: string) => decide("deploy", sql.replace(/--[^\n]*/g, "")).action !== "allow"
+export const changesData = sqlChangesData // same reading as the safety check: strings, block comments and ON DELETE CASCADE are not data changes
 
 /** Removes gitignored files from the release checkout, except node_modules and .env*. */
 export const DEPLOY_CLEAN = "git clean -fdXq -e '!node_modules' -e '!.env*'"
@@ -41,7 +42,7 @@ export async function deployProject(db: DB, name: string, o: DeployOpts = {}): P
     kvSet(db, `deploy:queued:${name}`, String(Date.now()))
     return `${name}: deploy ${pz}; it is queued and runs on resume`
   }
-  if (config().safety.deploy === "ask" && !o.tapped && !o.migrate) { // safety.deploy ask: a merge sends a Deploy tap, the tap deploys
+  if (config().safety.deploy !== "auto" && !o.tapped && !o.migrate) { // fails closed, only an explicit safety.deploy auto deploys by itself; unset or ask: a merge sends a Deploy tap, the tap deploys
     await (o.notify ?? notify)(`🟡 Needs you · ${name} is merged and ready to deploy`, fetch, [{ text: "🚀 Deploy", data: `deploynow ${name}` }], { kind: "approval", key: `deploy:${name}` })
     return `${name}: merged; the deploy waits for your tap`
   }
@@ -56,6 +57,7 @@ export async function deployProject(db: DB, name: string, o: DeployOpts = {}): P
   try {
     let last = ""
     do {
+      kvSet(db, lock, `${Date.now()}:${process.pid}`) // each pass renews the lock: a long chain of deploys must not expire it
       kvDel(db, `deploy:again:${name}`)
       last = await once(db, name, p, o)
     } while (kvGet(db, `deploy:again:${name}`))
@@ -119,8 +121,18 @@ async function release(db: DB, name: string, p: NonNullable<ReturnType<typeof lo
   const sha = (await run("git rev-parse HEAD", dir)).out.trim()
   const head = sha.slice(0, 7)
   // deploy/prod is the tag the deploy step moves: already at HEAD = nothing new, said as such (not "Deployed")
-  if (sha && (await run("git rev-parse -q --verify 'deploy/prod^{commit}'", dir)).out.trim() === sha) return `${name}: nothing to deploy (${head} is already live)`
-  const migs = p.migrations ? (await run(`git diff --name-only deploy/prod HEAD -- ${p.migrations}`, dir)).out.split("\n").filter((f) => f.endsWith(".sql")) : []
+  const prod = (await run("git rev-parse -q --verify 'deploy/prod^{commit}'", dir)).out.trim()
+  if (sha && prod === sha) return `${name}: nothing to deploy (${head} is already live)`
+  let migs: string[] = []
+  if (p.migrations) {
+    // What is already live: the deploy/prod tag, else the head Dobby itself recorded after its last good deploy. With neither (a first deploy,
+    // or a deploy step that never makes the tag) every migration counts as pending, so a data migration always reaches the owner (fail closed).
+    const last = kvGet(db, `deploy:last:${name}`) ?? ""
+    const live = prod || (/^[0-9a-f]{40}$/.test(last) && (await run(`git rev-parse -q --verify '${last}^{commit}'`, dir)).out.trim() ? last : "")
+    const diff = await run(`git diff --name-only ${live || "$(git hash-object -t tree /dev/null)"} HEAD -- ${p.migrations}`, dir)
+    if (!diff.ok) return fail(`could not list the pending migrations: ${clip(diff.out, 200)}`)
+    migs = diff.out.split("\n").filter((f) => f.endsWith(".sql"))
+  }
   const risky = migs.filter((f) => { try { return changesData(readFileSync(`${dir}/${f}`, "utf8")) } catch { return true } })
   // The button carries the head its card showed. Main moved since (or an old card without one): the owner OK'd other
   // migrations than the ones now pending, so refuse and send a fresh card for this head.
@@ -134,6 +146,7 @@ async function release(db: DB, name: string, p: NonNullable<ReturnType<typeof lo
   const cmd = `${p.install} && ${p.deploy}${migs.length ? " --migrate" : ""}`
   const r = await run(cmd, dir, 8000, timeoutMs("deploy"))
   if (!r.ok) return fail(clip(r.out.split("\n").filter((l) => /fail|error|stopped/i.test(l)).slice(-4).join(" · ") || r.out, 400))
+  if (sha) kvSet(db, `deploy:last:${name}`, sha) // a clean deploy step with no app changes still means this head is live
   if (/nothing to deploy/i.test(r.out)) return `${name}: nothing to deploy at ${head} (the deploy step found no app changes)`
   await settle(db, name, head, o.fetcher)
   await say(`🚀 Deployed · ${name} at ${head}${migs.length ? `\nMigrations run: ${migs.map((f) => f.split("/").pop()).join(", ")}` : ""}`, fetch, undefined, { kind: "shipped", project: name })
@@ -144,9 +157,10 @@ async function release(db: DB, name: string, p: NonNullable<ReturnType<typeof lo
 async function settle(db: DB, name: string, head: string, fetcher: typeof fetch = fetch) {
   const key = `deploy:${name}`
   db.prepare("DELETE FROM kv WHERE k=?").run(`deploy:fails:${name}`)
-  if (!kvGet(db, `discord:msg:${key}`)) return
-  await upsert(db, key, { kind: "approval" }, `✅ Deploy fixed · ${name}\nDeployed at ${head}; the failure is settled.`, [], fetcher).catch(() => {})
-  db.prepare("DELETE FROM kv WHERE k IN (?, ?)").run(`discord:msg:${key}`, `discord:msg:${key}:head`)
+  const p = chatPrefix()
+  if (!kvGet(db, `${p}:msg:${key}`)) return
+  await (await platform()).upsert(db, key, { kind: "approval" }, `✅ Deploy fixed · ${name}\nDeployed at ${head}; the failure is settled.`, [], fetcher).catch(() => {})
+  db.prepare("DELETE FROM kv WHERE k IN (?, ?)").run(`${p}:msg:${key}`, `${p}:msg:${key}:head`)
 }
 
 const startFixRun = (id: number) => {

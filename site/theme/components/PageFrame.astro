@@ -1,0 +1,10 @@
+---
+// Page frame: Starlight's layout (fixed header, sidebar pane, main), styled in theme.css.
+import Default from "@astrojs/starlight/components/PageFrame.astro"
+---
+
+<Default {...Astro.props}>
+  <Fragment slot="header"><slot name="header" /></Fragment>
+  <Fragment slot="sidebar"><slot name="sidebar" /></Fragment>
+  <slot />
+</Default>

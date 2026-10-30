@@ -12,7 +12,7 @@ const HOME = "/Users/me"
 const builder = roleArgs(["--allowedTools", BUILDER_TOOLS.join(","), "--disallowedTools", "WebFetch"]).bash
 const ctx = (allow: string[], o: Partial<{ cwd: string; branch: string }> = {}) => ({
   cwd: o.cwd ?? `${HOME}/.local/share/dobby/wt/tally-12`, wtRoot: `${HOME}/.local/share/dobby/wt/tally-12`, home: HOME,
-  foremanRoot: `${HOME}/projects/foreman`, dataDir: `${HOME}/.local/share/dobby`, branch: () => o.branch ?? "foreman/12", allow,
+  dobbyRoot: `${HOME}/projects/foreman`, dataDir: `${HOME}/.local/share/dobby`, branch: () => o.branch ?? "foreman/12", allow,
 })
 const denied = (c: string, allow = builder, o = {}) => decide(c, ctx(allow, o)).deny
 const allowed = (c: string, allow = builder, o = {}) => decide(c, ctx(allow, o)).allow === true

@@ -1,0 +1,79 @@
+#!/usr/bin/env node
+// Fake `claude` for the end-to-end tests. Dobby spawns `claude -p ... --output-format json` with the prompt on stdin and
+// DOBBY_ROLE=<kind> in the environment; this answers from a scenario file instead of calling a model. No network, no auth.
+// Plain JavaScript on purpose: it runs as a spawned program, so it cannot rely on type stripping.
+//
+//   DOBBY_FAKE_SCENARIO  path to a scenario JSON (tests/e2e/scenarios/*.json)
+//   DOBBY_FAKE_LOG       JSONL file: one line per call {n, role, model, args} (argv without the prompt body)
+//   DOBBY_FAKE_STATE     directory for call counters (default: next to the log)
+//
+// Scenario: { "signedOut": false, "roles": { "<role>": [ entry, ... ] } }. The nth call of a role uses entry n; the last entry repeats.
+// Entry knobs: reply (text; for review, the raw answer instead of the JSON report), cost (USD), files {path: content} and delete [paths] (written in cwd only, then committed unless
+// commit:false), pass/reason (check), summary/risk/changes/findings/owner (review), fixed (review-resolve), push {branch, files}
+// (a commit pushed to origin from cwd, as if someone else moved the branch), signedOut, error (text, is_error), stall (hang
+// until killed), exit (exit code with no output).
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { dirname, resolve, sep } from "node:path"
+import { spawnSync } from "node:child_process"
+
+const argv = process.argv.slice(2)
+if (argv[0] === "--version") { process.stdout.write("1.0.0 (Claude Code, fake)\n"); process.exit(0) }
+const role = process.env.DOBBY_ROLE || "unknown"
+const flag = (name) => { const i = argv.indexOf(name); return i < 0 ? undefined : argv[i + 1] }
+const stdin = await new Promise((res) => { let s = ""; process.stdin.on("data", (d) => (s += d)); process.stdin.on("end", () => res(s)); if (process.stdin.isTTY) res("") })
+
+const scenario = process.env.DOBBY_FAKE_SCENARIO && existsSync(process.env.DOBBY_FAKE_SCENARIO) ? JSON.parse(readFileSync(process.env.DOBBY_FAKE_SCENARIO, "utf8")) : {}
+const log = process.env.DOBBY_FAKE_LOG
+const state = process.env.DOBBY_FAKE_STATE || (log ? dirname(log) : "")
+let n = 0
+if (state) {
+  mkdirSync(state, { recursive: true })
+  const f = `${state}/count-${role}`
+  n = existsSync(f) ? Number(readFileSync(f, "utf8")) : 0
+  writeFileSync(f, String(n + 1))
+}
+const list = scenario.roles?.[role] ?? []
+const e = list[Math.min(n, list.length - 1)] ?? {}
+if (log) appendFileSync(log, JSON.stringify({ n, role, model: flag("--model"), resume: flag("--resume"), cwd: process.cwd(), args: argv.filter((a, i) => a !== "-p" && argv[i - 1] !== "--append-system-prompt"), promptChars: stdin.length }) + "\n")
+
+const out = (o, code = 0) => {
+  process.stdout.write(JSON.stringify({
+    type: "result", subtype: "success", is_error: false, duration_ms: 1200, duration_api_ms: 1000, num_turns: 3,
+    session_id: `fake-${role}-${n}`, total_cost_usd: e.cost ?? 0.01,
+    usage: { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 5000, cache_creation_input_tokens: 400 },
+    modelUsage: { [flag("--model") ?? "fake"]: {} }, ...o,
+  }) + "\n")
+  process.exit(code)
+}
+
+// The auth failure Dobby recognises (src/lib.ts signedOut): is_error with subtype "success" and the reason in result.
+if (scenario.signedOut || e.signedOut) out({ is_error: true, result: "Failed to authenticate. OAuth session expired · Please run /login" }, 1)
+if (e.stall) setInterval(() => {}, 1 << 30)
+else {
+  if (e.error) out({ is_error: true, result: String(e.error) }, 1)
+  if (e.exit) process.exit(e.exit)
+
+  const cwd = process.cwd()
+  const git = (...a) => spawnSync("git", ["-c", "user.name=Fake Builder", "-c", "user.email=builder@example.test", "-c", "commit.gpgsign=false", ...a], { cwd, encoding: "utf8" })
+  const inside = (p) => { const abs = resolve(cwd, p); if (abs !== cwd && !abs.startsWith(cwd + sep)) throw new Error(`fake claude: ${p} is outside ${cwd}`); return abs }
+  const write = (files) => { for (const [p, body] of Object.entries(files ?? {})) { const abs = inside(p); mkdirSync(dirname(abs), { recursive: true }); writeFileSync(abs, body) } }
+  write(e.files)
+  for (const p of e.delete ?? []) spawnSync("rm", ["-f", inside(p)])
+  if ((e.files || e.delete) && e.commit !== false) { git("add", "-A"); git("commit", "-qm", String(e.message ?? `fake ${role} #${n + 1}`)) }
+  if (e.push) { // someone else moves a branch on origin while this call runs
+    write(e.push.files)
+    git("add", "-A"); git("commit", "-qm", "someone pushed")
+    const r = git("push", "-q", "origin", `HEAD:refs/heads/${e.push.branch}`)
+    if (r.status !== 0) { process.stderr.write(`fake claude: push failed: ${r.stderr}`); process.exit(2) }
+  }
+
+  const bullets = "• Adds the change the ticket asked for.\n• Done with a small edit and a test.\n• Check the new test; low risk."
+  const reply = {
+    check: () => JSON.stringify({ pass: e.pass ?? true, reason: e.reason ?? (e.pass === false ? "does not do what the ticket asks" : "does what the ticket asks") }),
+    explain: () => e.reply ?? bullets,
+    "card-summary": () => e.reply ?? "What happened: a ticket needs a decision.\nWhy it needs you: only you can decide.\nButtons: none, just read it",
+    "review-resolve": () => JSON.stringify({ fixed: e.fixed ?? [] }),
+    review: () => e.reply ?? `Reviewed.\n\`\`\`json\n${JSON.stringify({ summary: e.summary ?? "Small change with a test.", risk: e.risk ?? "low", changes: e.changes ?? [], findings: e.findings ?? [], owner: e.owner ?? [] })}\n\`\`\``,
+  }
+  out({ result: (reply[role] ?? (() => e.reply ?? `fake ${role}: done`))() })
+}

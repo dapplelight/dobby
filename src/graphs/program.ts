@@ -3,7 +3,7 @@
 //   START → sweep → launch → status → END
 //
 // sweep: tickets whose PR merged become shipped, closed PRs become declined (whole app, not only programs); a failed
-//        program ticket is re-queued once with QA's notes; then only the first unfinished ticket of each program is ready
+//        program ticket is re-queued once with Tester's notes; then only the first unfinished ticket of each program is ready
 //        (the order is the plan: later tickets wait in the backlog).
 // launch: a program whose tickets all finished gets one launch check against its PRD (Sonnet, low effort, text-only).
 //         Gaps become new program tickets (at most 2 checks); ready = done.
@@ -11,8 +11,8 @@
 import { paused } from "../pause.ts"
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph"
 import type { DB } from "../db.ts"
-import { discordOn, upsert } from "../discord.ts"
-import { clip } from "../telegram.ts"
+import { chatOn as discordOn, platform } from "../chat/platform.ts"
+import { clip } from "../notify.ts"
 import { fixed, addTicket, claude, getTicket, loadRole, netRun, policyCtx, setTicket, short, type ARun, type Ticket } from "../lib.ts"
 import { needsOwner } from "./lead.ts"
 
@@ -57,23 +57,23 @@ export async function closeFinishedPrs(db: DB, project: string, r: ARun = netRun
   return out
 }
 
-/** Re-queue failed program tickets once (with QA's notes), then make each program's next ticket ready. */
+/** Re-queue failed program tickets once (with Tester's notes), then make each program's next ticket ready. */
 export function moveForward(db: DB, project: string): string[] {
   const out: string[] = [], requeued: string[] = []
   for (const pg of openPrograms(db, project)) {
     for (const t of programTickets(db, pg.id)) {
       if (t.status !== "failed" || kvGet(db, `pgm:requeued:${t.id}`)) continue
       kvSet(db, `pgm:requeued:${t.id}`, now())
-      db.prepare("UPDATE tickets SET done_when=? WHERE id=?").run(`${t.done_when}\nProgram Manager re-queued it once; last QA notes: ${clip(t.note ?? "", 600)}`, t.id)
-      setTicket(db, t.id, { status: "ready", note: "re-queued once by the Program Manager with QA's notes" })
-      out.push(`#${t.id} re-queued with QA's notes`)
+      db.prepare("UPDATE tickets SET done_when=? WHERE id=?").run(`${t.done_when}\nProgram Manager re-queued it once; last Tester notes: ${clip(t.note ?? "", 600)}`, t.id)
+      setTicket(db, t.id, { status: "ready", note: "re-queued once by the Program Manager with Tester's notes" })
+      out.push(`#${t.id} re-queued with Tester's notes`)
       requeued.push(t.title)
     }
     const next = programTickets(db, pg.id).find((t) => !DONE.includes(t.status))
     if (next?.status === "backlog") setTicket(db, next.id, { status: "ready" }), out.push(`#${next.id} is next in "${pg.title}"`)
   }
   // one line per pass, not one per ticket: a program with several failures was a burst in #system-status (#640)
-  if (requeued.length) fixed(db, requeued.length === 1 ? `${project}: "${requeued[0]}" failed. The Program Manager re-queued it once with QA's notes.` : `${project}: ${requeued.length} program tickets failed. The Program Manager re-queued each once with QA's notes:\n${requeued.map((x) => `• ${x}`).join("\n")}`)
+  if (requeued.length) fixed(db, requeued.length === 1 ? `${project}: "${requeued[0]}" failed. The Program Manager re-queued it once with Tester's notes.` : `${project}: ${requeued.length} program tickets failed. The Program Manager re-queued each once with Tester's notes:\n${requeued.map((x) => `• ${x}`).join("\n")}`)
   return out
 }
 
@@ -111,7 +111,7 @@ type S = typeof State.State
 export type Deps = { run: ARun; claude: typeof claude; upsert: (key: string, project: string, text: string) => Promise<unknown> }
 const realUpsert = async (key: string, project: string, text: string) => {
   const ddb = discordOn()
-  if (ddb) await upsert(ddb, key, { kind: "program", project }, text).catch((e) => console.log(`discord: ${(e as Error).message}`))
+  if (ddb) await (await platform()).upsert(ddb, key, { kind: "program", project }, text).catch((e) => console.log(`discord: ${(e as Error).message}`))
 }
 
 export function buildProgramGraph(db: DB, deps: Deps = { run: netRun, claude, upsert: realUpsert }) {

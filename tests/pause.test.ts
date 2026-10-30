@@ -116,7 +116,7 @@ test("deploys: a paused deploy is queued and runs on resume", async () => {
   const { deployProject, runQueuedDeploys } = await import("../src/deploy.ts")
   const ran: string[] = []
   const sh = (cmd: string) => (cmd.includes("bun run deploy") && ran.push(cmd), cmd === "git rev-parse HEAD" ? { ok: true, out: "abc1234\n" } : cmd.includes("deploy/prod") ? { ok: false, out: "" } : { ok: true, out: cmd.includes("status") ? "" : "ok" })
-  const o = { sh: sh as any, notify: (async () => true) as any, projects: { tally: { name: "tally", repo: dir, deploy: "bun run deploy", base: "main", install: "true" } } as any }
+  const o = { tapped: true, sh: sh as any, notify: (async () => true) as any, projects: { tally: { name: "tally", repo: dir, deploy: "bun run deploy", base: "main", install: "true" } } as any }
   P.setPause(db, { kind: "deploys" }, true)
   assert.match(await deployProject(db, "tally", o), /queued and runs on resume/)
   assert.equal(ran.length, 0); assert.deepEqual(await runQueuedDeploys(db, o), [])
@@ -138,7 +138,7 @@ test("notify: a paused notify holds non-#needs-you posts in the outbox, #needs-y
   writeFileSync(process.env.DOBBY_SECRETS!, "DISCORD_BOT_TOKEN=xxxxxxxxxxxx\n")
   const db = open() // the same file discordOn() uses
   db.prepare("INSERT OR REPLACE INTO kv VALUES ('discord:wh:needs-you', 'id/token')").run()
-  const { notify, asIs } = await import("../src/telegram.ts")
+  const { notify, asIs } = await import("../src/notify.ts")
   P.setPause(db, { kind: "notify" }, true)
   const box = `${dir}/outbox.log`
   assert.equal(await notify("quiet news", fetch, undefined, { kind: "health" }, asIs), false)
@@ -179,4 +179,32 @@ test("deploys: safety.deploy ask sends a Deploy tap instead of deploying; the ta
     assert.match(cards[0], /ready to deploy \| deploynow tally$/)
     assert.equal(await deployProject(db, "tally", { ...o, tapped: true }), "tally: deployed abc1234")
   } finally { setConfig(undefined) }
+})
+
+test("deploys fail closed: safety.deploy unset waits for the tap, an explicit auto deploys by itself", async () => {
+  const db = open(":memory:")
+  const { deployProject } = await import("../src/deploy.ts")
+  const { config, setConfig } = await import("../src/config.ts")
+  const base = config()
+  const ran: string[] = [], cards: string[] = []
+  const sh = (cmd: string) => (cmd.includes("bun run deploy") && ran.push(cmd), cmd === "git rev-parse HEAD" ? { ok: true, out: "abc1234\n" } : cmd.includes("deploy/prod") ? { ok: false, out: "" } : { ok: true, out: cmd.includes("status") ? "" : "ok" })
+  const o = { sh: sh as any, notify: (async (t: string) => (cards.push(t), true)) as any, projects: { tally: { name: "tally", repo: dir, deploy: "bun run deploy", base: "main", install: "true" } } as any }
+  try {
+    const { deploy: _unset, ...safety } = base.safety
+    setConfig({ ...base, safety })
+    assert.match(await deployProject(db, "tally", o), /waits for your tap/)
+    assert.equal(ran.length, 0)
+    assert.equal(cards.length, 1)
+    setConfig({ ...base, safety: { ...base.safety, deploy: "auto" } })
+    assert.equal(await deployProject(db, "tally", o), "tally: deployed abc1234")
+    assert.equal(ran.length, 1)
+  } finally { setConfig(undefined) }
+})
+
+test("plain: today shows the time, this week the weekday, older the date, in the configured timezone", () => {
+  const now = Date.parse("2026-10-26T06:00:00Z"), at = (iso: string) => ({ at: Date.parse(iso), by: "owner" })
+  const tz = (iso: string) => P.plain("everything", at(iso), now)
+  assert.match(tz("2026-10-26T04:39:00Z"), /^Everything paused by you since \d\d:\d\d$/)
+  assert.match(tz("2026-10-25T04:39:00Z"), /^Everything paused by you since (Sun|Sat) \d\d:\d\d$/)
+  assert.match(P.plain("builders", { at: Date.parse("2026-09-01T10:00:00Z"), by: "Sam" }, now), /^Builders paused by Sam since \d+ Sep$/)
 })

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { dirname } from "node:path"
 import { tmpdir } from "node:os"
 import { test } from "node:test"
-import { plan, requireConfig, service, startConflicts, type Run, type Spec } from "../src/service.ts"
+import { plan, requireConfig, service, startConflicts as startConflictsAt, type Run, type Spec } from "../src/service.ts"
 
 const dir = mkdtempSync(`${tmpdir()}/foreman-service-`)
 const spec: Spec = { exec: ["/usr/bin/node", "--no-warnings", "/opt/my foreman/src/cli.ts", "start"], path: "/usr/bin:/bin", log: `${dir}/logs/service.log`, home: dir, uid: 501 }
@@ -25,7 +25,7 @@ test("macOS: plist text and launchctl argument arrays, new label only", () => {
   assert.match(p.text, /<key>Label<\/key><string>com\.dobby\.service<\/string>/)
   assert.match(p.text, /<array><string>\/usr\/bin\/node<\/string><string>--no-warnings<\/string><string>\/opt\/my foreman\/src\/cli\.ts<\/string><string>start<\/string><\/array>/)
   assert.match(p.text, /<key>KeepAlive<\/key><true\/>/)
-  assert.doesNotMatch(p.text, /com\.dobby\.(tick|telegram)/)
+  assert.doesNotMatch(p.text, /com\.dobby\.(tick|listener|telegram)/)
   assert.deepEqual(p.install, [
     { cmd: "launchctl", args: ["bootout", "gui/501/com.dobby.service"], ignoreFailure: true },
     { cmd: "launchctl", args: ["bootstrap", "gui/501", p.file] },
@@ -47,12 +47,17 @@ test("Linux: unit text quotes every word, systemctl --user argument arrays", () 
 test("macOS install refuses while the owner's tick or telegram job is loaded, and names the bootout commands", () => {
   const p = plan("darwin", spec)
   const calls: string[] = []
+  mkdirSync(dirname(p.file), { recursive: true }); writeFileSync(p.conflictFiles[0], "x") // the owner's tick plist is under this HOME
   const loaded = new Set(["gui/501/com.dobby.tick"])
   const run: Run = (cmd, args) => { calls.push([cmd, ...args].join(" ")); return { ok: args[0] !== "print" || loaded.has(args[1]), out: "" } }
   assert.throws(() => service("install", false, p, run, () => {}), /launchctl bootout gui\/501\/com\.dobby\.tick/)
   assert.equal(existsSync(p.file), false)
   assert.equal(calls.some((c) => c.includes("bootstrap")), false)
   loaded.clear()
+  rmSync(p.conflictFiles[0])
+  loaded.add("gui/501/com.dobby.tick") // loaded, but no plist under this HOME: another install's job, not ours to name or stop
+  service("install", false, p, run, () => {})
+  rmSync(p.file); calls.length = 0
   service("install", false, p, run, () => {})
   assert.equal(calls.at(-1), `launchctl bootstrap gui/501 ${p.file}`)
 })
@@ -87,9 +92,30 @@ test("service: --dry prints the file and commands and runs nothing; install writ
 test("start refuses beside the owner's jobs or the service; the service itself only minds the owner's jobs", () => {
   const loaded = new Set<string>()
   const run: Run = (_c, args) => ({ ok: loaded.has(args.at(-1)!) || loaded.has(args[1]), out: "" })
+  const h = mkdtempSync(`${tmpdir()}/dobby-sc-`)
+  mkdirSync(`${h}/Library/LaunchAgents`, { recursive: true }); mkdirSync(`${h}/.config/systemd/user`, { recursive: true })
+  for (const n of ["tick", "listener", "telegram", "service"]) { writeFileSync(`${h}/Library/LaunchAgents/com.dobby.${n}.plist`, "x"); writeFileSync(`${h}/.config/systemd/user/dobby-${n}.service`, "x") }
+  writeFileSync(`${h}/.config/systemd/user/dobby.service`, "x")
+  const startConflicts = (os: NodeJS.Platform, uid: number, r: Run, svc: boolean) => startConflictsAt(os, uid, r, svc, h)
   assert.deepEqual(startConflicts("darwin", 501, run, false), [])
+  const empty = mkdtempSync(`${tmpdir()}/dobby-sc-`)
+  loaded.add("gui/501/com.dobby.tick")
+  assert.deepEqual(startConflictsAt("darwin", 501, run, false, empty), [], "another install's loaded job, no plist here")
+  loaded.clear()
+  loaded.add("gui/501/com.dobby.tick")
+  writeFileSync(`${h}/Library/LaunchAgents/com.dobby.tick.plist`, "<key>DOBBY_DIR</key><string>/other/data</string>")
+  assert.deepEqual(startConflicts("darwin", 501, run, false), [], "a job running on another data dir is not this install's")
+  process.env.DOBBY_DIR = "/other/data"
+  assert.match(startConflicts("darwin", 501, run, false)[0], /tick is loaded/)
+  delete process.env.DOBBY_DIR
+  writeFileSync(`${h}/Library/LaunchAgents/com.dobby.tick.plist`, "x")
+  loaded.clear()
   loaded.add("gui/501/com.dobby.telegram")
   assert.match(startConflicts("darwin", 501, run, false)[0], /telegram is loaded/)
+  loaded.clear(); loaded.add("gui/501/com.dobby.listener")
+  assert.match(startConflicts("darwin", 501, run, false)[0], /listener is loaded/)
+  loaded.add("gui/501/com.dobby.telegram") // an install from before the rename
+  assert.match(startConflicts("darwin", 501, run, false).join(), /com\.dobby\.telegram is loaded/)
   loaded.clear(); loaded.add("gui/501/com.dobby.service")
   assert.equal(startConflicts("darwin", 501, run, false).length, 1)
   assert.equal(startConflicts("darwin", 501, run, true).length, 0) // the service is itself

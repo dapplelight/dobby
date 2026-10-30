@@ -1,6 +1,7 @@
 // Optional agent tooling (graphify, rtk, caveman, ponytail, jev): which are on, which this machine has, and the rules text agents get.
 // Rules live in agent-rules/<part>.md; a tool's part is added only when it is on AND found (jev: on AND JEV_API_KEY present, never read out).
 // With every tool on the text equals the old single agent-rules.md byte for byte (tests/tools.test.ts).
+import { fileURLToPath } from "node:url"
 import { spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
@@ -18,17 +19,27 @@ export const INFO: Record<Tool, { what: string; install?: string[] }> = {
   ponytail: { what: "'laziest solution that works' coding style (text only)" },
   jev: { what: "paid TypeSafe classifier; needs JEV_API_KEY, opt-in" },
 }
-const DIR = new URL("../agent-rules/", import.meta.url).pathname
+const DIR = fileURLToPath(new URL("../agent-rules/", import.meta.url))
 const FREE: Tool[] = ["graphify", "rtk", "caveman", "ponytail"]
 
 export const enabled = (t: Tool, c: Pick<Config, "tools" | "safety"> = config()) =>
   c.tools?.[t] ?? (t === "jev" ? c.safety.classifier === "jev" : FREE.includes(t))
 
 export type Detect = (t: Tool) => boolean
+const has = (bin: string) => !spawnSync(bin, ["--version"], { stdio: "ignore" }).error
+/** What setup can install here: commands to run on a yes, or a note when a prerequisite (uv, Homebrew) is missing. `have` answers "is this program on PATH". */
+export function installPlan(t: "graphify" | "rtk", have: (bin: string) => boolean = has): { cmds: string[]; note?: string } {
+  if (t === "rtk") return have("brew") ? { cmds: INFO.rtk.install! } : { cmds: [], note: "rtk: Homebrew is not installed. See https://www.rtk-ai.app/ for other ways to install it." }
+  if (have("uv")) return { cmds: INFO.graphify.install! }
+  if (have("pipx")) return { cmds: [`pipx install graphifyy==${GRAPHIFY_PIN}`] }
+  return { cmds: [], note: `graphify: needs uv. Install it with: curl -LsSf https://astral.sh/uv/install.sh | sh, then run: ${INFO.graphify.install![0]} (or pipx install graphifyy==${GRAPHIFY_PIN})` }
+}
+/** The real rtk answers --version and `rtk gain`; Rust Type Kit, which shares the name, has no `gain`. */
+export const rtkOk = (run: (args: string[]) => number | null = (a) => spawnSync("rtk", a, { stdio: "ignore", timeout: 10_000 }).status) => run(["--version"]) === 0 && run(["gain"]) === 0
 /** On this machine: graphify on PATH, rtk answering --version, jev key present; text-only tools always. */
 export const detect: Detect = (t) => {
   if (t === "graphify") return !spawnSync("graphify", ["--version"], { stdio: "ignore" }).error
-  if (t === "rtk") return spawnSync("rtk", ["--version"], { stdio: "ignore" }).status === 0
+  if (t === "rtk") return rtkOk()
   if (t === "jev") return !!jevKey()
   return true
 }

@@ -1,0 +1,16 @@
+{
+  "roles": {
+    "build": [
+      {
+        "files": {
+          "src/farewell.js": "export const farewell = (name) => `Goodbye, ${name}`\n",
+          "test/farewell.test.js": "import assert from \"node:assert/strict\"\nimport { test } from \"node:test\"\nimport { farewell } from \"../src/farewell.js\"\n\ntest(\"farewell\", () => assert.equal(farewell(\"Asha\"), \"Goodbye, Asha\"))\n"
+        },
+        "reply": "Added src/farewell.js and a test for it."
+      }
+    ],
+    "review": [
+      { "push": { "branch": "dobby/1", "files": { "NOTES.md": "pushed by someone else while the review ran\n" } } }
+    ]
+  }
+}

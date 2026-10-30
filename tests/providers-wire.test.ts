@@ -33,7 +33,7 @@ test("config: providers absent stays absent (migrate output unchanged); present 
   assert.equal(kept.config.timezone, "Europe/London")
   assert.equal(kept.config.providers, undefined)
   assert.ok(kept.sources.includes(priv))
-  assert.match(kept.warnings.join("\n"), /providers ignored: providers\.roles\.reviewer\.primary/)
+  assert.match(kept.warnings.join("\n"), /providers\.roles\.reviewer\.primary/)
 })
 
 test("kv: pool and catalog round-trip; missing or corrupt rows read as absent", () => {

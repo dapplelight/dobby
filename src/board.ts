@@ -3,11 +3,14 @@
 // one app in an org, another on a personal account: wherever the repo lives), in a column per stage. Dobby's DB stays the source of truth; the board is a one-way mirror, synced each tick and
 // when a worker claims a ticket. PRs say "Closes #<issue>", so GitHub links them to the card.
 // The board needs the gh token's `project` scope (owner runs `gh auth refresh -s project` once); until then only issues sync.
+import { repoSlug } from "./savings.ts"
 import type { DB } from "./db.ts"
 import { run as realRun, type Run } from "./graphs/review.ts"
+import { config } from "./config.ts"
 import { loadProjects } from "./lib.ts"
 import { fetchMilestones } from "./milestones.ts"
-import { redact } from "./telegram.ts"
+import { isPublic } from "./privacy.ts"
+import { redact } from "./notify.ts"
 
 export const STAGES = ["Backlog", "Ready", "Building", "In review", "Shipped", "Failed", "Declined"] as const
 const STAGE_OF: Record<string, (typeof STAGES)[number]> = { backlog: "Backlog", ready: "Ready", running: "Building", fixing: "In review", approval: "In review", shipped: "Shipped", failed: "Failed", declined: "Declined", split: "Declined" }
@@ -17,6 +20,12 @@ const PER_SYNC = 25 // new issues per sync; GitHub limits content creation, the 
 
 const kv = (db: DB, k: string) => (db.prepare("SELECT v FROM kv WHERE k=?").get(k) as { v: string } | undefined)?.v
 const setKv = (db: DB, k: string, v: string) => db.prepare("INSERT OR REPLACE INTO kv VALUES (?, ?)").run(k, v)
+export const noIssueKey = (id: number) => `gh:noissue:${id}`
+/** The repo a new ticket of `project` would be filed on as an issue, or null (issues off, no GitHub repo, or a public repo without github.mirrorPublic). */
+export function issueRepo(project: string, run: Run = realRun) {
+  const p = loadProjects()[project], r = p && repoOf(p.repo, run)
+  return r && config().board?.issues !== false && (config().github.mirrorPublic || !isPublic(r)) ? r : null
+}
 const json = (out: string) => { try { return JSON.parse(out) } catch { return null } }
 
 type Board = { owner: string; id: string; number: number; url: string; field: string; options: Record<string, string> }
@@ -26,7 +35,7 @@ export function board(db: DB, app: string, repo: string, run: Run = realRun): Bo
   const saved = kv(db, `gh:board:${app}`)
   if (saved) return JSON.parse(saved)
   const owner = repo.split("/")[0]
-  const made = run("gh", ["project", "create", "--owner", owner, "--title", app[0].toUpperCase() + app.slice(1), "--format", "json"])
+  const made = run("gh", ["project", "create", "--owner", owner, "--title", app, "--format", "json"])
   const p = made.ok && json(made.out)
   if (!p?.id) return null
   const f = run("gh", ["project", "field-create", String(p.number), "--owner", owner, "--name", "Stage", "--data-type", "SINGLE_SELECT", "--single-select-options", STAGES.join(","), "--format", "json"])
@@ -39,7 +48,7 @@ export function board(db: DB, app: string, repo: string, run: Run = realRun): Bo
 
 export const repoOf = (dir: string, run: Run) => {
   const r = run("git", ["remote", "get-url", "origin"], dir)
-  return r.ok ? r.out.trim().replace(/^.*github\.com[:/]/, "").replace(/\.git$/, "") || null : null
+  return r.ok ? repoSlug(r.out) : null
 }
 
 /** Mirror tickets to issues and board cards. `only` = one ticket (a worker just claimed it). Returns log lines. */
@@ -47,7 +56,7 @@ export function syncBoard(db: DB, o: { only?: number; run?: Run } = {}): string[
   const run = o.run ?? realRun
   const log: string[] = []
   const repos: Record<string, string> = {}
-  for (const p of Object.values(loadProjects())) { const r = repoOf(p.repo, run); if (r) repos[p.name] = r }
+  for (const p of Object.values(loadProjects())) { const r = repoOf(p.repo, run); if (r && (config().github.mirrorPublic || !isPublic(r))) repos[p.name] = r } // a public repo's backlog stays private unless github.mirrorPublic
   // goals: the repo's open milestones, read by syncGoals each tick; a failed read keeps the last list
   if (!o.only) for (const [app, repo] of Object.entries(repos)) { const ms = fetchMilestones(repo, run); if (ms) setKv(db, `gh:ms:${app}`, JSON.stringify(ms)) }
   const boards: Record<string, Board | null> = {}
@@ -61,7 +70,8 @@ export function syncBoard(db: DB, o: { only?: number; run?: Run } = {}): string[
     let url = kv(db, `gh:issue:${t.id}`)
     if (!url) {
       if (CLOSED.has(stage) || created >= PER_SYNC) continue // history and overflow stay off the board
-      const c = run("gh", ["issue", "create", "--repo", repo, "--title", redact(t.title.slice(0, 250)), "--body", redact(`${(t.done_when ?? "").slice(0, 60_000)}\n\n—\nForeman ticket #${t.id}. Dobby keeps this issue in sync; edits here are not read back.`)])
+      if (config().board?.issues === false || kv(db, noIssueKey(t.id))) continue // the owner turned issues off, everywhere or for this ticket
+      const c = run("gh", ["issue", "create", "--repo", repo, "--title", redact(t.title.slice(0, 250)), "--body", redact(`${(t.done_when ?? "").slice(0, 60_000)}\n\n—\nDobby ticket #${t.id}. Dobby keeps this issue in sync; edits here are not read back.`)])
       if (!c.ok) { log.push(`board: #${t.id} issue failed: ${c.out.slice(0, 120)}`); continue }
       url = c.out.trim().split("\n").pop()!
       setKv(db, `gh:issue:${t.id}`, url)

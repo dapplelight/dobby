@@ -1,0 +1,56 @@
+---
+// Shell for non-docs pages (landing options). Same tokens, fonts and theme choice as the docs.
+import "../styles/site.css"
+import geist from "@fontsource-variable/geist/files/geist-latin-wght-normal.woff2?url"
+import { beta, site } from "../../facts.ts"
+import Mark from "../components/Mark.astro"
+
+interface Props { title: string; description?: string; noindex?: boolean }
+const { title, description = "Dobby runs Claude Code on your tickets and opens reviewed pull requests.", noindex = false } = Astro.props
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    {noindex && <meta name="robots" content="noindex" />}
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="preload" href={geist} as="font" type="font/woff2" crossorigin />
+    <link rel="alternate" type="text/plain" title="llms.txt" href="/docs/llms.txt" />
+    <script is:inline>
+      // Follows the docs' theme choice (Starlight stores it), else the system.
+      try {
+        const t = localStorage.getItem("starlight-theme")
+        const dark = t ? t === "dark" : matchMedia("(prefers-color-scheme: dark)").matches
+        document.documentElement.classList.toggle("dark", dark)
+      } catch {
+        document.documentElement.classList.toggle("dark", matchMedia("(prefers-color-scheme: dark)").matches)
+      }
+    </script>
+  </head>
+  <body class="min-h-dvh bg-bg-base text-text-primary antialiased">
+    <header class="mx-auto flex max-w-5xl items-center gap-3 px-4 py-4 sm:px-6">
+      <a href="/" class="flex min-h-11 items-center gap-2 text-text-primary no-underline">
+        <Mark class="size-[22px] text-primary" />
+        <span class="text-xl font-semibold tracking-[-0.035em]">dobby</span>
+      </a>
+      <span class="rounded-full border border-primary/30 bg-accent-primary-subtle px-2 py-1 text-[11px] leading-none font-medium text-primary" title={beta.note}>{beta.label}</span>
+      <nav class="ml-auto flex items-center gap-1 text-sm">
+        <a class="flex min-h-11 items-center px-3 text-text-secondary hover:text-text-primary" href={site.docs}>Docs</a>
+        <a class="flex min-h-11 items-center px-3 text-text-secondary hover:text-text-primary" href={`https://github.com/${site.repo}`}>GitHub</a>
+      </nav>
+    </header>
+    <slot />
+    <footer class="mx-auto mt-24 flex max-w-5xl flex-wrap justify-between gap-3 border-t border-border-subtle px-4 py-6 text-xs text-text-hint sm:px-6">
+      <span>{beta.note}</span>
+      <span class="flex gap-5">
+        <a class="text-text-secondary hover:text-text-primary" href="/docs/llms.txt">llms.txt</a>
+        <a class="text-text-secondary hover:text-text-primary" href={`https://github.com/${site.repo}`}>GitHub</a>
+        <span>{site.license} licensed</span>
+      </span>
+    </footer>
+  </body>
+</html>

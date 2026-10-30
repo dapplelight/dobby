@@ -143,6 +143,7 @@ export function routingState(db: DB, f: Detected, cfg: ProvidersConfig, now: num
 function explainText(db: DB, f: Detected, cfg: ProvidersConfig, now: number, head: string): string {
   const { table, health, problems } = routingState(db, f, cfg, now)
   return [
+    ...(cfg.enabled ? [] : ["Providers are off; everything runs on claude. The plan below is what routing would do if you turned them on."]),
     head || `providers config: ${cfg.enabled ? "enabled" : "present, not enabled (unused)"}`,
     `main thread: ${table.main || "none available"}`,
     ...Object.keys(DOBBY_ROLES).map((r) => explain(r, table, health, now)),

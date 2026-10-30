@@ -1,0 +1,15 @@
+# Dobby's opt-in stats collector. Nothing here is created or deployed by the repo: see docs/manual/stats.md for the steps.
+name = "dobby-stats"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "dobby-stats"
+database_id = "821df3f7-064b-4d62-84da-83022980cb39"
+migrations_dir = "migrations"
+
+# Rows older than 180 days are deleted on the first request each day (src/index.ts purgeOnce); no cron trigger.
+
+# Secret (not in this file): REPORT_TOKEN, set with `wrangler secret put REPORT_TOKEN`.

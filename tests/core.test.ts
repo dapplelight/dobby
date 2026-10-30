@@ -32,8 +32,9 @@ test("budget: the weekly remainder spread over the windows left, heavier at nigh
   assert.equal(budgetAllows({ fiveUsed: 65, weekUsed: 20, weekMsToReset: day3 }, 14, 80).ok, true) // owner pressed 80%
   assert.equal(budgetAllows({ fiveUsed: 82, weekUsed: 20, weekMsToReset: day3 }, 14, 80).ok, false)
   assert.equal(budgetAllows({ fiveUsed: 95, weekUsed: 20, weekMsToReset: day3 }, 14, 100).ok, true)
-  assert.equal(budgetAllows({ fiveUsed: 10, weekUsed: 50, weekMsToReset: day3 }, 2).cap, 42) // ahead of pace: night x1.6 of the even share only
-  assert.equal(budgetAllows({ fiveUsed: 10, weekUsed: 95, weekMsToReset: day3 }, 2).ok, false) // the last 5% is the owner's
+  assert.equal(budgetAllows({ fiveUsed: 10, weekUsed: 50, weekMsToReset: day3 }, 2, undefined, undefined, 100).cap, 42) // ahead of pace: night x1.6 of the even share only (weekCap 100 = the old pacing)
+  assert.equal(budgetAllows({ fiveUsed: 10, weekUsed: 50, weekMsToReset: day3 }, 2).cap, 38) // the default weekCap 95 paces to 95, not 100
+  assert.equal(budgetAllows({ fiveUsed: 10, weekUsed: 95, weekMsToReset: day3 }, 2).ok, false) // the default weekCap 95 stops here
   assert.equal(budgetAllows({ fiveUsed: 10, weekUsed: 20, weekMsToReset: day3 }, 2, undefined, 0.2).cap, 90) // measured: a window costs more of the week (still far behind pace: night ceiling)
   assert.equal(budgetAllows({ fiveUsed: 0, weekUsed: 5, weekMsToReset: 3 * 3600_000 }, 14).cap, 60) // weekly reset soon, lots left: the day cap tops out at 60
 })
@@ -93,9 +94,9 @@ test("jev: below floor, bad labels and errors fall back to the careful path", as
   assert.deepEqual(judge(q, { choice: "XL", confidence: 0.99 }), { value: "M", fromJev: false })
   process.env.JEV_API_KEY = "test"
   const down = (async () => { throw new Error("offline") }) as unknown as typeof fetch // (key set just above)
-  assert.deepEqual(await triage("Add login", "", undefined, down), { size: "M", risk: "high", fromJev: false })
+  assert.deepEqual(await triage("Add login", "", undefined, down), { size: "M", risk: "high", riskBy: "words", fromJev: false })
   const ok = (async () => new Response(JSON.stringify({ answers: { size: { choice: "S", confidence: 0.99 }, risk: { score: 0, confidence: 0.98 } } }))) as unknown as typeof fetch
-  assert.deepEqual(await triage("Fix typo in footer", "", undefined, ok), { size: "S", risk: "low", fromJev: true })
+  assert.deepEqual(await triage("Fix typo in footer", "", undefined, ok), { size: "S", risk: "low", riskBy: "jev", fromJev: true })
   process.env.JEV_API_KEY = ""
 })
 
@@ -111,7 +112,7 @@ test("duplicates: exact titles caught on insert, Haiku groups parsed safely", ()
 })
 
 import { mergeIsBig } from "../src/jev.ts"
-import { clip, parseReply, readSecrets, shortTitle, silentAt } from "../src/telegram.ts"
+import { clip, parseReply, readSecrets, shortTitle, silentAt } from "../src/notify.ts"
 test("merge size: hard rules first, Jev unsure means big; Telegram secrets and quiet hours", async () => {
   process.env.JEV_API_KEY = "" // no key: never reach the real Jev from tests
   assert.equal((await mergeIsBig("x", [{ path: "apps/api/drizzle/0058_add.sql", lines: 3 }])).big, true)
@@ -142,6 +143,7 @@ test("telegram replies: explicit ids, bare replies to a ping, and noise", () => 
   assert.deepEqual(parseReply("dobby approve 214"), { decision: "approve", id: 214 })
   assert.deepEqual(parseReply("Approved", "🟡 Ready for you: tally #213 Open sign-up"), { decision: "approve", id: 213 })
   assert.deepEqual(parseReply("no", "tally #9 x"), { decision: "decline", id: 9 })
+  assert.deepEqual(parseReply("cancel 12"), { decision: "decline", id: 12 })
   assert.equal(parseReply("Approved"), null) // no id anywhere
   assert.equal(parseReply("what is 214?"), null)
 })
@@ -155,7 +157,8 @@ test("phone-friendly messages: plain job names, short titles, clean cuts", () =>
 })
 
 import { applyPlan, buildLeadGraph, leadDue, parsePlan, type Plan } from "../src/graphs/lead.ts"
-import { buildCosGraph, fallbackBrief, gather, noMoney, type Facts } from "../src/graphs/cos.ts"
+import { buildCosGraph, gather, noMoney, type Facts } from "../src/graphs/cos.ts"
+import { buildBrief, briefMarkdown } from "../src/brief.ts"
 import { buildTicketGraph } from "../src/graphs/ticket.ts"
 import type { Project } from "../src/lib.ts"
 const backlog = (db: ReturnType<typeof open>, title: string, size = "S") => {
@@ -234,7 +237,7 @@ test("idle window: under 30% at the midpoint fires, 30% or more does not; the Le
   assert.deepEqual(leadDue(db, projects, Date.now(), true), []) // queue already at READY_CAP
 })
 
-test("cos: the template always has the three sections and no money amounts", () => {
+test("cos: the summary has its sections and no money amounts", () => {
   const db = open(":memory:")
   const { id } = addTicket(db, { project: "tally", title: "Show $500 left and ₹1,200 spent (apps/web/x.tsx)" })
   setTicket(db, id, { status: "shipped", note: "https://github.com/ownerdev/tally/pull/600" })
@@ -242,11 +245,9 @@ test("cos: the template always has the three sections and no money amounts", () 
   db.prepare("INSERT INTO kv VALUES (?, ?)").run(`lead:tally:${new Date().toLocaleDateString("sv")}`, "Lead · tally\nnote: queue refilled\nneeds owner: #9 Deploy it")
   logRun(db, { project: "tally", kind: "build", ok: true, cost_usd: 1.5 })
   const f: Facts = gather(db, { tally: { name: "tally", paused: false } as Project, shopfront: { name: "shopfront", paused: true } as Project }, { fiveUsed: 4, weekUsed: 25, weekMsToReset: 1 })
-  const brief = fallbackBrief(f)
-  for (const s of ["Do first", "Shipped", "Building today", "Shopfront paused", "Deploy it"]) assert.ok(brief.includes(s), s)
-  assert.ok(brief.startsWith("Do first: Tally: Deploy it"), brief)
-  assert.ok(!/[$₹]/.test(brief) && !/Rs 5000/.test(brief), brief)
-  assert.ok(brief.split("\n").length <= 12)
+  const brief = briefMarkdown(buildBrief(db, f))
+  for (const s of ["**Do first:** tally · Deploy it", "### Shipped", "[PR #600](https://github.com/ownerdev/tally/pull/600)", "### Building today", "shopfront paused"]) assert.ok(brief.includes(s), s)
+  assert.ok(!/[$₹]/.test(brief) && !/Rs 5000/.test(brief) && !/cost|haiku|sonnet|opus/i.test(brief), brief)
   assert.equal(noMoney("left $500, ₹1,200.50 and INR 3k; 500 households"), "left [amount], [amount] and [amount]; 500 households")
 })
 
@@ -258,10 +259,12 @@ test("ship policy: schema-only migrations deploy on their own, data changes wait
   assert.equal(changesData("INSERT INTO settings VALUES ('cap', '500');"), true)
   assert.equal(changesData("ALTER TABLE t DROP COLUMN old;"), true)
   assert.equal(changesData("DROP TABLE legacy;"), true)
+  assert.equal(changesData("CREATE TABLE a (id int, b_id int REFERENCES b(id) ON DELETE cascade ON UPDATE cascade);"), false) // drizzle writes referential actions on every foreign key
+  assert.equal(changesData("ALTER TABLE t ADD COLUMN kind text DEFAULT 'update';"), false) // a string literal is not a statement
 })
 
 test("front desk memory: last 10 messages within 2 hours", async () => {
-  const { recent } = await import("../src/telegram.ts")
+  const { recent } = await import("../src/notify.ts")
   const now = 10 * 3600_000
   const msgs = [{ at: now - 3 * 3600_000, who: "you", text: "old" }, ...Array.from({ length: 12 }, (_, i) => ({ at: now - 60_000, who: "you", text: `m${i}` }))]
   const r = recent(JSON.stringify(msgs), now)
@@ -271,10 +274,10 @@ test("front desk memory: last 10 messages within 2 hours", async () => {
 })
 
 test("evening digest: plain summaries and PR links, or a clear nothing", async () => {
-  const { digest } = await import("../src/telegram.ts")
+  const { digest } = await import("../src/notify.ts")
   assert.equal(digest([], () => undefined), "🌙 Today: nothing merged.")
   const d = digest([{ id: 46, project: "tally", title: "Zerodha connect saves every account under user_1: fix", note: "https://github.com/x/pull/9" }], () => "• Each person's Zerodha shows under them")
-  for (const s of ["Shipped today: Tally 1", "• Zerodha connect saves every account under user_1", "Nothing goes live"]) assert.ok(d.includes(s), s)
+  for (const s of ["Shipped today: tally 1", "• Zerodha connect saves every account under user_1", "Nothing goes live"]) assert.ok(d.includes(s), s)
 })
 
 test("capacity: windows recorded by reset time, advice from the week", async () => {
@@ -459,6 +462,53 @@ test("board: tickets mirror to issues and one Stage column each; closed on ship;
   assert.ok(calls.includes("gh issue close") && calls.includes("gh project item-edit"))
 })
 
+test("board: a public repo's tickets are not mirrored as issues unless github.mirrorPublic", async () => {
+  const { syncBoard } = await import("../src/board.ts")
+  const { visibility } = await import("../src/privacy.ts")
+  const db = open(":memory:")
+  const calls: string[] = []
+  const run = (cmd: string, args: string[]) => { calls.push(`${cmd} ${args.slice(0, 2).join(" ")}`); return cmd === "git" ? { ok: true, out: "https://github.com/acmeorg/tally.git\n" } : { ok: true, out: "" } }
+  addTicket(db, { project: "tally", title: "Secret plan", priority: 99 })
+  visibility.set("acmeorg/tally", true)
+  try {
+    syncBoard(db, { run })
+    assert.equal(calls.filter((c) => c === "gh issue create").length, 0)
+  } finally { visibility.delete("acmeorg/tally") }
+})
+
+test("board: board.issues false files no new issue but still closes an existing one; gh:noissue skips one ticket; add says when an issue will appear", async () => {
+  const { syncBoard, issueRepo, noIssueKey } = await import("../src/board.ts")
+  const { config, setConfig } = await import("../src/config.ts")
+  const db = open(":memory:")
+  const calls: string[] = []
+  const run = (cmd: string, args: string[]) => { calls.push(`${cmd} ${args.slice(0, 2).join(" ")}`); return cmd === "git" ? { ok: true, out: "https://github.com/acmeorg/tally.git\n" } : args[1] === "create" && args[0] === "issue" ? { ok: true, out: "https://github.com/acmeorg/tally/issues/7\n" } : { ok: true, out: "" } }
+  const a = addTicket(db, { project: "tally", title: "Kept off", priority: 9 })
+  const b = addTicket(db, { project: "tally", title: "Off by flag", priority: 8 })
+  db.prepare("INSERT INTO kv VALUES (?, ?)").run(noIssueKey(b.id), "1")
+  const c = addTicket(db, { project: "tally", title: "Filed", priority: 7 })
+  syncBoard(db, { run })
+  assert.equal(calls.filter((x) => x === "gh issue create").length, 2) // a and c; b is skipped
+  assert.equal(db.prepare("SELECT v FROM kv WHERE k=?").get(`gh:issue:${b.id}`), undefined)
+  assert.equal(issueRepo("tally", run), "acmeorg/tally")
+  const { visibility } = await import("../src/privacy.ts")
+  visibility.set("acmeorg/tally", true)
+  try { assert.equal(issueRepo("tally", run), null) } finally { visibility.delete("acmeorg/tally") } // public repo: no line
+  const base = config()
+  setConfig({ ...base, board: { issues: false } })
+  try {
+    const d = addTicket(db, { project: "tally", title: "Late", priority: 1 })
+    calls.length = 0
+    syncBoard(db, { run })
+    assert.equal(calls.filter((x) => x === "gh issue create").length, 0)
+    assert.equal(db.prepare("SELECT v FROM kv WHERE k=?").get(`gh:issue:${d.id}`), undefined)
+    assert.equal(issueRepo("tally", run), null)
+    setTicket(db, a.id, { status: "shipped" })
+    syncBoard(db, { run, only: a.id })
+    assert.ok(calls.includes("gh issue close")) // an existing issue still closes
+  } finally { setConfig(base) }
+  assert.equal(c.id > 0, true)
+})
+
 test("deploy lock: a dead holder frees it; a live or old-format holder keeps it", async () => {
   const { alive } = await import("../src/deploy.ts")
   assert.equal(alive(process.pid), true)
@@ -527,6 +577,7 @@ test("doctor: each check passes on healthy rows and fails on its own problem", a
   assert.deepEqual(failing({ ...good, tickets: [{ id: 2, status: "running", updated_at: ago(3 * 3600_000) }] }), ["stuck tickets"])
   assert.deepEqual(failing({ ...good, tickets: [{ id: 3, status: "failed", updated_at: ago(3 * 3600_000) }] }), [])
   assert.deepEqual(failing({ ...good, origins: [{ project: "p", base: "main", ok: false }] }), ["origin/base"])
+  assert.deepEqual(failing({ ...good, stray: "/h/.config/dobby/projects" }), ["project files"])
   assert.deepEqual(failing({ ...good, auth: { ok: false, reason: "OAuth session expired" } }), ["claude session"])
   assert.deepEqual(failing({ ...good, auth: { ok: false, reason: "stalled" } }), ["claude session"])
   assert.deepEqual(failing({ ...good, pauses: [{ text: "project tally", at: at - 8 * 86_400_000 }] }), ["old pauses"])

@@ -1,0 +1,251 @@
+#!/usr/bin/env node
+// Fake `gh` for the end-to-end tests: a GitHub over local bare repos plus a JSON store. No network, no login, no real GitHub.
+// Plain JavaScript on purpose (it runs as a spawned program). `jq` (the system one) applies --jq/-q expressions.
+//
+//   DOBBY_FAKE_GH_DIR       root. Bare repos live at <dir>/github.com/<owner>/<name>.git, so a clone's origin URL is also a
+//                           path that still reads as github.com/<owner>/<name> to Dobby. The store is <dir>/state.json.
+//   DOBBY_FAKE_GH_USER      the signed-in login (default "acme")
+//   DOBBY_FAKE_GH_SIGNEDOUT 1 = every call but --version fails as if not logged in (auth status exits 1, the rest 4)
+//   DOBBY_FAKE_GH_OFFLINE   1 = every call but --version fails as if the network were down
+//   DOBBY_FAKE_GH_SCOPES    the "Token scopes" line of `gh auth status` (unset = no such line, as with a fine-grained token)
+//   DOBBY_FAKE_GH_REPO      JSON merged into `gh api repos/<r>` (permissions, allow_*_merge, default_branch)
+//   DOBBY_FAKE_GH_PROTECTION  JSON answer of repos/<r>/branches/<b>/protection (unset = 404 "Branch not protected")
+//   DOBBY_FAKE_GH_RULES     JSON answer of repos/<r>/rules/branches/<b> (unset = [])
+//   DOBBY_FAKE_GH_LOG       JSONL of every call {args, cwd, status}
+//
+// What Dobby calls (grep '"gh"' src/), and what answers it here. Anything else exits 1 with "fake gh: no route", so a missing
+// route is a failing test, never silence.
+//
+//   gh auth status                                    savings.shipPreflight, checks.ts         ok unless signed out
+//   gh repo view [slug] --json ... [-q|--jq]          privacy.isPublic, shipPreflight           PUBLIC repo, ADMIN permission
+//   gh pr create --head --base --title --body [--draft] [-R]   graphs/ticket.ts, scout        opens a PR from the pushed branch; prints its URL
+//   gh pr view <n|branch|url> --json ... [-q]         ticket, review, merge, program, cli       live fields (headRefOid read from the bare repo)
+//   gh pr list [--head b] [--state s] --json ... [-q] review sweeps, prDone                      newest first
+//   gh pr diff <n> [--name-only]                      review, safety check, cli safety          git diff base...head in the bare repo
+//   gh pr merge <n|branch> --squash --delete-branch --match-head-commit <sha> [-R]   merge.landPr   a real squash merge into base
+//   gh pr checks <n> -R repo [--required] --json ...  merge.waitChecks                          the PR's `checks` array in the store
+//   gh pr close <n|url> [--delete-branch] [--comment]  stuck.ts, scout, cancel                  closes; optionally deletes the branch
+//   gh pr ready --undo <url>                          graphs/ticket.ts (draft PRs)              back to draft
+//   gh api user --jq .login                           review.viewer
+//   gh api repos/<r>                                  review.isPrivate (.private)
+//   gh api repos/<r>/collaborators/<login>[/permission]  review.trustedAuthor, commands
+//   gh api repos/<r>/pulls/<n>/files                  review.gate (filename, additions, deletions, patch)
+//   gh api repos/<r>/issues/<n>/comments              review.upsertWalkthrough, merge.postPrCost  GET, POST (-f body= or --input)
+//   gh api -X PATCH|DELETE repos/<r>/issues/comments/<id>  same                                  edit / remove a comment
+//   gh api repos/<r>/pulls/<n>/reviews                review.post (inline comments), external      POST stores; GET lists
+//   gh api repos/<r>/pulls/<n>/comments/<id>/replies  review.post (fixed threads)               POST
+//   gh api -X POST repos/<r>/statuses/<sha>           review.post ("Claude Review" status)     stored per sha
+//   gh api repos/<r>/commits/<sha>/status|check-runs  reviewer-external                        statuses / empty
+//   gh api repos/<r>/issues/comments?since= | pulls/comments?since=   review.scan, commands     all comments / none
+//   gh api repos/<r>/milestones                       milestones.ts                              []
+//   gh api graphql                                    review threads (none) and resolve (ok)
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { spawnSync } from "node:child_process"
+
+const root = process.env.DOBBY_FAKE_GH_DIR
+const args = process.argv.slice(2)
+const me = process.env.DOBBY_FAKE_GH_USER || "acme"
+let save = () => {}
+const done = (code, status) => {
+  if (code === 0) save()
+  if (process.env.DOBBY_FAKE_GH_LOG) appendFileSync(process.env.DOBBY_FAKE_GH_LOG, JSON.stringify({ args, cwd: process.cwd(), code, status }) + "\n")
+  process.exit(code)
+}
+const fail = (msg, code = 1) => { process.stderr.write(`${msg}\n`); done(code, msg.slice(0, 120)) }
+if (!root) fail("fake gh: DOBBY_FAKE_GH_DIR is not set (the fake never touches the real GitHub)")
+
+// ---- store -----------------------------------------------------------------------------------------------------------
+const file = `${root}/state.json`
+const lock = `${root}/state.lock`
+mkdirSync(root, { recursive: true })
+for (let i = 0; ; i++) { try { mkdirSync(lock); break } catch { if (i > 400) rmSync(lock, { recursive: true, force: true }); spawnSync("sleep", ["0.01"]) } }
+process.on("exit", () => rmSync(lock, { recursive: true, force: true }))
+const store = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : { prs: [], statuses: {}, nextComment: 1000, nextPr: {} }
+save = () => { writeFileSync(`${file}.tmp`, JSON.stringify(store, null, 1)); renameSync(`${file}.tmp`, file) }
+
+// ---- helpers ---------------------------------------------------------------------------------------------------------
+const bare = (slug) => `${root}/github.com/${slug}.git`
+const git = (slug, ...a) => spawnSync("git", ["--git-dir", bare(slug), ...a], { encoding: "utf8" })
+const gitIn = (cwd, ...a) => spawnSync("git", ["-c", "user.name=GitHub", "-c", "user.email=noreply@github.example", "-c", "commit.gpgsign=false", ...a], { cwd, encoding: "utf8" })
+const flagAt = (name, short) => { const i = args.findIndex((a) => a === name || (short && a === short)); return i < 0 ? undefined : args[i + 1] }
+const has = (name) => args.includes(name)
+const slugFromUrl = (u) => u?.match(/github\.com[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?(?:\/|$|#)/)?.[1]
+const slugFromCwd = () => { const r = spawnSync("git", ["remote", "get-url", "origin"], { encoding: "utf8" }); return r.status === 0 ? slugFromUrl(r.stdout.trim() + "/") ?? slugFromUrl(r.stdout.trim()) : undefined }
+const slugOf = (hint) => flagAt("--repo", "-R") ?? slugFromUrl(hint) ?? slugFromCwd()
+const jq = (value, expr) => {
+  const r = spawnSync("jq", ["-r", expr], { input: JSON.stringify(value), encoding: "utf8" })
+  if (r.error) fail(`fake gh: jq is needed for --jq (${r.error.message})`)
+  if (r.status !== 0) fail(`fake gh: jq failed on ${expr}: ${r.stderr}`)
+  return r.stdout
+}
+const print = (value, expr) => { process.stdout.write(expr ? jq(value, expr) : typeof value === "string" ? value : JSON.stringify(value) + "\n"); done(0, "ok") }
+const jqExpr = () => flagAt("--jq", "-q")
+const field = (name, short) => { const all = []; args.forEach((a, i) => { if (a === name || (short && a === short)) all.push(args[i + 1]) }); return all }
+const fields = () => Object.fromEntries(field("-f", "-F").concat(field("--field")).map((kv) => { const k = kv.indexOf("="); return [kv.slice(0, k), kv.slice(k + 1)] }))
+const body = () => { const f = flagAt("--input"); return f ? JSON.parse(readFileSync(f, "utf8")) : fields() }
+const iso = () => new Date().toISOString()
+
+const headOid = (pr) => { const r = git(pr.repo, "rev-parse", `refs/heads/${pr.head}`); return r.status === 0 ? r.stdout.trim() : pr.lastHead }
+const base = (pr) => `refs/heads/${pr.base}`
+const syncRefs = (slug) => { // refs/pull/<n>/head follows the branch, as on GitHub
+  for (const pr of store.prs.filter((p) => p.repo === slug && p.state === "OPEN")) { const o = headOid(pr); if (o) { pr.lastHead = o; git(slug, "update-ref", `refs/pull/${pr.number}/head`, o) } }
+}
+const stateOf = (pr) => pr.state
+const changedFiles = (pr) => {
+  const num = git(pr.repo, "diff", "--numstat", `${base(pr)}...${pr.lastHead}`).stdout.trim().split("\n").filter(Boolean)
+  return num.map((l) => { const [a, d, path] = l.split("\t"); const patch = git(pr.repo, "diff", `${base(pr)}...${pr.lastHead}`, "--", path).stdout.split("\n"); const at = patch.findIndex((x) => x.startsWith("@@")); return { filename: path, path, additions: Number(a) || 0, deletions: Number(d) || 0, patch: at < 0 ? "" : patch.slice(at).join("\n").trimEnd() } })
+}
+const view = (pr) => {
+  const o = headOid(pr) || pr.lastHead
+  pr.lastHead = o
+  return {
+    number: pr.number, url: `https://github.com/${pr.repo}/pull/${pr.number}`, title: pr.title, body: pr.body, headRefName: pr.head, baseRefName: pr.base, headRefOid: o,
+    isDraft: pr.draft, state: pr.state, author: { login: pr.author }, mergeable: "MERGEABLE", isCrossRepository: false, labels: [],
+    files: changedFiles(pr).map((f) => ({ path: f.filename, additions: f.additions, deletions: f.deletions })), mergeCommit: pr.mergeCommit ? { oid: pr.mergeCommit } : null,
+  }
+}
+const pick = (pr, names) => { const v = view(pr); return Object.fromEntries(names.split(",").map((n) => [n, v[n]])) }
+const findPr = (slug, ref) => {
+  const n = ref && /^\d+$/.test(ref) ? Number(ref) : Number(ref?.match(/\/pull\/(\d+)/)?.[1])
+  const mine = store.prs.filter((p) => p.repo === slug)
+  if (n) return mine.find((p) => p.number === n)
+  return mine.filter((p) => p.head === ref).sort((a, b) => b.number - a.number).find((p) => p.state === "OPEN") ?? mine.filter((p) => p.head === ref).sort((a, b) => b.number - a.number)[0]
+}
+const positional = (after) => { const i = args.indexOf(after); for (let j = i + 1; j < args.length; j++) { if (args[j].startsWith("-")) { if (!["--squash", "--rebase", "--merge", "--delete-branch", "--draft", "--undo", "--required", "--name-only", "--paginate", "--full", "--web"].includes(args[j])) j++; continue } return args[j] } }
+
+// ---- commands --------------------------------------------------------------------------------------------------------
+const [cmd, sub] = args
+if (process.env.DOBBY_FAKE_GH_SIGNEDOUT === "1" && cmd !== "--version") fail("You are not logged into any GitHub hosts. To log in, run: gh auth login", cmd === "auth" ? 1 : 4)
+if (process.env.DOBBY_FAKE_GH_OFFLINE === "1" && cmd !== "--version") fail("error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com", 1)
+if (cmd === "--version") { process.stdout.write("gh version 2.0.0 (fake)\n"); done(0, "ok") }
+if (cmd === "auth" && sub === "status") {
+  process.stdout.write(`github.com\n  ✓ Logged in to github.com account ${me} (fake)\n  - Active account: true\n${process.env.DOBBY_FAKE_GH_SCOPES ? `  - Token scopes: ${process.env.DOBBY_FAKE_GH_SCOPES}\n` : ""}`); done(0, "ok")
+}
+
+if (cmd === "repo" && sub === "view") {
+  const slug = positional("view") ?? slugOf()
+  if (!slug || !existsSync(bare(slug))) fail(`GraphQL: Could not resolve to a Repository with the name '${slug}'. (fake gh)`)
+  print({ nameWithOwner: slug, viewerPermission: "ADMIN", visibility: "PUBLIC", isPrivate: false }, jqExpr() ?? ".")
+}
+
+if (cmd === "pr") {
+  const slug = slugOf(positional(sub))
+  if (!slug || !existsSync(bare(slug))) fail(`fake gh: no repo for ${slug ?? "this directory"} under ${root}`)
+  syncRefs(slug)
+  if (sub === "create") {
+    const head = flagAt("--head"), baseBranch = flagAt("--base") ?? "main"
+    const exists = store.prs.find((p) => p.repo === slug && p.head === head && p.state === "OPEN")
+    if (exists) fail(`a pull request for branch "${head}" into branch "${baseBranch}" already exists:\nhttps://github.com/${slug}/pull/${exists.number}`)
+    const oid = git(slug, "rev-parse", `refs/heads/${head}`)
+    if (oid.status !== 0) fail("pull request create failed: GraphQL: Head sha can't be blank, Base sha can't be blank, No commits between main and the head branch (createPullRequest)")
+    const number = (store.nextPr[slug] ?? 0) + 1
+    store.nextPr[slug] = number
+    store.prs.push({ repo: slug, number, title: flagAt("--title") ?? head, body: flagAt("--body") ?? "", head, base: baseBranch, draft: has("--draft"), state: "OPEN", author: me, lastHead: oid.stdout.trim(), comments: [], reviews: [], checks: [], createdAt: iso() })
+    git(slug, "update-ref", `refs/pull/${number}/head`, oid.stdout.trim())
+    save(); process.stdout.write(`https://github.com/${slug}/pull/${number}\n`); done(0, "created")
+  }
+  if (sub === "list") {
+    const want = (flagAt("--state") ?? "open").toLowerCase()
+    const head = flagAt("--head")
+    const rows = store.prs.filter((p) => p.repo === slug && (want === "all" || p.state.toLowerCase() === want) && (!head || p.head === head)).sort((a, b) => b.number - a.number)
+    const names = flagAt("--json") ?? "number"
+    print(rows.map((p) => pick(p, names)), jqExpr() ?? ".")
+  }
+  const pr = findPr(slug, positional(sub))
+  if (!pr) fail(`no pull requests found for ${positional(sub)} (fake gh)`)
+  if (sub === "view") print(pick(pr, flagAt("--json") ?? "number,title,url"), jqExpr() ?? ".")
+  if (sub === "diff") {
+    if (has("--name-only")) { process.stdout.write(changedFiles(pr).map((f) => f.filename).join("\n") + "\n"); done(0, "ok") }
+    process.stdout.write(git(slug, "diff", `${base(pr)}...${pr.lastHead}`).stdout); done(0, "ok")
+  }
+  if (sub === "checks") {
+    const rows = pr.checks ?? []
+    const required = has("--required")
+    if (!rows.length) fail(`no ${required ? "required " : ""}checks reported on the '${pr.head}' branch`)
+    print(rows.filter((c) => !required || c.required).map((c) => ({ name: c.name, bucket: c.bucket, workflow: c.workflow ?? "" })), jqExpr() ?? ".")
+  }
+  if (sub === "close") {
+    if (pr.state !== "OPEN") fail(`Pull request ${slug}#${pr.number} is already ${pr.state.toLowerCase()}`)
+    pr.state = "CLOSED"
+    const c = flagAt("--comment"); if (c) pr.comments.push({ id: store.nextComment++, user: me, body: c, created: iso() })
+    if (has("--delete-branch")) git(slug, "update-ref", "-d", `refs/heads/${pr.head}`)
+    save(); done(0, "closed")
+  }
+  if (sub === "ready") { pr.draft = has("--undo"); save(); done(0, "ok") }
+  if (sub === "merge") {
+    if (pr.state !== "OPEN") fail(`Pull request ${slug}#${pr.number} is already ${pr.state.toLowerCase()}`)
+    if (pr.draft) fail("Pull request is still a draft (fake gh)")
+    const live = headOid(pr)
+    const match = flagAt("--match-head-commit")
+    if (match && match !== live) fail("Head branch was modified. Review and try the merge again.")
+    const tmp = mkdtempSync(`${tmpdir()}/fake-gh-merge-`)
+    try {
+      const c = spawnSync("git", ["clone", "-q", bare(slug), tmp], { encoding: "utf8" })
+      if (c.status !== 0) fail(`fake gh: clone failed: ${c.stderr}`)
+      gitIn(tmp, "checkout", "-q", pr.base)
+      const m = gitIn(tmp, "merge", "--squash", `origin/${pr.head}`)
+      if (m.status !== 0) fail(`Pull request is not mergeable: the merge commit cannot be cleanly created. (fake gh) ${m.stdout.slice(0, 200)}`)
+      const quiet = gitIn(tmp, "diff", "--cached", "--quiet")
+      if (quiet.status === 0) { pr.state = "MERGED"; save(); done(0, "merged (empty)") }
+      const k = gitIn(tmp, "commit", "-qm", `${pr.title} (#${pr.number})`)
+      if (k.status !== 0) fail(`fake gh: commit failed: ${k.stderr}`)
+      const p = gitIn(tmp, "push", "-q", "origin", `HEAD:${pr.base}`)
+      if (p.status !== 0) fail(`Pull request is not mergeable: base branch moved (fake gh) ${p.stderr}`)
+      pr.mergeCommit = gitIn(tmp, "rev-parse", "HEAD").stdout.trim()
+    } finally { rmSync(tmp, { recursive: true, force: true }) }
+    pr.state = "MERGED"
+    if (has("--delete-branch")) git(slug, "update-ref", "-d", `refs/heads/${pr.head}`)
+    save(); done(0, "merged")
+  }
+}
+
+if (cmd === "api") {
+  const method = (flagAt("-X") ?? flagAt("--method") ?? (has("--input") || field("-f", "-F").length ? "POST" : "GET")).toUpperCase()
+  const path = args.slice(1).find((a, i) => !a.startsWith("-") && !["-X", "--method", "--jq", "-q", "--input", "-f", "-F", "--field"].includes(args[i]))
+  const expr = jqExpr()
+  const route = path?.replace(/\?.*$/, "")
+  if (route === "user") print({ login: me }, expr ?? ".")
+  if (route === "graphql") {
+    const q = fields().query ?? ""
+    if (/reviewThreads/.test(q)) print({ data: { repository: { pullRequest: { reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }, expr ?? ".")
+    print({ data: { ok: true } }, expr ?? ".")
+  }
+  const m = route?.match(/^repos\/([\w.-]+\/[\w.-]+)(?:\/(.*))?$/)
+  if (!m) fail(`fake gh: no route for: gh ${args.join(" ")}`)
+  const [, slug, rest = ""] = m
+  if (!existsSync(bare(slug))) fail(`Not Found: repos/${slug} (fake gh)`)
+  syncRefs(slug)
+  const prOf = (n) => store.prs.find((p) => p.repo === slug && p.number === Number(n))
+  const comment = (pr, o) => ({ id: store.nextComment++, user: { login: me }, body: o.body ?? "", created_at: iso(), html_url: `https://github.com/${slug}/pull/${pr.number}#issuecomment-${store.nextComment}`, ...o })
+  let r
+  if (rest === "") print({ full_name: slug, private: false, default_branch: "main", permissions: { admin: true, push: true, pull: true }, allow_squash_merge: true, allow_merge_commit: true, allow_rebase_merge: true, ...JSON.parse(process.env.DOBBY_FAKE_GH_REPO || "{}") }, expr ?? ".")
+  if (rest.match(/^branches\/.+\/protection$/)) { if (!process.env.DOBBY_FAKE_GH_PROTECTION) fail("Branch not protected (HTTP 404)"); print(JSON.parse(process.env.DOBBY_FAKE_GH_PROTECTION), expr ?? ".") }
+  if (rest.match(/^rules\/branches\/.+$/)) print(JSON.parse(process.env.DOBBY_FAKE_GH_RULES || "[]"), expr ?? ".")
+  if ((r = rest.match(/^collaborators\/([\w.[\]-]+)(\/permission)?$/))) { if (r[2]) print({ permission: "admin" }, expr ?? "."); done(0, "204") }
+  if (rest === "milestones") print([], expr ?? ".")
+  if ((r = rest.match(/^pulls\/(\d+)\/files$/))) { const pr = prOf(r[1]); if (!pr) fail("Not Found"); print(changedFiles(pr), expr ?? ".") }
+  if ((r = rest.match(/^issues\/(\d+)\/comments$/))) {
+    const pr = prOf(r[1]); if (!pr) fail("Not Found")
+    if (method === "POST") { const c = comment(pr, { body: body().body }); pr.comments.push({ id: c.id, user: me, body: c.body, created: c.created_at }); save(); print({ id: c.id, html_url: `https://github.com/${slug}/pull/${pr.number}#issuecomment-${c.id}`, body: c.body }, expr ?? ".") }
+    print(pr.comments.map((c) => ({ id: c.id, user: { login: c.user }, body: c.body, created_at: c.created, html_url: `https://github.com/${slug}/pull/${pr.number}#issuecomment-${c.id}` })), expr ?? ".")
+  }
+  if ((r = rest.match(/^issues\/comments\/(\d+)$/))) {
+    const pr = store.prs.find((p) => p.repo === slug && p.comments.some((c) => c.id === Number(r[1]))); if (!pr) fail("Not Found")
+    const c = pr.comments.find((x) => x.id === Number(r[1]))
+    if (method === "PATCH") { c.body = body().body; save(); print({ id: c.id, html_url: `https://github.com/${slug}/pull/${pr.number}#issuecomment-${c.id}` }, expr ?? ".") }
+    if (method === "DELETE") { pr.comments = pr.comments.filter((x) => x !== c); save(); done(0, "deleted") }
+  }
+  if ((r = rest.match(/^pulls\/(\d+)\/reviews$/))) {
+    const pr = prOf(r[1]); if (!pr) fail("Not Found")
+    if (method === "POST") { const b = body(); pr.reviews.push({ id: store.nextComment++, user: me, state: b.event ?? "COMMENT", body: b.body, commit_id: b.commit_id, comments: b.comments ?? [] }); save(); print({ id: pr.reviews.at(-1).id }, expr ?? ".") }
+    print(pr.reviews.map((x) => ({ id: x.id, user: { login: x.user, type: "User" }, state: x.state, commit_id: x.commit_id })), expr ?? ".")
+  }
+  if (rest.match(/^pulls\/\d+\/comments\/\d+\/replies$/)) { save(); print({ id: store.nextComment++ }, expr ?? ".") }
+  if ((r = rest.match(/^statuses\/([0-9a-f]+)$/))) { const f = fields(); (store.statuses[`${slug}@${r[1]}`] ??= []).push({ context: f.context, state: f.state, description: f.description, target_url: f.target_url }); save(); print({ state: f.state }, expr ?? ".") }
+  if ((r = rest.match(/^commits\/([0-9a-f]+)\/status$/))) print({ state: "success", statuses: (store.statuses[`${slug}@${r[1]}`] ?? []).map((s) => ({ context: s.context, state: s.state })) }, expr ?? ".")
+  if (rest.match(/^commits\/[0-9a-f]+\/check-runs$/)) print({ check_runs: [] }, expr ?? ".")
+  if (rest === "issues/comments" || rest === "pulls/comments") print([], expr ?? ".")
+}
+
+fail(`fake gh: no route for: gh ${args.join(" ")}`)

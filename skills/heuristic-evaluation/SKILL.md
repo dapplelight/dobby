@@ -1,4 +1,4 @@
-<!-- from owl-listener/designer-skills/prototyping-testing/skills/heuristic-evaluation/SKILL.md @ 5d255536fd7a909d6e40b5a59d0b97e4bda3502a (MIT), installed 2026-10-19 after owner 👍 -->
+<!-- from owl-listener/designer-skills/prototyping-testing/skills/heuristic-evaluation/SKILL.md @ 5d255536fd7a909d6e40b5a59d0b97e4bda3502a (MIT), installed 2026-10-20 after owner 👍 -->
 ---
 name: heuristic-evaluation
 description: Run an expert review against Nielsen's heuristics and domain criteria, with severity ratings. Use when you need findings without recruiting participants. For a facilitated team feedback session, use `design-critique` (design-ops).

@@ -7,17 +7,18 @@ in front of it and start the dashboard with `--tunnel`. Behind a tunnel every vi
 ## Tailscale (recommended: only your own devices)
 
 1. Install Tailscale on this machine and on your phone, signed in to the same account.
-2. Start the dashboard behind the tunnel: `dobby dashboard --tunnel` (for the background job: `dobby add dashboard`, then
-   add `--tunnel` to its command).
-3. Serve it over HTTPS on your tailnet: `tailscale serve --bg --https=443 http://127.0.0.1:4710`.
-4. On this machine run `dobby dashboard open` once to see the token's sign-in link, and open the same `/auth?token=...` path
-   on your phone with the `https://<machine>.<tailnet>.ts.net` address. The phone keeps an HttpOnly cookie after that.
+2. Start a tunnel copy of the dashboard: `dobby dashboard --tunnel --port 4711`. Port 4710 belongs to the dashboard job
+   (`dobby add dashboard`), which does not run with `--tunnel`, so the tunnel copy takes its own port. Leave it running.
+3. Serve it over HTTPS on your tailnet: `tailscale serve --bg --https=443 http://127.0.0.1:4711`.
+4. Run `dobby dashboard link --host <machine>.<tailnet>.ts.net` and open the link it prints on your phone. The phone keeps an
+   HttpOnly cookie after that. Dobby prints the link only when you ask for it. It prints no QR code.
 
 Only devices on your tailnet can reach the address.
 
 ## Cloudflare Tunnel (reachable from anywhere)
 
-`cloudflared tunnel --url http://127.0.0.1:4710` gives a public `https://...trycloudflare.com` address. Anyone can load the
+`cloudflared tunnel --url http://127.0.0.1:4711` gives a public `https://...trycloudflare.com` address, which changes every run.
+Run `dobby dashboard link --host <that address>` each time to get a sign-in link for it. Anyone can load the
 login page, so the token is the only lock: keep `--tunnel` on, and put Cloudflare Access (email login) in front for a
 second lock.
 

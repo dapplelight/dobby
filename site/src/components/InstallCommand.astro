@@ -1,0 +1,88 @@
+---
+// The install command with a copy button and the requirements line. Used by the landing pages and the docs.
+// Props: command (default facts.install.command), requirements (default facts.install.requirements; false hides it), class.
+import { install } from "../../facts.ts"
+
+interface Props { command?: string; requirements?: string | false; class?: string }
+const { command = install.command, requirements = install.requirements, class: cls } = Astro.props
+---
+
+<div class:list={["install", cls]} data-install>
+  <div class="row">
+    <code class="cmd"><span class="prompt" aria-hidden="true">$</span>{command}</code>
+    <button type="button" class="copy" data-copy={command} aria-label={`Copy ${command}`}>
+      <svg class="i-copy" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" /></svg>
+      <svg class="i-done" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+      <span class="label" aria-live="polite">Copy</span>
+    </button>
+  </div>
+  {requirements && <p class="req">{requirements}</p>}
+</div>
+
+<script>
+  document.querySelectorAll<HTMLButtonElement>("[data-install] .copy").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const label = b.querySelector(".label")!
+      try {
+        await navigator.clipboard.writeText(b.dataset.copy!)
+        b.dataset.state = "copied"
+        label.textContent = "Copied"
+      } catch {
+        label.textContent = "Select and copy"
+      }
+      setTimeout(() => { delete b.dataset.state; label.textContent = "Copy" }, 2000)
+    }),
+  )
+</script>
+
+<style>
+  .install { max-width: 36rem; }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.375rem 0.375rem 0.375rem 1rem;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-lg);
+    background: var(--bg-surface);
+  }
+  .cmd {
+    flex: 1;
+    min-width: 0;
+    overflow-x: auto;
+    white-space: nowrap;
+    font-family: "Geist Mono Variable", ui-monospace, monospace;
+    font-size: 0.9375rem;
+    color: var(--text-primary);
+    background: none;
+    border: 0;
+    padding: 0;
+  }
+  .prompt { color: var(--text-hint); margin-inline-end: 0.625rem; user-select: none; -webkit-user-select: none; }
+  .copy {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    flex-shrink: 0;
+    min-height: 2.75rem;
+    padding: 0 0.875rem;
+    border: 0;
+    border-radius: var(--radius-md);
+    background: var(--primary);
+    color: var(--primary-fg);
+    font: 500 0.875rem / 1 "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+    cursor: pointer;
+    transition: filter 120ms ease-out;
+  }
+  .copy:hover { filter: brightness(1.08); }
+  .copy:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+  .i-done { display: none; }
+  .copy[data-state="copied"] .i-copy { display: none; }
+  .copy[data-state="copied"] .i-done { display: block; }
+  .req {
+    margin: 0.625rem 0 0;
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    color: var(--text-secondary);
+  }
+</style>

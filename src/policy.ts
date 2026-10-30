@@ -5,6 +5,7 @@
 //   deploy       ask = a migration that changes existing data waits for the owner (changesData)
 //   command      documents the Builder's deny list; claude enforces BUILDER_DENY (ticket.ts), not this table
 // An optional policy.json at the repo root (an array of rules) appends new rules and can only make a built-in rule stricter (see loadRules).
+import { fileURLToPath } from "node:url"
 import { existsSync, readFileSync } from "node:fs"
 import { config } from "./config.ts"
 
@@ -33,8 +34,8 @@ export const DEFAULT_RULES: Rule[] = [
   // Changed file paths (the old ALWAYS_BIG). Markdown never counts, whatever its name says (docs/android/sort-payments.md was flagged).
   // Second branch (audit 20 Oct, item 5): what agents read as instructions or what enforces their limits, markdown included:
   // role prompts, skills, project rules, bin/ (the guard hook), agent rules and settings, the ticket/review graphs, lib, front desk,
-  // Scout, messaging (telegram, discord), the CLI, the secrets scan, merge and this file.
-  { id: "sensitive-path", applies: "changed-path", match: "^(?:(?![\\s\\S]*\\.(?-i:mdx?)$)[\\s\\S]*(migrat|drizzle|\\.sql$|wrangler\\.(toml|jsonc?)$|\\.env|auth|billing|payment|eas\\.json|app\\.json$|(^|/)policy\\.json$|(^|/)src/policy\\.ts$)|(?:roles/|skills/|projects/|bin/|agent-rules\\.md$|(?:^|/)agent-rules/|agent-settings\\.json$|src/graphs/(?:ticket|review)\\.ts$|src/(?:lib|frontdesk|scout|policy|telegram|discord|cli|scan|merge)\\.ts$))", action: "ask", why: "schema, deploy config, secrets, auth or payments, or agent prompts, rules and guards: big merge, Opus review" },
+  // Scout, messaging (notify, discord), the CLI, the secrets scan, merge and this file.
+  { id: "sensitive-path", applies: "changed-path", match: "^(?:(?![\\s\\S]*\\.(?-i:mdx?)$)[\\s\\S]*(migrat|drizzle|\\.sql$|wrangler\\.(toml|jsonc?)$|\\.env|auth|billing|payment|eas\\.json|app\\.json$|(^|/)policy\\.json$|(^|/)src/policy\\.ts$)|(?:roles/|skills/|projects/|bin/|agent-rules\\.md$|(?:^|/)agent-rules/|agent-settings\\.json$|src/graphs/(?:ticket|review)\\.ts$|src/(?:lib|frontdesk|scout|policy|notify|discord|cli|scan|merge)\\.ts$))", action: "ask", why: "schema, deploy config, secrets, auth or payments, or agent prompts, rules and guards: big merge, Opus review" },
   // Migration SQL at deploy time (comments stripped by the caller).
   { id: "data-migration", applies: "deploy", match: "\\b(update|insert|delete|truncate|merge)\\b|\\balter\\s+table\\b[^;]*\\b(drop|rename)\\b|\\balter\\s+column\\b[^;]*\\btype\\b|\\b(modify|change)\\s+column\\b|\\bdrop\\s+(?:if\\s+exists\\s+)?(table|column|index|view|materialized\\s+view|schema|database|sequence|type|trigger|function)\\b|\\bcreate\\s+(?:\\w+\\s+)*table\\b[^;]*\\bas\\s+(select|with)\\b|\\breplace\\s+into\\b", action: "ask", why: "the migration changes existing data: the owner runs it" },
   // Shell commands: mirrors BUILDER_DENY in ticket.ts (that list is what claude enforces).
@@ -54,7 +55,7 @@ const STRICT = { deny: 0, ask: 1, allow: 2 } // lower = stricter
  * action deny > ask > allow); it can never lower an action or narrow a pattern, so the file cannot switch a gate off
  * (review, 20 Oct). A bad file is reported in POLICY_ERROR and ignored: the built-in rules stay in force and the system stays up.
  */
-export function loadRules(path = new URL("../policy.json", import.meta.url).pathname): { rules: Rule[]; error?: string } {
+export function loadRules(path = fileURLToPath(new URL("../policy.json", import.meta.url))): { rules: Rule[]; error?: string } {
   if (!existsSync(path)) return { rules: DEFAULT_RULES }
   try {
     const extra = JSON.parse(readFileSync(path, "utf8")) as Rule[]

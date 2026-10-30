@@ -1,0 +1,50 @@
+# Dobby
+
+> Dobby runs Claude Code on your tickets and opens reviewed pull requests. It is in public beta.
+
+## Start
+
+- [Install](manual/install.md): Install Dobby on macOS or Linux, connect your repos and start the background jobs.
+- [Install on Linux or WSL2](manual/install-linux.md): Prepare a Linux machine, a headless server or Windows with WSL2 for Dobby: systemd, the sandbox, sign-ins over SSH and jobs that survive logout.
+- [Your first hour](manual/first-hour.md): A guided first run: set Dobby up, write one small ticket, watch it become a reviewed pull request, and merge it.
+
+## Concepts
+
+- [The loop: ticket to merge](manual/how-it-works.md): How a ticket becomes a merged pull request: tickets and their states, goals, and each step a build goes through.
+- [Roles](manual/roles.md): The six main roles, the supporting roles that run when needed, and why each one is a separate run with its own rules.
+- [What waits for you](manual/what-waits.md): Which merges, deploys and questions wait for your tap, how the three safety presets decide, and what waits whatever you set.
+- [Pacing against your plan](manual/pacing.md): How Dobby spreads its work across your Claude plan's weekly and 5-hour limits, so part of the week always stays yours.
+- [Security and the sandbox](manual/security.md): What a builder can and cannot reach, how commands are checked, how strangers' pull requests are handled, and where the limits are.
+- [Plan or API key](manual/billing.md): The two ways Dobby pays for Claude, how each is capped, and how to choose.
+
+## Guides
+
+- [Write a good ticket](manual/write-a-ticket.md): Write a ticket Dobby can finish: a done-when line the Tester can check, the right size and a priority.
+- [Answer what waits for you](manual/answer-what-waits.md): Approve, decline, merge, deploy, answer or retry the items in Needs you, from the terminal, the dashboard, Discord or Claude.
+- [Pause and resume](manual/pause-and-resume.md): Stop Dobby taking new work, pause one part, one project or one ticket, for a set time or until you resume.
+- [Run in the background](manual/background-jobs.md): Install the background jobs so Dobby builds, reviews and reports while you work on other things, or run it in a terminal instead.
+- [Use Discord](manual/discord.md): Connect a Discord bot so Dobby posts what waits for you with buttons, sends the daily brief and answers messages.
+- [Use the dashboard](manual/dashboard.md): Open the local dashboard, act on what needs you, use its keys, and reach it safely from your phone.
+- [Drive Dobby from Claude (MCP)](manual/mcp.md): Connect Dobby to Claude Code or Claude Desktop over MCP, so Claude can read status, file tickets and ask you before it merges or deploys.
+- [Review commands in a PR](manual/reviews.md): Get a pull request reviewed by Dobby, steer the review from a PR comment, and change how strict and how automatic reviews are.
+- [Add an external reviewer](manual/external-reviewer.md): Gate Dobby's merges on CodeRabbit, Greptile or GitHub Copilot code review, alone or together with Dobby's own reviewer.
+- [Cap spend](manual/cap-spend.md): Keep more of your Claude plan for yourself, switch to an API key with a dollar cap, limit one ticket, and see what each pull request cost.
+- [Fix common problems](manual/troubleshooting.md): What to do when nothing builds, pull requests never merge, a ticket fails, or the background jobs or dashboard do not run.
+- [Run a second install](manual/second-install.md): Run a separate Dobby beside your real one, for a trial or another account, without the two sharing projects, pauses or jobs.
+- [Upgrade](manual/upgrade.md): Upgrade Dobby to the latest version and point the background jobs at it.
+- [Uninstall](manual/uninstall.md): Remove Dobby's background jobs, its Claude connections, its data and the package, and clean up what it set on GitHub.
+- [Try other model providers (preview)](manual/providers.md): An early, off-by-default preview that routes some roles to other agent CLIs or local model servers.
+- [Timelapse of a day](manual/timelapse.md): Make a private 15-second clip of a day of agents working, with a manifest and a signature anyone can check.
+- [Use Slack (beta)](manual/slack.md): Connect a Slack app so Dobby posts what waits for you with buttons, sends the daily brief and answers messages, over Socket Mode with no public URL.
+
+## Reference
+
+- [CLI reference](manual/cli.md): Every dobby command and what it does.
+- [Configuration reference](manual/config.md): Every config key with its type and default.
+- [Glossary](manual/glossary.md): The Dobby words you meet in the dashboard, the terminal and these docs, each with a link to the page that explains it.
+- [Safety categories](manual/safety-categories.md): The nine safety categories, the action each preset gives them, and what always waits for you.
+- [Doctor checks](manual/doctor.md): Every row dobby doctor prints, when it fails and the fix, plus the repo access rows dobby init reads.
+- [PR comment commands](manual/pr-commands.md): Every @dobby command you can write in a pull request comment, and its limits.
+- [Crash reports and usage stats](manual/stats.md): Two optional switches, both off until you turn them on: what each one sends, every field, and how to turn them off.
+- [Requirements](manual/requirements.md): The operating systems, tools, sign-ins and disk space Dobby needs.
+- [Where data lives](manual/data.md): Every folder and file Dobby writes on your machine, and the variables that move them.

@@ -89,7 +89,7 @@ test("outcomes: per day, median hours, share shipped with no owner touch", () =>
   assert.equal(D.outcomes(open(":memory:"), NOW, 7).medianHours, null) // nothing shipped: no number, not zero
 })
 
-test("quality: verdicts per day, pass rate by repo (skips and errors are not judgements), rework, Checker sent-back rate", () => {
+test("quality: verdicts per day, pass rate by repo (skips and errors are not judgements), rework, Checker fail rate", () => {
   const db = open(":memory:")
   const rv = db.prepare("INSERT INTO reviews (repo,pr,sha,choice,by,verdict,cost,at) VALUES (?,?,?,?,?,?,?,?)")
   rv.run("o/tally", 1, "a", "opus", "rule", "pass", 0.1, hoursAgo(1)); rv.run("o/tally", 2, "b", "opus", "rule", "fail", 0.1, hoursAgo(2))
@@ -188,7 +188,7 @@ test("snapshot is plain JSON", () => {
 
 const S = await import("../src/dashboard-server.ts")
 async function up(opts: Parameters<typeof S.createDashboard>[1] = {}) {
-  const server = S.createDashboard(open(":memory:"), { page: () => "<h1>ok</h1>", now: () => NOW, dist: `${process.env.DOBBY_DIR}/no-dist`, ...opts })
+  const server = S.createDashboard(open(":memory:"), { now: () => NOW, dist: `${process.env.DOBBY_DIR}/no-dist`, ...opts })
   await new Promise<void>((ok) => server.listen(0, opts.host ?? "127.0.0.1", ok))
   const { port } = server.address() as { port: number }
   return { server, base: `http://127.0.0.1:${port}`, port }
@@ -201,7 +201,7 @@ test("server: binds loopback by default, serves page and snapshot on GET", async
   const { server, base } = await up()
   try {
     assert.equal((server.address() as any).address, "127.0.0.1")
-    assert.equal(await (await fetch(`${base}/`)).text(), "<h1>ok</h1>")
+    assert.match(await (await fetch(`${base}/`)).text(), /npm run build/) // no built app: a one-line page
     const j = await (await fetch(`${base}/api/snapshot?days=30`)).json() as any
     assert.equal(j.days, 30); assert.equal((await (await fetch(`${base}/api/snapshot`)).json() as any).days, 7)
     assert.equal((await fetch(`${base}/nope`)).status, 404)
@@ -290,7 +290,7 @@ test("distFile: stays inside dist (traversal, encoded traversal, NUL, symlink ou
   for (const bad of ["/../secret/x.txt", "/assets/../../secret/x.txt", "/%2e%2e/secret/x.txt", "/..%2fsecret/x.txt", "/assets/%2e%2e/%2e%2e/dist-secret.txt", "/index.html%00.js", "/out/x.txt", "/link.txt", "/%zz", "/missing.js", "/../dist-secret.txt"]) assert.equal(S.distFile(dist, bad), null, bad)
 })
 
-test("server: serves the built app (assets, SPA fallback, CSP by hash) and keeps every guard; falls back to the single page without dist", async () => {
+test("server: serves the built app (assets, SPA fallback, CSP by hash) and keeps every guard; says to build it without dist", async () => {
   const dir = mkdtempSync(`${tmpdir()}/foreman-spa-`)
   mkdirSync(`${dir}/assets`)
   const inline = "document.title='x'"
@@ -314,7 +314,7 @@ test("server: serves the built app (assets, SPA fallback, CSP by hash) and keeps
     assert.equal(h, 403) // Host check covers assets too
   } finally { server.close() }
   const { server: s2, base: b2 } = await up({ dist: `${dir}/nothing` })
-  try { assert.equal(await (await fetch(`${b2}/`)).text(), "<h1>ok</h1>") } finally { s2.close() }
+  try { assert.match(await (await fetch(`${b2}/`)).text(), /npm run build/) } finally { s2.close() }
 })
 
 test("server: off loopback, assets and the API need the token (cookie set by the first ?token= visit)", async () => {
@@ -330,4 +330,18 @@ test("server: off loopback, assets and the API need the token (cookie set by the
     assert.equal((await fetch(`${base}/api/snapshot`, { headers: { cookie: c } })).status, 200)
     assert.equal((await fetch(`${base}/a.js`, { headers: { cookie: "foreman_dash=wrong" } })).status, 401)
   } finally { server.close() }
+})
+
+test("dashboard link: the sign-in URL for this machine or for a tunnel name", () => {
+  assert.equal(S.linkUrl("tok", 4710), "http://127.0.0.1:4710/auth?token=tok")
+  assert.equal(S.linkUrl("tok", 4710, "mac.tail1.ts.net"), "https://mac.tail1.ts.net/auth?token=tok")
+  assert.equal(S.linkUrl("tok", 4710, "https://x.trycloudflare.com/"), "https://x.trycloudflare.com/auth?token=tok")
+})
+
+test("dashboard on a busy port: a plain sentence naming the right command, not a stack", () => {
+  const e = Object.assign(new Error("listen EADDRINUSE"), { code: "EADDRINUSE" })
+  assert.match(S.listenError(e, 4710, true).message, /dashboard job.*dobby dashboard --tunnel --port 4711/)
+  assert.match(S.listenError(e, 4710, false).message, /dobby dashboard open/)
+  const other = Object.assign(new Error("x"), { code: "EACCES" })
+  assert.equal(S.listenError(other, 80, false), other)
 })

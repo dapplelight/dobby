@@ -1,0 +1,713 @@
+/*
+ * @dapplelight/signet-docs theme. Shared by every dapplelight product's docs: layout, type, spacing, motion.
+ * A product adds one color overlay after this file (color variables only, :root for light and .dark for dark).
+ * Every --sl-* value Starlight reads is mapped to a Signet token here; Starlight's own colors are never shown.
+ */
+@layer base, starlight, theme, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+/* TODO(signet rename): these become @dapplelight/signet-tokens once Signet publishes under @dapplelight. */
+@import "@nimit9/signet-tokens/editorial.css";
+@import "@nimit9/signet-tokens/base.css";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+
+@theme {
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, monospace;
+}
+
+/* ── Starlight variables → Signet tokens (same mapping in both themes; the tokens switch) ── */
+:root,
+:root[data-theme="light"],
+::backdrop {
+  --sl-font: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --sl-font-mono: "Geist Mono Variable", ui-monospace, monospace;
+
+  --sl-color-white: var(--text-primary);
+  --sl-color-gray-1: var(--text-primary);
+  --sl-color-gray-2: var(--text-secondary);
+  --sl-color-gray-3: var(--text-secondary);
+  --sl-color-gray-4: var(--text-hint);
+  --sl-color-gray-5: var(--border-default);
+  --sl-color-gray-6: var(--bg-elevated);
+  --sl-color-gray-7: var(--bg-surface);
+  --sl-color-black: var(--bg-base);
+
+  --sl-color-accent-low: var(--accent-primary-subtle);
+  --sl-color-accent: var(--primary);
+  --sl-color-accent-high: var(--primary);
+  --sl-color-text: var(--text-primary);
+  --sl-color-text-accent: var(--primary);
+  --sl-color-text-invert: var(--primary-fg);
+  --sl-color-bg: var(--bg-base);
+  --sl-color-bg-nav: var(--bg-base);
+  --sl-color-bg-sidebar: var(--bg-base);
+  --sl-color-bg-inline-code: var(--bg-elevated);
+  --sl-color-bg-accent: var(--primary);
+  --sl-color-hairline-light: var(--border-subtle);
+  --sl-color-hairline: var(--border-default);
+  --sl-color-hairline-shade: var(--border-default);
+  --sl-color-backdrop-overlay: var(--bg-overlay);
+  --sl-shadow-sm: var(--shadow-sm);
+  --sl-shadow-md: var(--shadow-md);
+  --sl-shadow-lg: var(--shadow-lg);
+
+  /* Callout tones: neutral ground, tone only on the icon and title. */
+  --sl-color-blue: var(--text-secondary);
+  --sl-color-blue-low: var(--bg-surface);
+  --sl-color-blue-high: var(--text-primary);
+  --sl-color-purple: var(--primary);
+  --sl-color-purple-low: var(--bg-surface);
+  --sl-color-purple-high: var(--text-primary);
+  --sl-color-green: var(--primary);
+  --sl-color-green-low: var(--bg-surface);
+  --sl-color-green-high: var(--text-primary);
+  --sl-color-orange: var(--accent-amber);
+  --sl-color-orange-low: var(--bg-surface);
+  --sl-color-orange-high: var(--text-primary);
+  --sl-color-red: var(--destructive);
+  --sl-color-red-low: var(--accent-red-subtle);
+  --sl-color-red-high: var(--text-primary);
+
+  /* Type: body 17px / 1.6; headings step 36 / 28 / 22 / 18 on the Signet ramp. */
+  --sl-text-body: 1.0625rem;
+  --sl-text-body-sm: var(--text-callout);
+  --sl-text-code: 0.875rem;
+  --sl-text-code-sm: var(--text-caption);
+  --sl-text-h1: var(--text-display);
+  --sl-text-h2: var(--text-stat);
+  --sl-text-h3: var(--text-headline);
+  --sl-text-h4: var(--text-title);
+  --sl-text-h5: 1.0625rem;
+  --sl-line-height: 1.6;
+  --sl-line-height-headings: 1.2;
+
+  /* Frame: 260px sidebar, ~68ch reading column, 56px header. */
+  --sl-nav-height: 3.5rem;
+  --sl-nav-pad-x: 1.25rem;
+  --sl-sidebar-width: 16.25rem;
+  --sl-sidebar-pad-x: 1rem;
+  --sl-content-width: 42rem;
+  --sl-content-pad-x: 1.25rem;
+  --sl-menu-button-size: 2.75rem;
+}
+
+/* ── Browser surfaces ── */
+body {
+  font-family: var(--sl-font);
+  font-size: var(--sl-text-body);
+  line-height: var(--sl-line-height);
+  font-feature-settings: "ss01", "cv11";
+}
+::selection {
+  background: color-mix(in srgb, var(--primary) 24%, transparent);
+  color: var(--text-primary);
+}
+:where(a, button, input, select, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+:root {
+  accent-color: var(--primary);
+  caret-color: var(--primary);
+  scrollbar-color: var(--border-strong) transparent;
+}
+.sl-markdown-content :is(code, kbd, samp),
+code {
+  font-family: var(--sl-font-mono);
+  font-variant-ligatures: none;
+}
+
+/* ── Header ── */
+.sd-header {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  height: 100%;
+}
+.sd-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  flex-shrink: 0;
+}
+.sd-home {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text-primary);
+  text-decoration: none;
+  min-height: 2.75rem;
+}
+.sd-mark {
+  width: 1.375rem;
+  height: 1.375rem;
+  color: var(--primary);
+  flex-shrink: 0;
+}
+.sd-wordmark {
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  line-height: 1;
+}
+.sd-badge {
+  font-size: var(--text-label);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  line-height: 1;
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--radius-full);
+  color: var(--primary);
+  background: var(--accent-primary-subtle);
+  border: 1px solid color-mix(in srgb, var(--primary) 30%, transparent);
+  cursor: help;
+}
+.sd-tabs {
+  display: none;
+  align-self: stretch;
+  gap: 0.25rem;
+}
+.sd-tabs a {
+  display: flex;
+  align-items: center;
+  padding: 0 0.625rem;
+  font-size: var(--text-callout);
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-decoration: none;
+  box-shadow: inset 0 -1.5px 0 transparent;
+  transition: color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.sd-tabs a:hover {
+  color: var(--text-primary);
+}
+.sd-tabs a[aria-current="page"] {
+  color: var(--text-primary);
+  box-shadow: inset 0 -1.5px 0 var(--primary);
+}
+.sd-search {
+  margin-inline-start: auto;
+  display: flex;
+}
+.sd-right {
+  display: none;
+  align-items: center;
+  gap: 0.25rem;
+}
+.sd-icon-link {
+  display: grid;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+}
+.sd-icon-link:hover {
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+}
+@media (min-width: 50rem) {
+  .sd-tabs,
+  .sd-right {
+    display: flex;
+  }
+  .sd-tabs {
+    margin-inline-start: 1rem;
+  }
+}
+
+/* Search button: an input-shaped trigger with the shortcut. */
+site-search button[data-open-modal] {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  height: 2.75rem;
+  min-width: 2.75rem;
+  justify-content: center;
+  padding: 0 0.75rem;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--text-hint);
+  font-size: var(--text-callout);
+  cursor: pointer;
+  transition: border-color var(--transition-fast);
+}
+site-search button[data-open-modal]:hover {
+  border-color: var(--border-strong);
+  color: var(--text-secondary);
+}
+site-search button[data-open-modal] kbd {
+  margin-inline-start: auto;
+  gap: 0.125rem;
+  font-family: var(--sl-font-mono);
+  font-size: var(--text-label);
+  color: var(--text-hint);
+  background: none;
+}
+@media (min-width: 50rem) {
+  site-search button[data-open-modal] {
+    width: 15rem;
+    height: 2.25rem;
+    justify-content: flex-start;
+  }
+}
+site-search dialog {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xl);
+  background: var(--bg-base);
+  box-shadow: var(--shadow-xl);
+}
+site-search dialog[open] {
+  animation: sd-pop var(--duration-base) var(--ease-out);
+}
+@keyframes sd-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.985);
+  }
+}
+#starlight__search {
+  --pagefind-ui-primary: var(--primary);
+  --pagefind-ui-text: var(--text-primary);
+  --pagefind-ui-background: var(--bg-base);
+  --pagefind-ui-border: var(--border-default);
+  --pagefind-ui-tag: var(--bg-elevated);
+  --pagefind-ui-font: var(--sl-font);
+}
+
+/* Theme select: quiet, icon-led. */
+starlight-theme-select {
+  color: var(--text-secondary);
+}
+starlight-theme-select select {
+  font-size: var(--text-callout);
+}
+
+/* ── Frame ── */
+.page > .header {
+  border-bottom: 1px solid var(--border-default);
+  background-color: color-mix(in srgb, var(--bg-base) 92%, transparent);
+  backdrop-filter: saturate(1.4) blur(10px);
+}
+@media (min-width: 50rem) {
+  .sidebar-pane {
+    border-inline-end: 1px solid var(--border-subtle);
+  }
+}
+.sl-menu-button,
+:root[data-theme="light"] .sl-menu-button {
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  color: var(--text-primary);
+  box-shadow: none;
+  padding: 0.625rem;
+}
+.sl-menu-button:has(~ :popover-open),
+:root[data-theme="light"] .sl-menu-button:has(~ :popover-open) {
+  background: var(--bg-elevated);
+}
+
+/* Content panels: no rule between the title and the body, calmer spacing. */
+.content-panel + .content-panel {
+  border-top: 0;
+}
+.content-panel {
+  padding-block: 1rem;
+}
+.sl-markdown-content > :first-child,
+.sd-prose .sl-markdown-content > h2:first-child {
+  margin-top: 0;
+}
+
+/* ── Sidebar ── */
+.sidebar-content {
+  padding-top: 1.5rem;
+}
+.sidebar-content .top-level > li + li {
+  margin-top: 1.25rem;
+}
+.sidebar-content details > summary .group-label .large,
+.sidebar-content .group-label .large {
+  font-size: var(--text-label);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--text-hint);
+}
+.sidebar-content a {
+  position: relative;
+  font-size: var(--text-callout);
+  color: var(--text-secondary);
+  padding: 0.375rem 0.625rem 0.375rem 1.375rem;
+  border-radius: var(--radius-sm);
+  min-height: 2.25rem;
+  display: flex;
+  align-items: center;
+}
+.sidebar-content a:hover {
+  color: var(--text-primary);
+  background: var(--bg-surface);
+}
+.sidebar-content a[aria-current="page"],
+.sidebar-content a[aria-current="page"]:hover {
+  color: var(--text-primary);
+  background: transparent;
+  font-weight: 500;
+}
+/* Current page ring: the signature mark, drawn in the product accent. */
+.sidebar-content a[aria-current="page"]::before {
+  content: "";
+  position: absolute;
+  inset-inline-start: 0.375rem;
+  top: 50%;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-top: -0.25rem;
+  border-radius: 50%;
+  border: 1.5px solid var(--primary);
+  background: var(--primary);
+  box-shadow: 0 0 0 2px var(--bg-base);
+}
+.sidebar-content a[aria-current="page"] span {
+  color: inherit;
+}
+@media (max-width: 49.99rem) {
+  .sidebar-content a {
+    min-height: 2.75rem;
+  }
+}
+
+/* ── Right rail: on this page ── */
+starlight-toc nav h2,
+mobile-starlight-toc summary .toggle {
+  font-size: var(--text-label);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--text-hint);
+}
+starlight-toc a {
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+starlight-toc a[aria-current="true"] {
+  color: var(--primary);
+}
+mobile-starlight-toc nav {
+  background: color-mix(in srgb, var(--bg-base) 92%, transparent);
+  backdrop-filter: saturate(1.4) blur(10px);
+  border-bottom: 1px solid var(--border-default);
+}
+
+/* ── Title, lede, page actions ── */
+.sd-agent-note {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.sd-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+.sd-title-row h1 {
+  margin: 0;
+  font-size: var(--sl-text-h1);
+  line-height: var(--leading-tight);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  color: var(--text-primary);
+  text-wrap: balance;
+}
+.sd-lede {
+  margin-top: 0.75rem;
+  font-size: var(--text-title);
+  line-height: var(--leading-snug);
+  color: var(--text-secondary);
+  text-wrap: pretty;
+  max-width: 60ch;
+}
+.sd-lede code {
+  font-family: var(--sl-font-mono);
+  font-size: 0.85em;
+  padding: 0.1em 0.3em;
+  border-radius: 0.25rem;
+  background: var(--bg-elevated);
+}
+.sd-actions {
+  position: relative;
+  flex-shrink: 0;
+  margin-top: 0.375rem;
+}
+.sd-actions-btn {
+  anchor-name: --sd-actions;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  height: 2.25rem;
+  padding: 0 0.625rem 0 0.75rem;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-base);
+  color: var(--text-secondary);
+  font: 500 var(--text-callout) / 1 var(--sl-font);
+  cursor: pointer;
+}
+.sd-actions-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+.sd-actions-menu {
+  position-anchor: --sd-actions;
+  inset: auto;
+  top: anchor(bottom);
+  right: anchor(right);
+  margin: 0.375rem 0 0;
+  min-width: 15rem;
+  padding: 0.375rem;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-lg);
+}
+.sd-actions-menu:popover-open {
+  display: flex;
+  flex-direction: column;
+}
+.sd-actions-menu > * {
+  display: flex;
+  align-items: center;
+  min-height: 2.5rem;
+  padding: 0 0.75rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-primary);
+  font: 400 var(--text-callout) / 1.3 var(--sl-font);
+  text-align: start;
+  text-decoration: none;
+  cursor: pointer;
+}
+.sd-actions-menu > *:hover {
+  background: var(--bg-surface);
+}
+@media (max-width: 49.99rem) {
+  .sd-actions-btn {
+    height: 2.75rem;
+  }
+  .sd-actions-menu > * {
+    min-height: 2.75rem;
+  }
+}
+
+/* ── Prose ── */
+.sd-prose {
+  color: var(--text-primary);
+}
+.sl-markdown-content :is(h2, h3, h4, h5) {
+  color: var(--text-primary);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+.sl-markdown-content h2 {
+  margin-top: 3rem;
+  letter-spacing: -0.025em;
+}
+.sl-markdown-content :is(h3, h4) {
+  margin-top: 2rem;
+}
+.sl-markdown-content :is(h2, h3, h4) + * {
+  margin-top: 0.75rem;
+}
+.sl-markdown-content :is(p, li) {
+  text-wrap: pretty;
+}
+.sl-markdown-content a:not(:where(.not-content *)) {
+  color: var(--primary);
+  text-decoration-line: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+  text-decoration-color: color-mix(in srgb, var(--primary) 40%, transparent);
+  transition: text-decoration-color var(--transition-fast);
+}
+.sl-markdown-content a:not(:where(.not-content *)):hover {
+  text-decoration-color: currentColor;
+}
+.sl-markdown-content :not(pre) > code {
+  font-size: 0.85em;
+  padding: 0.1em 0.3em;
+  border-radius: 0.25rem;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.sl-markdown-content a > code {
+  color: inherit;
+}
+.sl-markdown-content strong {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.sl-markdown-content :is(ul, ol) li::marker {
+  color: var(--text-hint);
+}
+.sl-markdown-content blockquote {
+  border-inline-start: 1px solid var(--border-strong);
+  padding-inline-start: 1rem;
+  color: var(--text-secondary);
+  font-style: normal;
+}
+.sl-markdown-content hr {
+  border: 0;
+  border-top: 1px solid var(--border-default);
+}
+
+/* Tables scroll inside themselves, never the page. */
+.sl-markdown-content table {
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-callout);
+  line-height: 1.5;
+}
+.sl-markdown-content :is(th, td) {
+  padding: 0.625rem 0.875rem 0.625rem 0;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  vertical-align: top;
+  background: none;
+}
+.sl-markdown-content td > code:first-child {
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+.sl-markdown-content th {
+  font-size: var(--text-caption);
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-align: start;
+  border-bottom-color: var(--border-default);
+}
+.sl-markdown-content tr:nth-child(2n) {
+  background: none;
+}
+
+/* Callouts: Note, Tip, Caution (waits for you), Danger. Same shape; tone shows on the icon and title only. */
+.starlight-aside {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  padding: 1rem 1.125rem;
+}
+.starlight-aside--danger {
+  border-color: color-mix(in srgb, var(--destructive) 35%, var(--border-default));
+  background: var(--accent-red-subtle);
+}
+.starlight-aside__title {
+  font-size: var(--text-callout);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.starlight-aside__icon {
+  color: var(--sl-color-asides-border);
+  font-size: 1.125em;
+}
+.starlight-aside__content {
+  font-size: var(--text-callout);
+}
+
+/* Code blocks: shell lines get a "$" prompt that is not selectable and not copied. */
+.expressive-code {
+  margin-block: 1.25rem;
+}
+.expressive-code :is(pre[data-language="sh"], pre[data-language="bash"], pre[data-language="shell"]) .ec-line .code::before {
+  content: "$ ";
+  color: var(--text-hint);
+  user-select: none;
+  -webkit-user-select: none;
+}
+/* Unnamed terminal blocks are labeled "Terminal". */
+.expressive-code .frame.is-terminal .header .title:empty::after {
+  content: "Terminal";
+}
+.expressive-code .frame.is-terminal .header .title {
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.expressive-code :is(pre[data-language="text"], pre[data-language="txt"], pre[data-language="plaintext"]) {
+  background: var(--bg-elevated) !important;
+}
+
+/* ── Footer ── */
+.sd-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+  margin-top: 4rem;
+}
+.sd-footer .pagination-links a {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: none;
+  color: var(--text-secondary);
+  background: none;
+}
+.sd-footer .pagination-links a:hover {
+  border-color: var(--border-strong);
+}
+.sd-footer .pagination-links a .link-title {
+  color: var(--text-primary);
+  font-size: var(--text-title);
+  font-weight: 500;
+  letter-spacing: -0.015em;
+}
+.sd-footer-meta {
+  font-size: var(--text-caption);
+  color: var(--text-hint);
+}
+.sd-footer-meta:empty {
+  display: none;
+}
+.sd-footer-line {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.75rem 2rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border-subtle);
+  font-size: var(--text-caption);
+  color: var(--text-hint);
+}
+.sd-footer-links {
+  display: flex;
+  gap: 1.25rem;
+}
+.sd-footer-line a {
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+.sd-footer-line a:hover {
+  color: var(--text-primary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

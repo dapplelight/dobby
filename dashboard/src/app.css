@@ -1,0 +1,10 @@
+@import "tailwindcss";
+@import "./theme/instrument.css";
+@import "@nimit9/signet-tokens/base.css";
+
+@source "../../node_modules/@nimit9/signet-ui/dist";
+
+/* Touch screens and phones have no keyboard to press: hide every key hint. The keys still work if one is attached. */
+@media (max-width: 767px), (pointer: coarse) {
+  kbd { display: none !important; }
+}

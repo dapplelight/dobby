@@ -1,12 +1,13 @@
 // `dobby migrate`: write the owner's private config from the setup that runs today, so behaviour stays identical when the
 // built-in defaults later turn generic. Never overwrites; --dry-run prints instead. Secrets: key NAMES only, never values.
+import { fileURLToPath } from "node:url"
 import Database from "better-sqlite3"
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname } from "node:path"
-import { draftDirs, loadConfig, privatePath, Schema, type Config } from "./config.ts"
+import { draftDirs, isProjectDraft, loadConfig, privatePath, Schema, type Config } from "./config.ts"
 import { DATA } from "./db.ts"
-import { redact, secretsFile } from "./telegram.ts"
+import { redact, secretsFile } from "./notify.ts"
 
 type Opts = { path?: string; drafts?: string; secrets?: string; db?: string; launchAgents?: string; now?: Date }
 
@@ -14,7 +15,7 @@ type Opts = { path?: string; drafts?: string; secrets?: string; db?: string; lau
 export function current(o: Opts = {}): Config {
   const base = structuredClone(loadConfig({ private: null }).config)
   const dirs = o.drafts ? [o.drafts].filter((d) => existsSync(d)) : draftDirs()
-  const projects = [...new Set(dirs.flatMap((d) => readdirSync(d).filter((f) => /^[^.]+\.md$/.test(f)).map((f) => f.slice(0, -3))))].sort()
+  const projects = [...new Set(dirs.flatMap((d) => readdirSync(d).filter(isProjectDraft).map((f) => f.slice(0, -3))))].sort()
   for (const p of projects) base.discord.apps[p] ??= { label: p.toUpperCase(), ideas: true }
   const sf = o.secrets ?? secretsFile()
   const secretKeys = existsSync(sf) ? [...readFileSync(sf, "utf8").matchAll(/^\s*(?:export\s+)?([A-Za-z_]\w*)=/gm)].map((m) => m[1]) : []
@@ -47,7 +48,7 @@ export function migrate(o: Opts & { dryRun?: boolean } = {}): string {
 
 /** `dobby config show|path`. */
 export function configCmd(sub = "show"): string {
-  if (sub === "path") return `${privatePath()}${existsSync(privatePath()) ? "" : " (not there yet: dobby migrate writes it)"}\nrepo: ${new URL("../dobby.config.json", import.meta.url).pathname}`
+  if (sub === "path") return `${privatePath()}${existsSync(privatePath()) ? "" : " (not there yet: dobby init or dobby config set creates it)"}\nrepo: ${fileURLToPath(new URL("../dobby.config.json", import.meta.url))}`
   const l = loadConfig()
   return [...l.warnings.map((w) => `warning: ${w}`), `sources: ${l.sources.join(" < ")}`, redact(JSON.stringify(l.config, null, 2))].join("\n")
 }

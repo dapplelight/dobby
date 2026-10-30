@@ -15,35 +15,20 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
 
 /** The owner's own files: project drafts, company notes, working notes, audits, app assets, one-off scripts for the owner's install. */
 export const EXCLUDE = [
-  /^projects\//, /^projects\.json$/, /^company\.md$/, /^roles\/company\.md$/, /^NOTES\.md$/, /^assets\//,
-  /^docs\/(audits|research)\//, /^docs\/(hosting-inventory|team|[\w-]+-demos-plan)\.md$/, /^docs\/skill-scout-[\w-]+\.md$/, /^docs\/actions-paused-[\w-]+\.txt$/,
+  /^projects\//, /^projects\.json$/, /^company\.md$/, /^NOTES\.md$/, /^assets\//,
+  /^docs\/(audits|research)\//, /^docs\/design\/dashboard\//, /^docs\/(hosting-inventory|team|[\w-]+-demos-plan)\.md$/, /^docs\/skill-scout-[\w-]+\.md$/, /^docs\/actions-paused-[\w-]+\.txt$/,
   /^bin\/(unblock-demos|migrate-to-dobby)\.sh$/,
   /^agent-kit\/skills\/security-audit\//, // upstream source and license not recorded
 ]
 export const kept = (files) => files.filter((f) => !EXCLUDE.some((x) => x.test(f)))
 
-const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-/** The scan's patterns: built-in ones plus the owner's words (whole words, any case). Words under 3 letters are skipped: they match everywhere. */
-export function patterns(words) {
-  const own = [...new Set(words.map((w) => String(w).trim()).filter((w) => w.length >= 3))]
-  return [
-    { name: "home folder", re: /\/(Users|home)\/(?!runner\b|user\b|me\b|you\b)[a-z][\w.-]*/i },
-    { name: "personal email", re: /[\w.+-]+@(gmail|googlemail|yahoo|outlook|hotmail|icloud|proton(mail)?)\.[a-z]+/i },
-    ...own.map((w) => ({ name: w, re: new RegExp(`(^|[^A-Za-z0-9])${esc(w)}($|[^A-Za-z0-9])`, "i") })),
-  ]
-}
+import { ownerWords as words, patterns } from "../src/privacy.ts"
+export { patterns }
 
-/** The owner's words from the private config and the private terms file. */
+/** The owner's words, less the account that hosts the public repo (package.json repository). */
 export function ownerWords(home = homedir()) {
-  const words = []
-  try {
-    const c = JSON.parse(readFileSync(`${home}/.config/dobby/config.json`, "utf8"))
-    words.push(c.github?.owner, ...(c.github?.accounts ?? []), ...(c.clientNames ?? []), ...Object.keys(c.discord?.apps ?? {}))
-  } catch {}
-  try { words.push(...readFileSync(`${home}/.config/dobby/private-terms.txt`, "utf8").split("\n").filter((l) => l.trim() && !l.startsWith("#"))) } catch {}
-  // public anyway: the product's own name (a project of its own) and the account that hosts the public repo (package.json repository)
   const host = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).repository?.url?.match(/github\.com\/([^/]+)\//)?.[1] ?? ""
-  return words.filter((w) => w && !/^(dobby|foreman)$/i.test(String(w).trim()) && String(w).trim().toLowerCase() !== host.toLowerCase())
+  return words(home, host ? [host] : [])
 }
 
 /** Every hit as "file:line: word". Binary files (a NUL in the first 8 KB) are skipped. */

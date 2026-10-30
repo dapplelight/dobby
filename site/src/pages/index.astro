@@ -1,0 +1,943 @@
+---
+// The landing page. Hero = the dashboard's Home screen at work; then the sandbox, the roles, the plan, the checks.
+// One example ticket (#95 Add CSV export) runs through every section. Screens show a made-up project and say so once. Names and safety rules come from the code: site/facts.ts,
+// src/presets.ts and the dashboard glossary.
+import "@fontsource-variable/geist"
+import "@fontsource-variable/geist-mono"
+import "@fontsource-variable/newsreader"
+import { beta, install, site } from "../../facts.ts"
+import { CATEGORIES, PRESETS, type Category } from "../../../src/presets.ts"
+import { GLOSSARY } from "../../../dashboard/src/lib/glossary.ts"
+import { readFileSync } from "node:fs"
+import { resolve } from "node:path"
+import Mark from "../components/Mark.astro"
+
+const repo = `https://github.com/${site.repo}`
+
+const tickets = [
+  "Add CSV export to reports", "Fix footer spacing on phones", "Show stock on the product page", "Rate-limit the public API",
+  "Write tests for the cart", "Speed up the dashboard query", "Translate the signup page", "Add dark mode to settings",
+  "Fix the flaky login test", "Add an audit log", "Remove unused env vars", "Compress product images",
+]
+const g = (k: keyof typeof GLOSSARY) => GLOSSARY[k].name
+// docs/manual/roles.md: the six main roles, plus the Designer and the Talent Scout. `did` = their step on one example ticket.
+const roles = [
+  { id: "pm", name: g("product-manager"), job: "Ranks problems and writes specs.", did: "Wrote the spec: which orders, which columns." },
+  { id: "em", name: g("engineering-manager"), job: "Plans the work and queues tickets.", did: "Queued it for today, size medium." },
+  { id: "design", name: "Designer", job: "Specs screens before a UI build.", did: "Specced the Export button." },
+  { id: "build", name: g("builder"), job: "Writes the change, in the sandbox.", did: "Built it. 18 tests pass." },
+  { id: "test", name: g("tester"), job: "Tries to break it before review.", did: "Checked the done-when line. Passed." },
+  { id: "review", name: g("code-reviewer"), job: "Reviews every pull request.", did: "Big exports time out. Sent back once, then passed." },
+  { id: "cos", name: g("chief-of-staff"), job: "Sends a morning and evening brief.", did: "Put “merged” in your evening brief." },
+  { id: "scout", name: g("talent-scout"), job: "Improves one role a day.", did: "Proposed a Builder rule: stream big files." },
+]
+// a day of the 5-hour window: [hour, percent]
+const use = [[8, 4], [9, 18], [10, 34], [11, 50], [11.67, 60], [13, 60], [13.05, 6], [14, 19], [15, 31], [16, 42], [17, 50], [18, 54], [18.05, 3], [19, 9], [20, 12]]
+const X = (h: number) => ((h - 8) / 12) * 1000
+const Y = (p: number) => 200 - p * 2.6
+const line = use.map(([h, p], i) => `${i ? "L" : "M"}${X(h).toFixed(1)} ${Y(p).toFixed(1)}`).join(" ")
+// share of the line's length drawn when it reaches the cap (point 4), so the draw can pause there
+const segs = use.slice(1).map(([h, p], i) => Math.hypot(X(h) - X(use[i][0]), Y(p) - Y(use[i][1])))
+const total = segs.reduce((a, b) => a + b), capF = segs.slice(0, 4).reduce((a, b) => a + b) / total
+const lenF = (h: number) => { let L = 0; for (let i = 1; i < use.length; i++) { const [h0] = use[i - 1], [h1] = use[i]; if (h <= h1) return (L + segs[i - 1] * Math.max(0, (h - h0) / (h1 - h0))) / total; L += segs[i - 1] } return 1 }
+const at = (h: number) => { const i = use.findIndex(([x]) => x >= h); if (i <= 0) return use[0][1]; const [h0, v0] = use[i - 1], [h1, v1] = use[i]; return v0 + ((v1 - v0) * (h - h0)) / (h1 - h0) }
+const day = [
+  { h: 8.08, t: "08:05", e: "Morning brief arrives" },
+  { h: 9.17, t: "09:10", e: "Builder starts “Add CSV export”" },
+  { h: 10.67, t: "10:40", e: "Reviewer: big exports time out. Sent back" },
+  { h: 11.08, t: "11:05", e: "Review passes. #95 ready for you" },
+  { h: 11.67, t: "11:40", e: "5-hour window at the 60% cap. Pauses" },
+  { h: 13.05, t: "13:00", e: "Window resets. Resumes" },
+  { h: 18.05, t: "18:00", e: "Window resets again" },
+  { h: 19, t: "19:00", e: "Evening brief" },
+]
+// docs/manual/cli.md and reviews.md
+const cli = [
+  ["dobby add shop \"Add CSV export\" \"Owners can download orders as CSV\" M", "Write a ticket"],
+  ["dobby hint 95 \"reuse the report exporter\"", "A hint for the ticket's next build"],
+  ["dobby takeover 95", "Pause the ticket and take its branch"],
+  ["dobby cost 95", "What the pull request cost, by stage"],
+  ["dobby pause merges for 2h", "Pause one part, for a while"],
+  ["@dobby review", "A review on any pull request, as a PR comment"],
+]
+const order = ["strict", "balanced", "autonomous"] as const
+const NAMES: Record<Category, string> = {
+  "migrations.schema": "Schema migrations", "migrations.data": "Data migrations", payments: "Payments", auth: "Login and auth",
+  secrets: "Secrets", deploys: "Deploy changes", config: "Config", "client-sites": "Client sites", releases: "Releases",
+}
+const cats = CATEGORIES.map((c) => ({ name: NAMES[c], v: Object.fromEntries(order.map((p) => [p, PRESETS[p][c]])) }))
+const cap = (p: string) => p[0].toUpperCase() + p.slice(1)
+// Skills come from the repo at build time: each role's file lists its skills, THIRD_PARTY.md says where each came from.
+const ROOT = resolve(process.cwd(), "..")
+const third: Record<string, { owner: string; license: string }> = Object.fromEntries(
+  [...readFileSync(resolve(ROOT, "THIRD_PARTY.md"), "utf8").matchAll(/\| `skills\/([\w-]+)` \| \[github\.com\/([\w.-]+)\/[^\]]+\]\([^)]*\) \| ([\w.-]+) \|/g)]
+    .map((m) => [m[1], { owner: m[2], license: m[3] }]),
+)
+const OWNER: Record<string, string> = {
+  getsentry: "Sentry", anthropics: "Anthropic", addyosmani: "Addy Osmani", mattpocock: "Matt Pocock", obra: "Jesse Vincent",
+  callstackincubator: "Callstack", phuryn: "Paweł Huryn", coreyhaines31: "Corey Haines", muratcankoylan: "Muratcan Koylan",
+  "owl-listener": "owl-listener", appeeky: "Appeeky",
+}
+const skillsOf = (file: string) => (readFileSync(resolve(ROOT, "roles", `${file}.md`), "utf8").match(/^skills: (.+)$/m)?.[1] ?? "").split(/,\s*/).filter((k) => third[k])
+const tabs = [["reviewer", g("code-reviewer")], ["builder", g("builder")], ["checker", g("tester")], ["product-manager", g("product-manager")], ["lead", g("engineering-manager")], ["scout", g("talent-scout")]]
+  .map(([file, name]) => ({ file, name, skills: skillsOf(file) }))
+const skillCount = Object.keys(third).length
+const si = (s: string, v = "13.21.0") => `--src:url(https://cdn.jsdelivr.net/npm/simple-icons@${v}/icons/${s}.svg)`
+/** A plain line icon (Lucide shapes, ISC) as a mask, for things with no brand logo. */
+const glyph = (body: string) => `--src:url("data:image/svg+xml,${encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'>${body}</svg>`)}")`
+const MCP = glyph("<path d='M12 22v-5'/><path d='M9 8V2'/><path d='M15 8V2'/><path d='M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z'/>")
+const TERMINAL = glyph("<polyline points='4 17 10 11 4 5'/><line x1='12' x2='20' y1='19' y2='19'/>")
+/** Antigravity's arch, from antigravity.google/favicon.svg, as a one-colour mask like the brand icons. */
+const ANTIGRAVITY = `--src:url("data:image/svg+xml,${encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' viewBox='12 16 88 82'><path fill='black' d='M89.6992 93.695C94.3659 97.195 101.366 94.8617 94.9492 88.445C75.6992 69.7783 79.7825 18.445 55.8659 18.445C31.9492 18.445 36.0325 69.7783 16.7825 88.445C9.78251 95.445 17.3658 97.195 22.0325 93.695C40.1159 81.445 38.9492 59.8617 55.8659 59.8617C72.7825 59.8617 71.6159 81.445 89.6992 93.695Z'/></svg>")}")`
+const DASHBOARD = glyph("<rect width='7' height='9' x='3' y='3' rx='1'/><rect width='7' height='5' x='14' y='3' rx='1'/><rect width='7' height='9' x='14' y='12' rx='1'/><rect width='7' height='5' x='3' y='16' rx='1'/>")
+/** What Dobby needs, where you talk to it, and what comes next. [name, icon, tag] */
+const groups: { head: string; soon?: boolean; items: [string, string, string?][] }[] = [
+  { head: "Needs", items: [["GitHub", si("github")]] },
+  { head: "Talk to it", items: [["Terminal", TERMINAL], ["Dashboard", DASHBOARD], ["Discord", si("discord")], ["Slack", si("slack"), "beta"], ["MCP", MCP]] },
+  { head: "Coming soon", soon: true, items: [["Telegram", si("telegram")], ["Codex", si("openai")], ["OpenCode", si("opencode", "16.36.0")], ["Antigravity", ANTIGRAVITY]] },
+]
+---
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dobby</title>
+  <meta name="description" content="An AI dev team on your own computer. Dobby plans, builds, tests and reviews changes, then opens pull requests on GitHub, on the AI plan you already pay for." />
+  <meta name="color-scheme" content="dark light" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="canonical" href={site.url + "/"} />
+  <meta property="og:title" content="Dobby" />
+  <meta property="og:description" content="An AI dev team on your own computer." />
+  <link rel="alternate" type="text/plain" title="llms.txt" href="/docs/llms.txt" />
+  <script is:inline>
+    try { const t = localStorage.getItem("starlight-theme"); if (t) document.documentElement.dataset.theme = t } catch {}
+    const q = new URLSearchParams(location.search).get("theme"); if (q) document.documentElement.dataset.theme = q
+    document.documentElement.classList.add("js")
+  </script>
+</head>
+<body>
+  <header class="nav">
+    <div class="wrap nav-in">
+      <a class="brand" href="#top"><Mark class="mark" /><span>dobby</span></a>
+      <span class="beta">Beta</span>
+      <nav aria-label="Main">
+        <a class="hide-s" href="#sandbox">Sandbox</a>
+        <a class="hide-s" href="#team">Team</a>
+        <a class="hide-s" href="#safety">Safety</a>
+        <a href={site.docs}>Docs</a>
+        <a href={repo}>GitHub</a>
+      </nav>
+      <button class="theme" type="button" data-theme-toggle aria-label="Switch theme">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z" fill="currentColor"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main id="top">
+    <!-- Hero: the dashboard's Home screen, working through tickets -->
+    <section class="hero">
+      <div class="wrap hero-copy">
+        <h1 class="rv">An AI dev team on your own computer.</h1>
+        <p class="lede rv" style="--d:80ms">Give it a ticket. It plans, builds, tests and reviews the change, then opens a pull request.</p>
+        <div class="cta rv" style="--d:160ms">
+          <button class="cmd" type="button" data-copy={install.command}><span class="pr">$</span><span>{install.command}</span><span class="cp" aria-live="polite">Copy</span></button>
+          <a class="ghost" href={site.docs}>Read the docs</a>
+        </div>
+        <p class="fine req rv" style="--d:200ms">Free and open source, {site.license}. <a href="/docs/requirements/">What you need</a></p>
+      </div>
+      <div class="wrap stage">
+        <figure class="win rv" style="--d:240ms" aria-label="The Dobby dashboard at work, on a made-up project">
+          <div class="chrome"><i></i><i></i><i></i><span class="mono">127.0.0.1:4710</span><button type="button" class="hold" data-hold aria-pressed="false">Pause</button></div>
+          <div class="app">
+            <div class="app-nav"><span class="brand sm"><Mark class="mark" />dobby</span><span class="on">Home</span><span>Queue</span><span>Goals</span><span>Team</span><span>Spend</span></div>
+            <div class="app-main">
+              <div>
+                <p class="disp">On pace to use <span data-pace>72</span>% of this week. <span class="mk" data-need>2 things need</span> you.</p>
+                <p class="app-sub"><span data-merged>14</span> merged in the last 7 days · <span data-ready>3</span> ready · resets Thu</p>
+                <p class="sec">Needs you</p>
+                <div class="rows" data-needs>
+                  <div class="row sel" data-row="95">
+                    <svg class="ki" viewBox="0 0 24 24"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/></svg>
+                    <span class="ref mono">#95</span><span class="tt">Add CSV export to reports</span>
+                    <span class="acts"><b class="btn-m" data-merge>Merge <kbd>↵</kbd></b><span>Decline <kbd>D</kbd></span><span>Open <kbd>O</kbd></span></span>
+                  </div>
+                  <div class="row" data-row="91">
+                    <svg class="ki" viewBox="0 0 24 24"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/></svg>
+                    <span class="ref mono">#91</span><span class="tt">Add Stripe refunds</span><span class="st warn">Payments: waits for you</span>
+                    <span class="db"><i style="width:26px"></i><i style="width:9px"></i></span><span class="cd"><i></i><i></i><i></i><i></i><i></i></span><span class="age mono">1h</span>
+                  </div>
+                </div>
+                <p class="sec">Working <span class="mono">3</span></p>
+                <div class="rows" data-working data-pool={JSON.stringify(tickets)}></div>
+              </div>
+              <aside class="aside">
+                <p class="ref mono">#95 · dobby/95-csv-export</p>
+                <p class="as-t">Add CSV export to reports</p>
+                <p class="dim">Review passed. Ready to merge.</p>
+                <div class="as-c"><span>Tests</span><span class="mono">passed</span><span>Tester</span><span class="mono">passed</span><span>Code review</span><span class="mono">passed</span></div>
+                <p class="mono as-d"><b>+142</b> −18 in 6 files</p>
+              </aside>
+            </div>
+          </div>
+        </figure>
+        <p class="fine center-t">Screens on this page show a made-up project, “shop”.</p>
+      </div>
+    </section>
+
+    <!-- Sandbox: the first proof, right under the hero -->
+    <section class="chap" id="sandbox" data-step="Building in the sandbox">
+      <div class="wrap split">
+        <div class="split-t rv">
+          <h2>Builders run in a sandbox on your machine.</h2>
+          <p class="sub">Every shell command a Builder runs goes through an OS sandbox: Seatbelt on macOS, bubblewrap on Linux. It has no network and no credentials. Only Dobby pushes, after the checks pass.</p>
+          <dl class="facts">
+            <div><dt>Writes</dt><dd>Its own worktree and a temp folder</dd></div>
+            <div><dt>Network</dt><dd>None</dd></div>
+            <div><dt>Credentials</dt><dd>Removed before it starts</dd></div>
+            <div><dt>If the sandbox fails</dt><dd>The run stops</dd></div>
+          </dl>
+          <a class="more-l" href="/docs/security/">How the sandbox works</a>
+        </div>
+        <pre class="shell mono rv" aria-label="What a Builder sees when it tries to leave the sandbox"><span class="l" style="--i:0"><span class="pr">$</span> cat ~/.ssh/id_ed25519</span><span class="l no" style="--i:1">blocked by the sandbox</span><span class="l" style="--i:2"><span class="pr">$</span> curl https://example.com</span><span class="l no" style="--i:3">blocked: no network</span><span class="l" style="--i:4"><span class="pr">$</span> git push</span><span class="l no" style="--i:5">blocked: Dobby pushes after the checks</span></pre>
+      </div>
+    </section>
+
+    <!-- Team: the eight roles as a list, one ticket followed through them -->
+    <section class="chap" id="team" data-step="Through 8 roles">
+      <div class="wrap head rv">
+        <h2>Eight roles, each with one job.</h2>
+        <p class="sub">Each role is a separate agent run with its own instructions.</p>
+      </div>
+      <div class="wrap narrow">
+        <ol class="roster rv">
+          <li class="ro-h" aria-hidden="true"><span>Role</span><span>Its job</span><span class="mono" data-dock>On #95</span></li>
+          {roles.map((r, i) => (
+            <li style={`--i:${i}`}>
+              <span class="ro-n">{r.name}</span>
+              <span class="ro-j">{r.job}</span>
+              <span class="ro-d"><span class="ro-tag mono">#95</span>{r.did}</span>
+            </li>
+          ))}
+        </ol>
+        <p class="fine">Supporting roles run when a ticket needs them, such as the Program Manager, the Onboarder and Brainstorm.</p>
+      </div>
+    </section>
+
+    <!-- Plan: a day of the 5-hour window -->
+    <section class="chap" id="plan" data-step="Review passed at 11:05">
+      <div class="wrap head rv">
+        <h2>It leaves part of your AI plan for you.</h2>
+        <p class="sub">Dobby reads your usage every 10 minutes. It spreads the week across the 5-hour windows, pauses when a window reaches its share, and stops starting work at your weekly cap, 95% by default.</p>
+      </div>
+      <figure class="wrap dayc rv" data-day aria-label="Example day: Dobby's use of the 5-hour window, pausing at a 60% cap">
+        <p class="ylab mono">% of the 5-hour window used</p>
+        <div class="plot">
+          <svg viewBox="0 0 1000 200" preserveAspectRatio="none" class="chart" aria-hidden="true">
+            {[0, 1, 2, 3, 4, 5, 6].map((i) => <line x1={i * 1000 / 6} x2={i * 1000 / 6} y1="0" y2="200" class="grid" />)}
+            <line x1="0" x2="1000" y1="200" y2="200" class="base" />
+            <rect x={X(11.67)} y="0" width={X(13) - X(11.67)} height="200" class="pause" />
+            <line x1="0" x2="1000" y1={Y(60)} y2={Y(60)} class="capl" />
+            <path d={line} class="ln" pathLength="1" data-cap={capF.toFixed(3)} />
+          </svg>
+          <span class="yt mono" style={`top:${Y(60) / 2}%`}>60%</span>
+          <span class="yt mono" style="top:100%">0</span>
+          <span class="caplabel mono" style={`top:${Y(60) / 2}%`}>your cap</span>
+          {day.map((d, i) => <span class="ev mono" data-f={lenF(d.h).toFixed(3)} style={`left:${X(d.h) / 10}%;top:${Y(at(d.h)) / 2}%`}>{i + 1}</span>)}
+        </div>
+        <div class="axis mono"><span>08:00</span><span>10:00</span><span>12:00</span><span>14:00</span><span>16:00</span><span>18:00</span><span>20:00</span></div>
+        <ol class="events">
+          {day.map((d, i) => <li data-f={lenF(d.h).toFixed(3)} data-dock={d.e.includes("#95") ? "" : undefined}><span class="evn mono">{i + 1}</span><span class="mono">{d.t}</span>{d.e}</li>)}
+        </ol>
+        <p class="fine">On an API key it caps spend instead, $20 a day by default. <code>dobby cost</code> shows what each pull request cost. Nothing runs while your computer sleeps.</p>
+      </figure>
+    </section>
+
+    <!-- Checked -->
+    <section class="chap" id="checked" data-step="Sent back once, then merged">
+      <div class="wrap head rv">
+        <h2>Every change is checked before it reaches you.</h2>
+        <p class="sub">A tester and a reviewer check every change. Problems go back to the Builder, not to you. Dobby merges only the exact commit that passed review.</p>
+      </div>
+      <div class="wrap narrow">
+        <div class="panel prc rv" data-pr aria-label="Example pull request">
+          <div class="pr-head">
+            <div><p class="pr-title">Add CSV export to reports <span class="dim" data-dock>#95</span></p><p class="mono pr-sub">dobby/95-csv-export → main</p></div>
+            <span class="pill" data-pill>Open</span>
+          </div>
+          <span class="tm" aria-hidden="true"></span>
+          <ol class="tl">
+            <li><span class="d"></span><span class="who">Builder</span><p>Pushed 1 commit. <span class="mono">18</span> tests passed.</p></li>
+            <li><span class="d ok"></span><span class="who">Tester</span><p>Matches the ticket's done-when line.</p></li>
+            <li><span class="d warn"></span><span class="who">Code Reviewer</span><p><b>1 finding:</b> big exports time out.</p></li>
+            <li><span class="d"></span><span class="who">Builder</span><p>Pushed a fix that streams the file.</p></li>
+            <li><span class="d ok"></span><span class="who">Code Reviewer</span><p>Review passed.</p></li>
+            <li class="end"><span class="d ok"></span><span class="who">Dobby</span><p>Merged the commit that passed review.</p></li>
+          </ol>
+        </div>
+      </div>
+    </section>
+
+    <!-- Learns -->
+    <section class="chap" id="learns" data-step="Lesson saved for the Builder">
+      <div class="wrap split rev">
+        <div class="split-t rv">
+          <h2>It learns from its own mistakes.</h2>
+          <p class="sub">Once a day the Talent Scout picks one role, looks at what went wrong and proposes a better rule or skill for it. The change arrives as a pull request. You merge it, and every later run of that role uses it.</p>
+        </div>
+        <div class="panel learn rv" aria-label="Example: a proposed rule for the Builder">
+          <p class="ct-who">Talent Scout <span class="dim">· a better rule for the Builder</span></p>
+          <div class="l-row"><span class="l-k">Seen</span><p>In the last 7 days, the Code Reviewer sent back 3 changes that loaded a whole file into memory.</p></div>
+          <div class="l-row"><span class="l-k">Change</span>
+            <pre class="diff mono"><span class="del">- Read the file, then write the export.</span><span class="add">+ Stream big files. Never load a whole export into memory.</span></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Safety -->
+    <section class="chap" id="safety">
+      <div class="wrap head rv">
+        <h2>You decide what merges on its own.</h2>
+        <p class="sub">Dobby sorts every change into a category. Pick a preset to see what waits for you. Merges stay off on a fresh install until you turn them on.</p>
+        <div class="seg" role="radiogroup" aria-label="Safety preset">
+          {order.map((p) => <button type="button" role="radio" aria-checked={p === "balanced" ? "true" : "false"} data-preset={p}>{cap(p)}</button>)}
+        </div>
+      </div>
+      <div class="wrap narrow">
+        <p class="dial-sum" aria-live="polite"><span><b data-n="owner">3</b> wait for you</span><span><b data-n="review">3</b> get a strict review</span><span><b data-n="auto">3</b> merge on their own</span></p>
+        <div class="dial rv">
+          {cats.map((c) => (
+            <div class="dial-row" data-strict={c.v.strict} data-balanced={c.v.balanced} data-autonomous={c.v.autonomous}>
+              <span class="dr-name">{c.name}</span>
+              <span class="dr-state"></span>
+            </div>
+          ))}
+        </div>
+        <p class="fine">Strict review means a second, stricter review before the merge. A deploy after the merge still waits for your tap unless you set it to deploy on its own.</p>
+      </div>
+    </section>
+
+    <!-- Skills -->
+    <section class="chap" id="skills">
+      <div class="wrap head rv">
+        <h2>Roles load open-source skills you can read.</h2>
+        <p class="sub">{skillCount} open-source skills ship with Dobby, each read in full and pinned to the version read. Six of the eight roles load skills; a role's file says which.</p>
+      </div>
+      <div class="wrap narrow rv">
+        <div class="tabs" role="tablist" aria-label="Roles">
+          {tabs.map((t, i) => <button type="button" role="tab" data-tab={t.file} aria-selected={i === 0 ? "true" : "false"}>{t.name}</button>)}
+        </div>
+        <div class="sk">
+          {tabs.map((t, i) => (
+            <div role="tabpanel" data-pane={t.file} hidden={i !== 0}>
+              <p class="sk-f mono">roles/{t.file}.md <span class="dim">skills:</span> <span class="hl">{t.skills.join(", ")}</span></p>
+              <ul class="sk-list">
+                {t.skills.map((k, j) => (
+                  <li style={`--i:${j}`}>
+                    <img src={`https://github.com/${third[k].owner}.png?size=64`} alt="" width="32" height="32" loading="lazy" />
+                    <span class="mono sk-n">{k}</span>
+                    <span class="sk-by">{OWNER[third[k].owner] ?? third[k].owner}</span>
+                    <span class="mono sk-l">{third[k].license}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+        <p class="fine">Sources and licenses are in THIRD_PARTY.md. Listing them is not an endorsement.</p>
+      </div>
+    </section>
+
+    <!-- Commands and where you talk to it -->
+    <section class="chap" id="more">
+      <div class="wrap head rv">
+        <h2>The commands you will use most.</h2>
+        <p class="sub">Run them in a terminal, or reach Dobby from any of the places listed under them.</p>
+      </div>
+      <div class="wrap narrow">
+        <dl class="cli rv">
+          {cli.map(([c, d]) => <div><dt class="mono"><span class="pr">{c.startsWith("@") ? "PR" : "$"}</span> {c}</dt><dd>{d}</dd></div>)}
+        </dl>
+        <dl class="logos rv">
+          {groups.map((g) => (
+            <div class:list={["lrow", { later: g.soon }]}>
+              <dt class="lhead">{g.head}</dt>
+              <dd><ul class="llist">{g.items.map(([n, icon, tag]) => <li class="logo"><i class="ico" style={icon}></i>{n}{tag && <span class="tag">{tag}</span>}</li>)}</ul></dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+    </section>
+
+    <!-- Install -->
+    <section class="close">
+      <div class="wrap head rv">
+        <div class="ringbox"><Mark class="close-mark" /><canvas class="ringgl" data-ring aria-hidden="true"></canvas></div>
+        <h2>Give it one repo and a goal.</h2>
+        <button class="cmd big" type="button" data-copy={install.command}><span class="pr">$</span><span>{install.command}</span><span class="cp" aria-live="polite">Copy</span></button>
+        <a class="ghost" href="/docs/requirements/">What you need</a>
+      </div>
+    </section>
+    <div class="t95" data-t95 aria-hidden="true"><span class="mono t95-n">#95</span><span class="t95-t">Add CSV export</span><span class="t95-s" data-t95-s></span></div>
+  </main>
+
+  <footer class="foot wrap">
+    <a class="brand" href="#top"><Mark class="mark" /><span>dobby</span></a>
+    <span class="dim">{beta.note}</span>
+    <nav aria-label="Footer"><a href={site.docs}>Docs</a><a href={repo}>GitHub</a><span class="dim">{site.license} license</span></nav>
+  </footer>
+
+  <script>
+    import { animate } from "motion/mini"
+    import { inView, scroll } from "motion"
+    const root = document.documentElement
+    const still = matchMedia("(prefers-reduced-motion: reduce)").matches
+    const dark = () => root.dataset.theme ? root.dataset.theme === "dark" : !matchMedia("(prefers-color-scheme: light)").matches
+    document.querySelector("[data-theme-toggle]")!.addEventListener("click", () => {
+      root.dataset.theme = dark() ? "light" : "dark"
+      try { localStorage.setItem("starlight-theme", root.dataset.theme) } catch {}
+    })
+    document.querySelectorAll<HTMLButtonElement>("[data-copy]").forEach((b) => b.addEventListener("click", async () => {
+      const cp = b.querySelector(".cp")!
+      try { await navigator.clipboard.writeText(b.dataset.copy!); cp.textContent = "Copied" } catch { cp.textContent = "Select and copy" }
+      setTimeout(() => (cp.textContent = "Copy"), 1800)
+    }))
+    const E = [0.16, 1, 0.3, 1] as const
+    inView(".rv", (el) => { el.classList.add("in") }, { amount: 0.2 })
+
+    // hero: three Working slots. Each steps a ticket through the roles, merges it and takes the next one in place,
+    // so nothing jumps. The owner merges the selected row once, a few seconds in.
+    const working = document.querySelector<HTMLElement>("[data-working]")!
+    const merged = document.querySelector<HTMLElement>("[data-merged]")!
+        const STEPS = [["Builder", "building"], ["Builder", "running tests"], ["Tester", "checking done-when"], ["Code Reviewer", "reviewing"]]
+    let ref = 96, k = 0, nMerged = 14, heroLive = true
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
+    const esc = (s: string) => s.replace(/[&<>]/g, (c) => `&#${c.charCodeAt(0)};`)
+    const body = (r: number, title: string, s: number) =>
+      `<span class="rs">${STEPS.map((_, i) => `<i class="${i < s ? "d" : i === s ? "c" : ""}"></i>`).join("")}</span><span class="role-t">${STEPS[s][0]}</span><span class="tt"><span class="ref mono">#${r}</span>${esc(title)}</span><span class="st">${STEPS[s][1]}</span><span class="age mono">${s * 4 + 1}m</span>`
+    const slots = [0, 1, 2].map(() => { const d = document.createElement("div"); d.className = "row wk"; working.append(d); return d })
+    const seed = ["Translate the signup page", "Add an audit log", "Compress product images"]
+    const shown = [...seed, ...[...document.querySelectorAll("[data-row] .tt, [data-row] .as-t")].map((e) => e.textContent!.replace(/^#\d+\s*/, "").trim())]
+    const pool = (JSON.parse(working.dataset.pool!) as string[]).filter((t) => !shown.some((s) => t.includes(s)))
+    new IntersectionObserver(([e]) => (heroLive = e.isIntersecting)).observe(document.querySelector(".hero")!)
+    slots.forEach((d, i) => (d.innerHTML = body(ref++, seed[i], i + 1)))
+    let paused = false
+    const hold = document.querySelector<HTMLButtonElement>("[data-hold]")!
+    if (still) hold.hidden = true
+    hold.addEventListener("click", () => { paused = !paused; hold.textContent = paused ? "Play" : "Pause"; hold.setAttribute("aria-pressed", String(paused)) })
+    const swap = async (d: HTMLElement, html: string) => { d.classList.add("fade"); await wait(260); d.innerHTML = html; d.classList.remove("fade") }
+    const lane = async (d: HTMLElement, startAt: number) => {
+      let s = startAt
+      for (;;) {
+        while (s < STEPS.length - 1) { await wait(1700); while (paused) await wait(400); s++; const title = d.querySelector(".tt")!.lastChild!.textContent!, r = +d.querySelector(".ref")!.textContent!.slice(1); d.innerHTML = body(r, title, s) }
+        await wait(1500)
+        d.classList.add("done"); d.querySelector(".st")!.textContent = "Merged"; if (nMerged < 18) merged.textContent = String(++nMerged)
+        await wait(900); d.classList.remove("done")
+        await swap(d, body(ref++, pool[k++ % pool.length], 0)); s = 0
+        while (document.hidden || !heroLive || paused) await wait(400)
+      }
+    }
+    if (!still) slots.forEach((d, i) => setTimeout(() => lane(d, i + 1), i * 700))
+
+    // plan: the line draws as you scroll. Each numbered dot, and its row in the list, lights when the line reaches it.
+    const fig = document.querySelector<HTMLElement>("[data-day]")!, ln = fig.querySelector<SVGPathElement>(".ln")!
+    const marks = [...fig.querySelectorAll<HTMLElement>("[data-f]")], band = fig.querySelector<SVGElement>(".pause")!
+    const plot = (p: number) => {
+      ln.style.strokeDashoffset = String(1 - p); ln.style.strokeDasharray = p > 0.999 ? "none" : "1" // a dashed non-scaling stroke stops short of its end
+      marks.forEach((m) => m.classList.toggle("lit", p >= +m.dataset.f! - 0.001)); band.style.opacity = p >= +ln.dataset.cap! ? "1" : "0"
+    }
+    if (still) plot(1)
+    else scroll(plot, { target: fig.querySelector(".plot")!, offset: ["start 85%", "end 40%"] })
+
+    // skills tabs
+    const tabBtns = [...document.querySelectorAll<HTMLButtonElement>("[data-tab]")]
+    tabBtns.forEach((b) => b.addEventListener("click", () => {
+      tabBtns.forEach((o) => o.setAttribute("aria-selected", String(o === b)))
+      document.querySelectorAll<HTMLElement>("[data-pane]").forEach((d) => (d.hidden = d.dataset.pane !== b.dataset.tab))
+    }))
+
+    // checked: the ticket walks the timeline, goes back to the Builder once, then passes and the pill flips to merged
+    const pill = document.querySelector<HTMLElement>("[data-pill]")!
+    const merge = () => { pill.textContent = "Merged"; pill.classList.add("on") }
+    inView("[data-pr]", (pr) => {
+      if (still) return merge()
+      ;(async () => {
+        const tm = pr.querySelector<HTMLElement>(".tm")!, tl = pr.querySelector<HTMLElement>(".tl")!, lis = [...tl.children] as HTMLElement[]
+        const y = (i: number) => { const d = lis[i].querySelector<HTMLElement>(".d")!; return tl.offsetTop + lis[i].offsetTop + d.offsetTop + d.offsetHeight / 2 - 7 }
+        await wait(250)
+        for (const [n, i] of [0, 1, 2, 0, 3, 4, 5].entries()) {
+          tm.classList.toggle("back", n === 3)
+          await animate(tm, { transform: `translateY(${y(i)}px)`, opacity: 1 }, { duration: n ? 0.4 : 0, ease: E })
+          if (n !== 3) animate(lis[i], { opacity: [0, 1], transform: ["translateY(8px)", "none"] }, { duration: 0.4, ease: E })
+          await wait(n === 2 ? 700 : 250)
+        }
+        merge()
+      })()
+    }, { amount: 0.4 })
+
+    const label: Record<string, string> = { auto: "Merges after review", review: "Strict review", owner: "Waits for you" }
+    const pos: Record<string, number> = { auto: 0, review: 1, owner: 2 }
+    // rows sort by what happens to them, so switching the preset slides the waiting ones down
+    const dial = document.querySelector<HTMLElement>(".dial")!, drows = [...dial.querySelectorAll<HTMLElement>(".dial-row")]
+    const paint = (p: string) => {
+      drows.forEach((r) => {
+        const v = r.dataset[p.toLowerCase()]!; r.dataset.v = v; r.querySelector(".dr-state")!.textContent = label[v]
+      })
+      dial.append(...[...drows].sort((a, b) => pos[a.dataset.v!] - pos[b.dataset.v!]))
+    }
+    paint("balanced")
+    document.querySelectorAll<HTMLButtonElement>("[data-preset]").forEach((b) => b.addEventListener("click", () => {
+      document.querySelectorAll("[data-preset]").forEach((o) => o.setAttribute("aria-checked", String(o === b)))
+      if (still) paint(b.dataset.preset!)
+      else {
+        const was = new Map(drows.map((r) => [r, r.getBoundingClientRect().top]))
+        paint(b.dataset.preset!)
+        drows.forEach((r) => { const d = was.get(r)! - r.getBoundingClientRect().top; if (d) animate(r, { transform: [`translateY(${d}px)`, "none"] }, { duration: 0.5, ease: E }) })
+      }
+    }))
+
+    // safety: the counts above the list roll to the new numbers
+    const counts = (p: string) => drows.reduce<Record<string, number>>((n, r) => ((n[r.dataset[p]!] = (n[r.dataset[p]!] ?? 0) + 1), n), {})
+    const sum = (p: string) => {
+      const n = counts(p)
+      document.querySelectorAll<HTMLElement>("[data-n]").forEach((b) => {
+        const v = String(n[b.dataset.n!] ?? 0); if (b.textContent === v) return
+        b.textContent = v; if (!still) animate(b, { transform: ["translateY(-40%)", "none"], opacity: [0, 1] }, { duration: 0.3, ease: E })
+      })
+    }
+    sum("balanced")
+    document.querySelectorAll<HTMLButtonElement>("[data-preset]").forEach((b) => b.addEventListener("click", () => sum(b.dataset.preset!)))
+
+    // hero boot: the dashboard fills in row by row
+    if (!still) {
+      const parts = [...document.querySelectorAll<HTMLElement>(".app-main .disp, .app-main .app-sub, .app-main .sec, [data-needs] .row, [data-working] .row, .aside")]
+      parts.forEach((el, i) => { el.style.opacity = "0"; animate(el, { opacity: [0, 1], transform: ["translateY(6px)", "none"] }, { delay: 0.9 + i * 0.07, duration: 0.45, ease: E }) })
+    }
+
+    // #95 follows you: a chip at the edge of the screen says where the example ticket is. When a section shows #95
+    // itself, the chip flies into that spot and the spot lights up; scrolling on sends it back to the edge.
+    const chip = document.querySelector<HTMLElement>("[data-t95]")!, chipS = chip.querySelector<HTMLElement>("[data-t95-s]")!
+    let docked: HTMLElement | null = null, cur: HTMLElement | null = null, busy = Promise.resolve()
+    const fly = (from: DOMRect, to: DOMRect) => {
+      if (still || !from.width || !to.width) return Promise.resolve()
+      const g = chip.cloneNode(true) as HTMLElement; g.classList.add("ghost", "on"); document.body.append(g)
+      const sx = to.width / from.width, sy = to.height / from.height
+      g.style.left = `${from.left}px`; g.style.top = `${from.top}px`; g.style.bottom = "auto"
+      return animate(g, { transform: ["none", `translate(${to.left - from.left}px, ${to.top - from.top}px) scale(${sx}, ${sy})`], opacity: [1, 1, 0] }, { duration: 0.5, ease: E }).then(() => g.remove())
+    }
+    let want: HTMLElement | null = null
+    const go = (sec: HTMLElement | null) => (want = sec, busy = busy.then(async () => {
+      if (sec !== want || sec === cur) return; cur = sec
+      const dock = sec?.querySelector<HTMLElement>("[data-dock]") ?? null, target = dock?.offsetParent ? dock : null
+      if (sec) chipS.textContent = sec.dataset.step!
+      if (docked && docked !== target) {
+        const was = docked; docked = null; was.classList.remove("docked")
+        if (sec && !target) { chip.classList.add("on"); await fly(was.getBoundingClientRect(), chip.getBoundingClientRect()) }
+      }
+      if (!sec) { chip.classList.remove("on"); return }
+      if (target) {
+        const from = chip.getBoundingClientRect(), was = chip.classList.contains("on")
+        chip.classList.remove("on"); if (was) await fly(from, target.getBoundingClientRect())
+        target.classList.add("docked"); docked = target
+      } else chip.classList.add("on")
+    }))
+    const steps = [...document.querySelectorAll<HTMLElement>("[data-step]")], seen = new Set<HTMLElement>()
+    const io = new IntersectionObserver((es) => {
+      es.forEach((e) => (e.isIntersecting ? seen.add(e.target as HTMLElement) : seen.delete(e.target as HTMLElement)))
+      go(steps.find((s) => seen.has(s)) ?? null)
+    }, { rootMargin: "-45% 0px -45% 0px" })
+    steps.forEach((s) => io.observe(s))
+
+    // the ring: the Dobby mark as a live WebGL shader, filling to 324° when it comes into view. The SVG mark under it
+    // stays as the fallback when WebGL is missing; nothing draws while the ring is off screen.
+    const ringC = document.querySelector<HTMLCanvasElement>("[data-ring]")!
+    const gl = ringC.getContext("webgl", { premultipliedAlpha: true, antialias: true })
+    if (gl) {
+      const sh = (type: number, src: string) => { const o = gl.createShader(type)!; gl.shaderSource(o, src); gl.compileShader(o); return o }
+      const pg = gl.createProgram()!
+      gl.attachShader(pg, sh(gl.VERTEX_SHADER, "attribute vec2 p;varying vec2 v;void main(){v=p;gl_Position=vec4(p,0.,1.);}"))
+      gl.attachShader(pg, sh(gl.FRAGMENT_SHADER, `precision mediump float;varying vec2 v;uniform float t,f;uniform vec3 c;uniform sampler2D m;
+        const float PI=3.14159265;
+        void main(){
+          vec2 q=vec2(v.x,-v.y);float r=length(q);
+          float a0=atan(0.364,0.502);                       // the dot, at 4 o'clock (Mark.astro: 150.2,136.4 in a 200 box)
+          float a=mod(atan(q.y,q.x)-a0-.314,2.*PI);          // angle along the ring, clockwise from the end of the gap after the dot
+          float sweep=5.655*f;                               // 324 degrees when full
+          float shape=texture2D(m,vec2(v.x,-v.y)*.5+.5).a;   // the mark itself, drawn from Mark.astro's path
+          bool isDot=length(q-.62*vec2(cos(a0),sin(a0)))<.12;
+          float arc=1.-smoothstep(sweep-.02,sweep,a);
+          float glow=.92+.1*sin(a*2.-t*1.4);
+          float alpha=shape*(isDot?step(.98,f):arc);
+          gl_FragColor=vec4(c*glow*alpha,alpha);
+        }`))
+      gl.linkProgram(pg); gl.useProgram(pg)
+      gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer()); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW)
+      const loc = gl.getAttribLocation(pg, "p"); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0)
+      const U = (n: string) => gl.getUniformLocation(pg, n)
+      // rasterise the real mark (the nav's Mark.astro path and dot) into a mask texture
+      const S = 512, mc = document.createElement("canvas"); mc.width = mc.height = S
+      const mx = mc.getContext("2d")!, svg = document.querySelector(".brand svg")!
+      mx.scale(S / 200, S / 200); mx.fill(new Path2D(svg.querySelector("path")!.getAttribute("d")!))
+      mx.beginPath(); mx.arc(150.2, 136.4, 9, 0, Math.PI * 2); mx.fill()
+      gl.bindTexture(gl.TEXTURE_2D, gl.createTexture())
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, mc)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+      const rgb = () => { const h = getComputedStyle(root).getPropertyValue("--mark").trim().slice(1); return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) / 255) }
+      let on = false, t0 = 0, col = rgb()
+      new MutationObserver(() => (col = rgb())).observe(root, { attributes: true, attributeFilter: ["data-theme"] })
+      matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => (col = rgb()))
+      const draw = (now: number) => {
+        const d = devicePixelRatio || 1, w = ringC.clientWidth * d
+        if (ringC.width !== w) { ringC.width = ringC.height = w; gl.viewport(0, 0, w, w) }
+        if (!t0) t0 = now
+        const k = still ? 1 : Math.min(1, (now - t0) / 1600), f = 1 - Math.pow(1 - k, 3)
+        gl.uniform1f(U("t"), still ? 0 : now / 1000); gl.uniform1f(U("f"), f); gl.uniform3fv(U("c"), col)
+        gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+        if (on && !still) requestAnimationFrame(draw)
+      }
+      ringC.closest(".ringbox")!.classList.add("gl")
+      new IntersectionObserver(([e]) => { on = e.isIntersecting; if (on) requestAnimationFrame(draw) }).observe(ringC)
+    }
+  </script>
+
+  <style is:global>
+    :root, :root[data-theme="dark"] {
+      --bg: #0a0a09; --raise: #121211; --raise-2: #1a1a18; --line: rgba(237,236,230,.08); --line-2: rgba(237,236,230,.15);
+      --ink: #edece6; --ink-2: #a8a69c; --ink-3: #8f8d84; --mark: #3fe08a; --on-mark: #04200f; --warn: #f0a35e; --grain-o: .05;
+      --sans: "Geist Variable", system-ui, sans-serif; --mono: "Geist Mono Variable", ui-monospace, monospace;
+      --ease: cubic-bezier(.16,1,.3,1);
+      color-scheme: dark;
+    }
+    @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) {
+      --bg: #f6f5f1; --raise: #ffffff; --raise-2: #f0efea; --line: rgba(23,22,18,.08); --line-2: rgba(23,22,18,.15);
+      --ink: #171612; --ink-2: #57554d; --ink-3: #6b685e; --mark: #0b6e3c; --on-mark: #fff; --warn: #964410; --grain-o: .035; color-scheme: light; } }
+    :root[data-theme="light"] {
+      --bg: #f6f5f1; --raise: #ffffff; --raise-2: #f0efea; --line: rgba(23,22,18,.08); --line-2: rgba(23,22,18,.15);
+      --ink: #171612; --ink-2: #57554d; --ink-3: #6b685e; --mark: #0b6e3c; --on-mark: #fff; --warn: #964410; --grain-o: .035; color-scheme: light;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; scroll-padding-top: 80px; }
+    body { background: var(--bg); color: var(--ink); font: 400 16px/1.55 var(--sans); -webkit-font-smoothing: antialiased; overflow-x: hidden; }
+    ::selection { background: color-mix(in srgb, var(--mark) 30%, transparent); }
+    :focus-visible { outline: 2px solid var(--mark); outline-offset: 3px; border-radius: 8px; }
+    body::before { content: ""; position: fixed; inset: 0; z-index: 100; pointer-events: none; opacity: var(--grain-o);
+      background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
+    code { font: .92em var(--mono); color: var(--ink-2); }
+    a { color: inherit; text-decoration: none; }
+    button { font: inherit; color: inherit; }
+    .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+    .dim { color: var(--ink-2); }
+    .pr { color: var(--mark); }
+    .wrap { width: min(1120px, 100% - 32px); margin-inline: auto; }
+    .narrow { width: min(760px, 100% - 32px); display: grid; gap: 16px; }
+    .panel { background: var(--raise); border: 1px solid var(--line-2); border-radius: 16px; }
+
+    .nav { position: fixed; inset: 0 0 auto; z-index: 10; background: color-mix(in srgb, var(--bg) 72%, transparent); backdrop-filter: blur(16px) saturate(1.4); border-bottom: 1px solid var(--line); }
+    .nav-in { display: flex; align-items: center; gap: 10px; height: 60px; }
+    .brand { min-height: 44px; display: inline-flex; align-items: center; gap: 8px; font-weight: 650; font-size: 18px; letter-spacing: -0.02em; }
+    .mark { width: 20px; height: 20px; color: var(--mark); }
+    .beta { font: 500 12px/1 var(--sans); color: var(--mark); border: 1px solid color-mix(in srgb, var(--mark) 35%, transparent); padding: 4px 8px; border-radius: 99px; }
+    .nav nav { margin-left: auto; display: flex; gap: 2px; }
+    .nav nav a, .theme { color: var(--ink-2); font-size: 14px; padding: 0 12px; min-height: 44px; display: inline-flex; align-items: center; border-radius: 8px; transition: color .2s; }
+    .nav nav a:hover, .theme:hover { color: var(--ink); }
+    .theme { background: none; border: 0; cursor: pointer; min-width: 44px; justify-content: center; }
+    .nav nav a { min-width: 44px; justify-content: center; }
+    .hold { margin-left: auto; font: 500 12px var(--sans); color: var(--ink-3); background: none; border: 1px solid var(--line-2); border-radius: 6px; padding: 3px 10px; min-height: 28px; cursor: pointer; }
+    .hold:hover { color: var(--ink); }
+    .chrome { position: relative; }
+    .chrome .mono { position: absolute; left: 50%; translate: -50% 0; }
+    @media (max-width: 760px) { .hide-s { display: none !important; } .nav nav a { padding: 0 8px; min-width: 44px; justify-content: center; } }
+
+    h1 { font-size: clamp(38px, 5vw, 64px); line-height: 1.02; letter-spacing: -0.04em; font-weight: 600; text-wrap: balance; }
+    h2 { font-size: clamp(28px, 3.2vw, 44px); line-height: 1.08; letter-spacing: -0.035em; font-weight: 600; text-wrap: balance; }
+    .sub { color: var(--ink-2); margin-top: 16px; max-width: 36em; font-size: 17px; text-wrap: pretty; }
+    .fine { font-size: 13px; color: var(--ink-3); }
+    .req { margin-top: 18px; }
+    .req a { color: var(--ink-2); text-decoration: underline; text-underline-offset: 3px; display: inline-flex; min-height: 44px; align-items: center; }
+    .center-t { text-align: center; margin-top: 20px; }
+    .head { text-align: center; display: flex; flex-direction: column; align-items: center; margin-bottom: 48px; }
+
+    .cta { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin-top: 32px; }
+    .cmd { font: 500 14.5px var(--mono); color: var(--ink); background: var(--raise); border: 1px solid var(--line-2); border-radius: 12px; min-height: 48px; padding: 0 6px 0 16px; display: inline-flex; align-items: center; gap: 10px; cursor: pointer; transition: border-color .2s, transform .15s, box-shadow .3s; }
+    .cmd:hover { border-color: var(--mark); }
+    .cmd:active { transform: scale(.98); }
+    .cp { font: 500 12px var(--sans); color: var(--ink-2); background: var(--raise-2); border-radius: 8px; padding: 7px 10px; margin-left: 6px; }
+    .ghost { min-height: 48px; display: inline-flex; align-items: center; padding: 0 18px; border-radius: 12px; font-weight: 500; font-size: 15px; color: var(--ink-2); transition: color .2s, background .2s; }
+    .ghost:hover { color: var(--ink); background: var(--raise); }
+        .ct-who { font-weight: 600; }
+    
+    /* hero */
+    .hero { padding-top: 150px; }
+    .hero-copy { text-align: center; display: flex; flex-direction: column; align-items: center; }
+    .hero h1 { max-width: 12em; }
+    .lede { font-size: clamp(17px, 1.4vw, 19.5px); color: var(--ink-2); margin-top: 22px; max-width: 30em; text-wrap: pretty; }
+    .stage { margin-top: 72px; padding-bottom: 24px; perspective: 1600px; }
+    @supports (animation-timeline: scroll()) { @media (prefers-reduced-motion: no-preference) {
+      .win { transform-origin: 50% 0; animation: settle linear both; animation-timeline: scroll(root); animation-range: 0 560px; }
+      @keyframes settle { from { transform: rotateX(18deg) scale(.94); } to { transform: none; } }
+    } }
+
+
+    /* hero: the dashboard window */
+    .win { max-width: 1080px; margin: 0 auto; border-radius: 16px; border: 1px solid var(--line-2); background: var(--raise); text-align: left; box-shadow: 0 30px 60px -30px rgba(0,0,0,.45); }
+    .chrome { display: flex; align-items: center; gap: 7px; height: 38px; padding: 0 14px; border-bottom: 1px solid var(--line); }
+    .chrome > i { width: 10px; height: 10px; border-radius: 50%; background: var(--line-2); }
+    .chrome .mono { margin: 0 auto; font-size: 12px; color: var(--ink-3); background: var(--raise-2); padding: 3px 14px; border-radius: 6px; }
+        .app { display: grid; grid-template-columns: 150px 1fr; min-height: 470px; background: var(--bg); border-radius: 0 0 16px 16px; overflow: hidden; }
+    .app-nav { display: flex; flex-direction: column; gap: 2px; padding: 16px 10px; border-right: 1px solid var(--line); font-size: 13.5px; color: var(--ink-2); }
+    .app-nav > span { padding: 6px 10px; border-radius: 7px; }
+    .app-nav .on { background: var(--raise); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); }
+    .brand.sm { font-size: 15px; gap: 6px; padding: 0 10px 14px !important; color: var(--ink); }
+    .brand.sm .mark { width: 16px; height: 16px; }
+    .app-main { display: grid; grid-template-columns: minmax(0, 1fr) 250px; gap: 36px; padding: 26px 30px; }
+    .disp { font-family: "Newsreader Variable", Georgia, serif; font-size: 30px; line-height: 1.2; letter-spacing: -0.015em; max-width: 22ch; }
+    .disp .mk { color: var(--mark); }
+    .app-sub { font-size: 13.5px; color: var(--ink-2); margin-top: 10px; }
+    .sec { font-size: 12.5px; font-weight: 500; color: var(--ink-2); margin: 22px 0 4px; display: flex; gap: 8px; }
+    .rows { display: flex; flex-direction: column; }
+    .row { display: grid; grid-template-columns: 16px 40px minmax(0, 1fr) auto 40px 34px 28px; align-items: center; gap: 12px; height: 42px; padding: 0 12px; margin: 0 -12px; border-top: 1px solid var(--line); font-size: 14px; border-radius: 9px; transition: background .3s, opacity .4s, transform .4s var(--ease); }
+    .row:first-child { border-top-color: transparent; }
+    .row.sel { background: var(--raise); box-shadow: inset 0 0 0 1px var(--line); border-top-color: transparent; }
+    .row.sel + .row { border-top-color: transparent; }
+    .ki { width: 15px; height: 15px; fill: none; stroke: var(--mark); stroke-width: 1.6; }
+    .row .ref { font-size: 12px; color: var(--ink-2); }
+    .tt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+    .row .st { font-size: 12.5px; color: var(--ink-2); white-space: nowrap; }
+    .st.warn, .warn-t { color: var(--warn); }
+    .acts { grid-column: 4 / -1; justify-self: end; display: flex; align-items: center; gap: 12px; font-size: 12.5px; color: var(--ink-2); }
+    kbd { font: 11px var(--mono); opacity: .7; margin-left: 3px; }
+    .btn-m { font-weight: 600; background: var(--mark); color: var(--on-mark); padding: 4px 10px; border-radius: 7px; transition: transform .15s, filter .15s; }
+    .db { display: flex; gap: 2px; } .db i { height: 3px; border-radius: 2px; background: var(--ink-2); } .db i + i { background: var(--ink-3); }
+    .cd { display: flex; gap: 3px; } .cd i { width: 5px; height: 5px; border-radius: 50%; background: var(--ink-2); }
+    .age { font-size: 12px; color: var(--ink-2); justify-self: end; }
+    .row.wk { grid-template-columns: 52px 104px minmax(0, 1fr) auto 28px; }
+    .row.wk .tt { font-weight: 400; } .row.wk .tt .ref { margin-right: 8px; }
+    .role-t { font-size: 12.5px; color: var(--ink-2); white-space: nowrap; }
+    .rs { display: flex; gap: 2px; } .rs i { width: 11px; height: 4px; border-radius: 2px; background: var(--line-2); }
+    .rs i.d { background: var(--mark); } .rs i.c { background: var(--mark); animation: blink .8s ease-in-out infinite alternate; }
+    .row > *, .aside > * { transition: opacity .26s, filter .26s; }
+    .row.fade > *, .aside.fade > * { opacity: 0; filter: blur(3px); }
+    .row.done { background: color-mix(in srgb, var(--mark) 10%, transparent); }
+    .row.done .st { color: var(--mark); }
+    .aside { border-left: 1px solid var(--line); padding-left: 24px; display: flex; flex-direction: column; gap: 14px; font-size: 13px; }
+    .aside .ref { font-size: 12px; color: var(--ink-2); }
+    .as-t { font-size: 17px; font-weight: 500; letter-spacing: -0.01em; margin-top: -8px; }
+    .as-c { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+    .as-c .mono { font-size: 12px; color: var(--ink-2); }
+    .as-d { font-size: 12px; color: var(--ink-2); } .as-d b { color: var(--ink); font-weight: 500; }
+    @media (max-width: 900px) {
+      .app { grid-template-columns: 1fr; min-height: 0; }
+      .app-nav { display: none; }
+      .app-main { grid-template-columns: 1fr; padding: 18px 16px; }
+      .aside { display: none; }
+      .disp { font-size: 23px; }
+      .row { grid-template-columns: 16px minmax(0, 1fr) auto; height: auto; min-height: 44px; padding: 8px 12px; }
+      .row .ref, .row .db, .row .cd, .row .age { display: none; }
+      .row .st { grid-column: 2 / -1; grid-row: 2; }
+      .acts { grid-column: 2 / -1; grid-row: 2; justify-self: start; }
+      .acts span { display: none; }
+      .row.wk { grid-template-columns: 52px minmax(0, 1fr); }
+      .row.wk .role-t, .row.wk .age { display: none; }
+      .row.wk .st { grid-column: 2; }
+    }
+    .chap { padding-top: clamp(110px, 13vw, 170px); }
+
+    /* sandbox and learns: text beside the proof */
+    .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: clamp(32px, 6vw, 80px); align-items: center; }
+    .split.rev .split-t { order: 2; }
+    .split .sub { margin-top: 16px; }
+    .facts { margin-top: 28px; display: grid; }
+    .facts div { display: grid; grid-template-columns: 150px 1fr; gap: 16px; padding: 10px 0; border-top: 1px solid var(--line); font-size: 15px; }
+    .facts dt { color: var(--ink-3); font-size: 14px; }
+    .more-l { display: inline-flex; align-items: center; min-height: 44px; margin-top: 12px; color: var(--mark); font-weight: 500; text-decoration: underline; text-underline-offset: 4px; text-decoration-thickness: 1px; }
+
+    /* team roster */
+    .roster { list-style: none; display: grid; }
+    .roster li { display: grid; grid-template-columns: 150px minmax(0, 1fr) minmax(0, 1fr); gap: 24px; padding: 16px 0; border-top: 1px solid var(--line); font-size: 15px; }
+    .roster li:last-child { border-bottom: 1px solid var(--line); }
+    .roster .ro-h { font-size: 12.5px; color: var(--ink-3); padding: 0 0 10px; border-top: 0; }
+    .ro-n { font-weight: 600; }
+    .ro-j { color: var(--ink-2); }
+    .ro-tag { display: none; }
+    .roster li:not(.ro-h) { transition: background .2s; border-radius: 0; }
+    @media (hover: hover) { .roster li:not(.ro-h):hover { background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--mark) 6%, transparent)); } .roster li:hover .ro-d { color: var(--mark); } }
+    .ro-d { transition: color .2s; }
+    .js .roster li:not(.ro-h) { opacity: 0; transform: translateY(6px); }
+    .js .roster.in li:not(.ro-h) { opacity: 1; transform: none; transition: opacity .4s, transform .4s var(--ease); transition-delay: calc(var(--i) * 50ms); }
+    #team .narrow .fine { margin-top: 8px; }
+    .cli { display: grid; }
+    .cli div { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 24px; padding: 12px 0; border-top: 1px solid var(--line); align-items: baseline; }
+    .cli dt { font-size: 13.5px; overflow-wrap: anywhere; }
+    .cli dd { color: var(--ink-2); font-size: 15px; }
+
+    /* checked */
+    .prc { position: relative; overflow: hidden; }
+    .pr-head { display: flex; gap: 16px; justify-content: space-between; align-items: flex-start; padding: 20px 22px; border-bottom: 1px solid var(--line); }
+    .pr-title { font-size: 18px; font-weight: 600; letter-spacing: -0.02em; }
+    .pr-sub { font-size: 12.5px; color: var(--ink-2); margin-top: 4px; }
+    .pill { font-size: 13px; font-weight: 500; padding: 5px 12px; border-radius: 99px; color: var(--mark); border: 1px solid color-mix(in srgb, var(--mark) 40%, transparent); transition: background .3s, color .3s; }
+    .pill.on { background: var(--mark); color: var(--on-mark); }
+    .tl { list-style: none; padding: 12px 22px 18px; position: relative; }
+    .tl::before { content: ""; position: absolute; left: 26px; top: 28px; bottom: 32px; width: 2px; background: var(--line); }
+    .tl li { position: relative; display: grid; grid-template-columns: 10px 96px 1fr; gap: 16px; align-items: center; padding: 10px 0; }
+    .who { font-size: 13px; color: var(--ink-3); }
+    .tl .d { width: 10px; height: 10px; border-radius: 50%; background: var(--raise); border: 2px solid var(--ink-3); }
+    .tl .d.ok { background: var(--mark); border-color: var(--mark); }
+    .tl .d.warn { background: var(--warn); border-color: var(--warn); }
+    .tl p { font-size: 15px; }
+    .tl b { color: var(--warn); font-weight: 600; }
+    .tl .end p { color: var(--mark); font-weight: 500; }
+    .js .tl li { opacity: 0; }
+    .tm { position: absolute; left: 20px; top: 0; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--mark); opacity: 0; pointer-events: none; transition: border-color .3s; }
+    .tm.back { border-color: var(--warn); }
+
+    /* learns */
+    .learn { padding: 20px 22px 8px; }
+    .ct-who { padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+    .l-row { display: grid; grid-template-columns: 70px 1fr; gap: 14px; padding: 16px 0; }
+    .l-row + .l-row { border-top: 1px solid var(--line); }
+    .l-k { font-size: 13px; color: var(--ink-3); padding-top: 2px; }
+    .diff { font-size: 13px; line-height: 1.9; white-space: pre-wrap; border-radius: 10px; overflow: hidden; }
+    .diff span { display: block; padding: 2px 10px; }
+    .del { background: color-mix(in srgb, var(--warn) 10%, transparent); color: var(--warn); }
+    .add { background: color-mix(in srgb, var(--mark) 11%, transparent); color: var(--mark); }
+    .js .learn .add { clip-path: inset(0 100% 0 0); }
+    .js .learn.in .add { clip-path: inset(0); transition: clip-path .5s var(--ease) .5s; }
+
+    /* plan: day chart */
+    .dayc { max-width: 1000px; }
+    .ylab { font-size: 12px; color: var(--ink-3); margin-bottom: 12px; }
+    .plot { position: relative; height: clamp(170px, 22vw, 240px); margin-left: 34px; }
+    .chart { display: block; width: 100%; height: 100%; overflow: visible; }
+    .base { stroke: var(--line-2); stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .yt { position: absolute; right: calc(100% + 8px); translate: 0 -50%; font-size: 12px; color: var(--ink-3); }
+    .grid { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .pause { fill: color-mix(in srgb, var(--warn) 9%, transparent); }
+    .capl { stroke: var(--warn); stroke-width: 1.5; stroke-dasharray: 6 6; vector-effect: non-scaling-stroke; }
+        .ln { fill: none; stroke: var(--mark); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
+    .js .ln { stroke-dasharray: 1; stroke-dashoffset: 1; } .js .pause { opacity: 0; transition: opacity .4s; }
+    .ev { position: absolute; width: 22px; height: 22px; translate: -50% -50%; border-radius: 50%; display: grid; place-items: center; font-size: 11.5px; font-weight: 600; background: var(--bg); color: var(--ink-3); border: 1.5px solid var(--line-2); transition: color .25s, border-color .25s, background .25s, scale .35s var(--ease); }
+    .ev.lit { color: var(--on-mark); background: var(--mark); border-color: var(--mark); scale: 1.08; }
+    .axis { display: flex; justify-content: space-between; font-size: 12px; color: var(--ink-3); margin: 8px 0 0 34px; }
+    .caplabel { position: absolute; right: 0; translate: 0 calc(-100% - 4px); font-size: 12px; color: var(--warn); }
+    .events { list-style: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 6px 24px; margin-top: 28px; }
+    .events li { display: flex; gap: 12px; font-size: 14.5px; color: var(--ink-3); padding: 8px 0; border-top: 1px solid var(--line); transition: color .3s; }
+    .events li.lit { color: var(--ink-2); }
+    .events li.lit .evn { background: var(--mark); color: var(--on-mark); }
+    .events li .mono { color: var(--ink); font-size: 13px; min-width: 44px; padding-top: 1px; }
+    .events li .evn { min-width: 0; width: 20px; height: 20px; flex: none; border-radius: 50%; border: 1.5px solid var(--mark); display: grid; place-items: center; font-size: 11px; padding: 0; }
+    .dayc .fine { margin-top: 20px; }
+
+    /* safety dial */
+    .seg { display: inline-flex; gap: 2px; margin-top: 28px; background: var(--raise); border: 1px solid var(--line); border-radius: 12px; padding: 3px; }
+    .seg button { font-weight: 500; font-size: 14.5px; color: var(--ink-2); background: none; border: 0; border-radius: 9px; padding: 0 18px; min-height: 44px; cursor: pointer; transition: background .2s, color .2s; }
+    .seg button[aria-checked="true"] { background: var(--raise-2); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line-2); }
+    .dial-sum { display: flex; flex-wrap: wrap; gap: 6px 20px; font-size: 14px; color: var(--ink-2); margin-bottom: 12px; }
+    .dial-sum b { display: inline-block; font: 600 15px var(--mono); color: var(--ink); margin-right: 4px; }
+    .dial { display: grid; }
+    .dial-row { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 12px 0; border-top: 1px solid var(--line); font-size: 15px; }
+    .dial-row:last-child { border-bottom: 1px solid var(--line); }
+    .dr-state { font-size: 13.5px; padding: 3px 10px; border-radius: 7px; white-space: nowrap; }
+    .dial-row[data-v="owner"] .dr-state { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+    .dial-row[data-v="review"] .dr-state { background: var(--raise-2); }
+    .dial-row[data-v="auto"] .dr-state { color: var(--mark); background: color-mix(in srgb, var(--mark) 11%, transparent); }
+    .shell { background: #070707; color: #edece6; border: 1px solid rgba(255,255,255,.08); border-radius: 16px; padding: 22px 24px; font-size: 14px; line-height: 2; white-space: pre-wrap; box-shadow: 0 30px 60px -30px rgba(0,0,0,.45); }
+    .shell .l { display: block; }
+    .shell .pr { color: #3fe08a; }
+    .shell .no { color: #f0a35e; }
+    .js .shell .l { opacity: 0; }
+    .js .shell.in .no { animation: deny .9s ease-out both; animation-delay: calc(400ms + var(--i) * 300ms); }
+    @keyframes deny { 0% { background: color-mix(in srgb, #f0a35e 28%, transparent); } 100% { background: transparent; } }
+    .js .shell.in .l { opacity: 1; transition: opacity .25s; transition-delay: calc(400ms + var(--i) * 300ms); }
+
+    /* skills */
+    .logos { margin: 40px 0 0; display: grid; }
+    .lrow { display: grid; grid-template-columns: 120px 1fr; align-items: center; gap: 16px; padding: 16px 0; border-top: 1px solid var(--line); }
+    .lrow:last-child { border-bottom: 1px solid var(--line); }
+    .lhead { font-size: 13px; color: var(--ink-3); }
+    .lrow dd { margin: 0; }
+    .llist { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 10px 24px; }
+    .logo { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 500; color: var(--ink); }
+    .later .logo { color: var(--ink-3); }
+    .tag { font-size: 12px; font-weight: 400; color: var(--ink-3); padding: 1px 7px; border: 1px solid var(--line-2); border-radius: 99px; }
+    @media (max-width: 760px) { .lrow { grid-template-columns: 1fr; gap: 10px; } }
+    .ico { width: 18px; height: 18px; background: currentColor; -webkit-mask: var(--src) center / contain no-repeat; mask: var(--src) center / contain no-repeat; }
+
+    /* skills */
+    .tabs { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-bottom: 16px; }
+    .tabs button { min-height: 44px; padding: 0 14px; border-radius: 99px; border: 1px solid var(--line-2); background: none; font-size: 14px; color: var(--ink-2); cursor: pointer; transition: color .2s, border-color .2s, background .2s; }
+    .tabs button:hover { color: var(--ink); }
+    .tabs button[aria-selected="true"] { color: var(--ink); background: var(--raise); border-color: var(--ink-3); }
+    .sk { border-top: 1px solid var(--line); }
+    .sk-f { font-size: 13px; color: var(--ink-3); padding: 14px 0 6px; overflow-wrap: anywhere; }
+    .sk-f .hl { color: var(--mark); }
+    .sk-list { list-style: none; }
+    .sk-list li { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto auto; gap: 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); animation: rise .45s var(--ease) backwards; animation-delay: calc(var(--i) * 60ms); }
+    .sk-list li:first-child { border-top: 0; }
+    .sk-list img { width: 32px; height: 32px; border-radius: 50%; background: var(--raise-2); }
+    .sk-n { font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; }
+    .sk-by { font-size: 14px; color: var(--ink-2); }
+    .sk-l { font-size: 12px; color: var(--ink-3); border: 1px solid var(--line-2); border-radius: 6px; padding: 2px 6px; }
+
+    /* close */
+    .close { padding: clamp(130px, 14vw, 200px) 0; margin-top: 40px; }
+    .ringbox { position: relative; width: clamp(120px, 16vw, 168px); aspect-ratio: 1; margin-bottom: 28px; }
+    .close-mark, .ringgl { position: absolute; inset: 0; width: 100%; height: 100%; }
+    .close-mark { color: var(--mark); }
+    .ringbox.gl .close-mark { visibility: hidden; }
+
+    /* #95 chip: follows the example ticket down the page */
+    .t95 { position: fixed; left: 24px; bottom: 24px; z-index: 20; display: inline-flex; align-items: center; gap: 10px; max-width: calc(100vw - 48px); padding: 9px 14px; border-radius: 12px; background: color-mix(in srgb, var(--raise) 88%, transparent); backdrop-filter: blur(12px); border: 1px solid var(--line-2); box-shadow: 0 16px 32px -16px rgba(0,0,0,.5); font-size: 13.5px; pointer-events: none; opacity: 0; transform: translateY(12px); transition: opacity .3s, transform .4s var(--ease); }
+    .t95.on { opacity: 1; transform: none; }
+    .t95.ghost { transform-origin: 0 0; transition: none; z-index: 21; }
+    .t95-n { color: var(--mark); font-size: 12.5px; }
+    .t95-t { font-weight: 500; white-space: nowrap; }
+    .t95-s { color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-left: 10px; border-left: 1px solid var(--line-2); }
+    [data-dock] { border-radius: 6px; transition: background .4s, color .4s, box-shadow .4s; }
+    [data-dock].docked { color: var(--mark); background: color-mix(in srgb, var(--mark) 12%, transparent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--mark) 12%, transparent); }
+    .events li[data-dock].docked { box-shadow: none; padding-inline: 8px; margin-inline: -8px; }
+    .cmd.big { margin-top: 30px; font-size: 15.5px; min-height: 54px; padding-left: 20px; }
+
+    .foot { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; padding: 28px 0 44px; border-top: 1px solid var(--line); font-size: 14px; }
+    .foot nav { margin-left: auto; display: flex; align-items: center; gap: 20px; }
+    .foot nav a { min-height: 44px; display: inline-flex; align-items: center; }
+
+    .js .rv { opacity: 0; transform: translateY(8px); transition: opacity .4s ease-out var(--d, 0ms), transform .4s var(--ease) var(--d, 0ms); }
+    .js .rv.in { opacity: 1; transform: none; }
+
+    @media (max-width: 760px) {
+      .hero { padding-top: 116px; }
+      .stage { margin-top: 36px; }
+      .tl li { grid-template-columns: 10px 1fr; gap: 2px 14px; }
+      .tl .d { grid-row: 1 / 3; align-self: start; margin-top: 5px; }
+      .tl .who, .tl p { grid-column: 2; }
+      .axis span:nth-child(even) { visibility: hidden; }
+      .sk-list li { grid-template-columns: 32px minmax(0, 1fr) auto; }
+      .sk-l { display: none; }
+      .cmd { font-size: 13px; }
+      .foot nav { margin-left: 0; }
+      .t95 { left: 12px; bottom: 12px; padding: 7px 11px; gap: 8px; font-size: 12.5px; max-width: calc(100vw - 24px); }
+      .t95-t { display: none; }
+      .t95-s { padding-left: 8px; }
+      .split { grid-template-columns: 1fr; }
+      .split.rev .split-t { order: 0; }
+      .facts div { grid-template-columns: 120px 1fr; }
+      .roster li { grid-template-columns: 128px minmax(0, 1fr); gap: 12px; padding: 12px 0; }
+      .ro-d { display: none; }
+      .roster .ro-h { display: none; }
+      .cli div { grid-template-columns: 1fr; gap: 2px; }
+      .shell { font-size: 12.5px; padding: 16px 18px; }
+      .events li { font-size: 14px; }
+      .plot { margin-left: 28px; }
+      .axis { margin-left: 28px; }    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .js .rv, .js .tl li, .js .shell .l, .js .roster li:not(.ro-h) { opacity: 1; transform: none; filter: none; transition: none; }
+      .js .learn .add { clip-path: none; }
+      .tm { display: none; }
+      .js .ln { stroke-dasharray: none; } .js .pause { opacity: 1; transition: none; }
+      .t95 { transition: none; } .js .shell.in .no { animation: none; }
+    }
+  </style>
+</body>
+</html>

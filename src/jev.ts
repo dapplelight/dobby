@@ -4,8 +4,9 @@
 // Key: JEV_API_KEY from the environment only, never logged. Never send private or financial text (projects can opt out with `jev: off`).
 
 import type { DB } from "./db.ts"
-import { readSecrets } from "./telegram.ts"
+import { readSecrets } from "./notify.ts"
 import { decide } from "./policy.ts"
+import { candidates } from "./safety.ts"
 
 const URL = "https://api.typesafe.ai/v1/systemone"
 const MODEL = "jev-1.13.0" // pinned: the confidence floor is tuned per version
@@ -51,11 +52,19 @@ export async function ask<T extends Record<string, Q>>(state: string, questions:
   }
 }
 
+const DESTRUCTIVE = /\b(drop|delete|deleting|purge|wipe|truncate|migrat\w*|backfill)\b/i
+/** Risk from the words alone, no network: a sensitive category or data deletion/migration is high, else medium. Never low: words can't prove a change harmless. */
+export const riskFromWords = (title: string, doneWhen = ""): "medium" | "high" => {
+  const text = `${title}\n${doneWhen}`
+  return candidates({ text, title }).length || DESTRUCTIVE.test(text) ? "high" : "medium"
+}
+
 const SIZES = ["S", "M", "L"]
 const RISK = ["low", "medium", "high"]
 
 /**
- * Triage a new ticket: how big, how risky. Fallbacks are the careful path: M (gets the Sonnet checker) and high risk.
+ * Triage a new ticket: how big, how risky. Size falls back to M (gets the Sonnet checker); risk with no Jev answer comes from the
+ * ticket's words (riskFromWords: high or medium, never low), reported as riskBy.
  * Risk high = touches auth, money, data deletion, migrations, deploys, or anything users see outside the app.
  */
 export async function triage(title: string, doneWhen: string, givenSize?: string, fetcher?: typeof fetch) {
@@ -63,7 +72,8 @@ export async function triage(title: string, doneWhen: string, givenSize?: string
     size: { type: "choice", question: "How big is this coding task for one engineer? S = under an hour, one or two files. M = a few hours, several files. L = a day or more, needs a design first.", options: SIZES, fallback: givenSize ?? "M" },
     risk: { type: "score", question: "How risky is this change if it has a bug? low = internal or cosmetic. medium = a user-facing feature. high = auth, money, deleting data, migrations, deploys, messages to people.", levels: RISK, fallback: 2 },
   }, fetcher)
-  return { size: givenSize ?? (a.size.value as string), risk: RISK[a.risk.value as number], fromJev: a.size.fromJev || a.risk.fromJev }
+  const riskBy = a.risk.fromJev ? "jev" as const : "words" as const
+  return { size: givenSize ?? (a.size.value as string), risk: riskBy === "jev" ? RISK[a.risk.value as number] : riskFromWords(title, doneWhen), riskBy, fromJev: a.size.fromJev || a.risk.fromJev }
 }
 
 // Always big, whatever Jev says: a sensitive path (src/policy.ts, kind changed-path: schema, deploy config, secrets, auth,

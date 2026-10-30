@@ -256,7 +256,7 @@ const VALUE_FLAGS = new Set(["-R", "--repo", "--hostname", "-b", "--body", "-t",
 const BOOL_FLAGS = new Set(["--paginate", "-w", "--web", "--slurp", "-i", "--include", "--silent", "--verbose"])
 const GH_READ = { pr: ["view", "list", "diff", "checks", "status"], repo: ["view"], release: ["list", "view"], run: ["list", "view"], workflow: ["list", "view"], search: null, status: null, api: null }
 
-/** Why this simple command is denied whatever the role allows, or null. ctx: { cwd, wtRoot, home, foremanRoot, dataDir, branch() }. */
+/** Why this simple command is denied whatever the role allows, or null. ctx: { cwd, wtRoot, home, dobbyRoot, dataDir, branch() }. */
 export function guardSegment(words, redirs, ctx) {
   const cmd = basename(words[0] ?? "")
   const args = words.slice(1)
@@ -299,7 +299,7 @@ function gitRule(args, ctx) {
     const a = args[i]
     if (a === "-C") {
       const dir = asPath(args[++i] ?? "", ctx.cwd, ctx.home)
-      if (!inside(dir, ctx.wtRoot) || (ctx.foremanRoot && inside(dir, ctx.foremanRoot) && !inside(ctx.wtRoot, ctx.foremanRoot))) return "git -C may only point at your own worktree"
+      if (!inside(dir, ctx.wtRoot) || (ctx.dobbyRoot && inside(dir, ctx.dobbyRoot) && !inside(ctx.wtRoot, ctx.dobbyRoot))) return "git -C may only point at your own worktree"
       ctx = { ...ctx, cwd: dir }
     } else if (/^-c/.test(a) || /^--config-env/.test(a)) return "git -c / --config-env is not allowed"
     else if (/^--(git-dir|work-tree|exec-path|namespace|super-prefix)/.test(a)) return `git ${a.split("=")[0]} is not allowed`
@@ -396,7 +396,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const home = homedir()
     const ctx = {
       cwd, wtRoot: git("rev-parse", "--show-toplevel") || cwd, home, allow: patterns(),
-      foremanRoot: (process.env.DOBBY_ROOT ?? "").replace(/\/$/, ""), dataDir: process.env.DOBBY_DIR || `${home}/.local/share/dobby`,
+      dobbyRoot: (process.env.DOBBY_ROOT ?? "").replace(/\/$/, ""), dataDir: process.env.DOBBY_DIR || `${home}/.local/share/dobby`,
       branch: () => git("rev-parse", "--abbrev-ref", "HEAD"),
     }
     const d = decide(command, ctx)

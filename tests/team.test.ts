@@ -236,7 +236,7 @@ test("budget split: process roles max 20% of spend and throttled first; autonomy
 })
 
 test("#needs-you cards: 3 plain lines on top (Haiku), button meanings as the fallback, and the owner touch is logged", async () => {
-  const { buttonsText, needsYou } = await import("../src/telegram.ts")
+  const { buttonsText, needsYou } = await import("../src/notify.ts")
   const db = open(":memory:")
   const buttons = [{ text: "🚀 Migrate & deploy", data: "deploynow tally migrate" }, { text: "🔗 Open PR", data: "", url: "https://github.com/x/y/pull/1" }]
   assert.equal(buttonsText(buttons), "Migrate & deploy = runs the migration on production, then deploys · Open PR = opens the page")
@@ -266,4 +266,15 @@ test("near-duplicate tickets: word overlap picks candidates, Jev says which is t
   assert.equal(await sameWork("Sync uploads retry", near, says("none")), null)
   assert.equal(await sameWork("Sync uploads retry", near, (async () => { throw new Error("down") }) as any), null) // Jev down: file it
   process.env["JEV_API_KEY"] = prev
+})
+
+test("roles: every file in roles/ is loaded by code or listed under Supporting roles in docs/team.md", async () => {
+  const { readdirSync, readFileSync } = await import("node:fs")
+  const { ROOT } = await import("../src/lib.ts")
+  const code = readdirSync(`${ROOT}src`, { recursive: true }).filter((f) => String(f).endsWith(".ts")).map((f) => readFileSync(`${ROOT}src/${f}`, "utf8")).join("\n")
+  const team = readFileSync(`${ROOT}docs/team.md`, "utf8").split("## Supporting roles")[1]?.split("\n## ")[0] ?? ""
+  for (const f of readdirSync(`${ROOT}roles`)) {
+    const role = f.replace(/\.md$/, "")
+    assert.ok(code.includes(`"${role}"`) || team.includes(`\`${role}\``), `roles/${f} is not loaded by any code and not listed in docs/team.md`)
+  }
 })

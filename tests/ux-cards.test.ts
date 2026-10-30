@@ -30,9 +30,9 @@ const withDiscord = () => {
 test("label: App · short title, no number, paths or long tails", () => {
   const db = open(":memory:")
   const id = addTicket(db, { project: "shopfront", title: "Sign-in full state: show the Google button and the email form on one screen (apps/web/x.tsx)" }).id
-  assert.equal(label(db, id), "Shopfront · Sign-in full state")
+  assert.equal(label(db, id), "shopfront · Sign-in full state")
   const long = addTicket(db, { project: "tally", title: "A very long title without any colon that just keeps going and going past fifty characters" }).id
-  assert.ok(label(db, long).length <= "Tally · ".length + 50)
+  assert.ok(label(db, long).length <= "tally · ".length + 50)
   assert.doesNotMatch(label(db, long), /#\d/)
   assert.equal(label(db, 9999), "a ticket")
 })
@@ -43,7 +43,7 @@ test("button taps: the echo names the thing in words; a dropped idea can be undo
   db.prepare("INSERT INTO ideas (project,title,source,status,created_at) VALUES ('tally','Voice notes','pm','proposed','now')").run()
   assert.equal(d.plainAck(db, `approve ${t}`), 'Merging "Sign-in full state"…')
   assert.equal(d.plainAck(db, "dropidea 1"), 'Dropping "Voice notes"…')
-  assert.equal(d.plainAck(db, "deploynow tally migrate"), "Deploying Tally with its migration…")
+  assert.equal(d.plainAck(db, "deploynow tally migrate"), "Deploying tally with its migration…")
   assert.equal(d.plainAck(db, "approve 4040"), "Merging that…") // unknown ticket: still no raw command
   const calls: Call[] = []
   await d.ack({ id: "i1", token: "tok", content: "Needs you", data: `approve ${t}` }, stub(calls), db)
@@ -74,7 +74,7 @@ test("list: grouped by stage, then app, then age; 10 per stage; failures say why
     ...[...Array(12)].map((_, i) => ({ id: 10 + i, status: "ready", project: "tally", title: `Ready item ${i}`, note: null, updated_at: ago(i + 1) })),
   ]
   const out = v.listView(rows, now).split("\n")
-  assert.deepEqual(out.filter((l) => /^\w/.test(l)), ["Building (1)", "Ready (12)", "Failed (1)"])
+  assert.deepEqual(out.filter((l) => /^\w/.test(l)), ["Building (1)", "Ready (12)", "Needs you (1)"])
   assert.equal(out[1], "  Voice notes  tally  2h  #1")
   assert.ok(out.includes("  +2 more"))
   assert.equal(out.filter((l) => l.startsWith("  Ready item")).length, 10)
@@ -92,7 +92,7 @@ test("status board: building, shipped today, stuck with the reason, last tick; t
   const text = v.statusText(db, now)
   assert.match(text, /Building now \(1\): Voice notes/)
   assert.match(text, /Shipped today \(1\)/)
-  assert.match(text, /Stuck \(1\): Book a slot - tests keep failing in the booking form/)
+  assert.match(text, /Needs you \(1\): Book a slot - tests keep failing in the booking form/)
   assert.match(text, /Last tick \d\d:\d\d$/)
   d.setKv(db, "health:last-tick", String(now - 3600_000 * 2)) // the newest of the keys wins: an older health reading changes nothing
   assert.equal(v.statusText(db, now), text)
@@ -114,13 +114,13 @@ test("status board: building, shipped today, stuck with the reason, last tick; t
   assert.equal(calls.length, n)
   const off = open(":memory:")
   await v.updateBoard(off, false, stub(calls)) // no Discord: only the tick time is kept
-  assert.ok(v.lastTick(off))
+  assert.ok((await import("../src/health.ts")).lastTick(off))
 })
 
 test("ticket thread: one status line edited in place, raw output quoted under details (6 lines)", async () => {
   const db = withDiscord()
   const e = { kind: "ticket" as const, project: "tally", ticket: 7, title: "Fix the footer", step: "building" as const }
-  assert.equal(d.stepLine(3, "QA is checking", 2), "Step 3 of 5: QA is checking · 2nd try")
+  assert.equal(d.stepLine(3, "Tester is checking", 2), "Step 3 of 5: Tester is checking · 2nd try")
   assert.equal(d.stepLine(2, "Engineer is building"), "Step 2 of 5: Engineer is building")
   assert.match(d.stepLine(3, "x", 3), /3rd try$/)
   assert.match(d.stepLine(3, "x", 11), /11th try$/)
@@ -165,4 +165,12 @@ test("owner touches: same kind and tag within 60 s are one interruption; tickets
   old.prepare("INSERT INTO touches (at, ticket, kind, tag) VALUES (?, 1, 'tap', 'broke')").run(t0)
   u.touch(old, { kind: "tap", tag: "broke" }, t0 + 1000)
   assert.deepEqual(old.prepare("SELECT n FROM touches ORDER BY id").all(), [{ n: 2 }]) // the old row counts as 1 by default, so the burst makes 2
+})
+
+test("one name for a ticket that waits on you: list, status and the log all say Needs you (#359)", async () => {
+  const { statusText } = await import("../src/view.ts")
+  const db = open(":memory:")
+  db.prepare("INSERT INTO tickets (project,title,status,note,created_at,updated_at) VALUES ('tally','Login','failed','needs you: x',?,?)").run(new Date().toISOString(), new Date().toISOString())
+  assert.match(statusText(db), /Needs you \(1\)/)
+  assert.doesNotMatch(statusText(db), /Stuck/)
 })

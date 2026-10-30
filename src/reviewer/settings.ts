@@ -57,7 +57,7 @@ export const DEFAULTS: Settings = {
 }
 
 const Partial = Base.partial().strip()
-export const reviewConfigSchema = Partial.extend({ repos: z.record(Partial).optional() }).strip()
+export const reviewConfigSchema = Partial.extend({ repos: z.record(z.string(), Partial).optional() }).strip()
 export type ReviewConfig = z.infer<typeof reviewConfigSchema>
 
 /** The settings in force for one repo (or globally): DEFAULTS < review.* < review.repos[repo]. */
@@ -93,11 +93,13 @@ export function handleGuard(s: Settings, c: ReviewConfig | undefined, repo: stri
   return isPublic() ? { ...s, commands: false } : s
 }
 
-export type PrBrief = { isDraft: boolean; baseRefName?: string; labels?: { name: string }[]; body?: string }
+export type PrBrief = { isDraft: boolean; baseRefName?: string; headRefName?: string; labels?: { name: string }[]; body?: string }
+/** The draft PR Dobby opens for finished work that waits for the owner ("Needs the owner: ..."): a draft by design, so it is still reviewed and the owner can merge it. */
+export const ownerDraft = (p: { isDraft?: boolean; headRefName?: string; body?: string }) => !!p.isDraft && /^(dobby|foreman)\//.test(p.headRefName ?? "") && /Needs the owner:/.test(p.body ?? "")
 /** Why an automatic review skips this PR ("" = review it). Requested reviews (commands) skip none of this. */
 export function autoSkip(s: Settings, p: PrBrief, pausedPr = false): string {
   if (s.auto === "off") return s.mentionOnly ? "mention-only" : "auto reviews off"
-  if (p.isDraft && s.auto === "drafts") return "draft"
+  if (p.isDraft && s.auto === "drafts" && !ownerDraft(p)) return "draft"
   if (s.branches.length && !any(s.branches, p.baseRefName ?? "")) return `base ${p.baseRefName} not in review.branches`
   if (s.skipLabel && p.labels?.some((l) => l.name === s.skipLabel)) return `label ${s.skipLabel}`
   if (s.commands && ignoredIn(s, p.body)) return `@${s.handle} ignore in the description`

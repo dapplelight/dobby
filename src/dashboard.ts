@@ -1,11 +1,19 @@
 // The web dashboard's numbers. Every function is pure over a (read-only) DB handle and a clock; nothing here writes or calls out.
 // Days are IST days (the owner's), titles come first, ids only as a small suffix.
-import { pausedState, pauseList } from "./pause.ts"
+import { paused, pausedState, pauseList } from "./pause.ts"
 import type { DB } from "./db.ts"
-import { zonedDay } from "./config.ts"
-import { clip, shortTitle } from "./telegram.ts"
-import { splitBacklog } from "./lib.ts"
-import { healthSnapshot, lastTick } from "./view.ts"
+import { config, zonedDay } from "./config.ts"
+import { clip, shortTitle } from "./notify.ts"
+import { buildsUsed, MAX_BUILDS, milestonesOf, splitBacklog } from "./lib.ts"
+import { markFits } from "./queue-math.ts"
+import { ticketUsd, weekPoints } from "./savings.ts"
+/** What a ticket cost, as the PR comment says it: dollars on an API key, share of the week on a plan. */
+const spentText = (usd: number) => config().billing?.mode === "apiKey" ? `$${usd.toFixed(2)}` : `${weekPoints(usd).toFixed(2)}% of week`
+import type { DiffStat, DiffText } from "./diffstat.ts"
+import { parseDiff } from "./diff-parse.ts"
+import { findingsOf, reviewNumbers, safePath, SEVERITY_WORD } from "./findings.ts"
+import { lastTick } from "./health.ts"
+import { healthSnapshot, receipt, scoreboard, STUCK_MS } from "./view.ts"
 
 const DAY = 86_400_000
 const q = <T>(db: DB, sql: string, ...a: unknown[]) => { try { return db.prepare(sql).all(...a) as T[] } catch { return [] as T[] } } // a table that does not exist yet reads as empty
@@ -65,7 +73,7 @@ export const STUCK_REASONS: { reason: string; action: string; match: (t: { statu
   { reason: "Review fix not landing", action: "Open the PR: fix it by hand, or close it.", match: (t) => t.status === "fixing" || /review still fails|fix for the review findings failed/i.test(t.note) },
   { reason: "PR closed without merging", action: "Queue it again, or close the ticket.", match: (t) => /closed without merging/i.test(t.note) },
   { reason: "Git or GitHub problem", action: "Queue it again; if it fails twice, check the branch on GitHub.", match: (t) => /^(prepare|preflight|ship|push to)\b|couldn't find remote ref|rate limited|GraphQL/i.test(t.note) },
-  { reason: "Checks keep failing", action: "Read the failure, then queue it again or split it.", match: (t) => /verify failed|same failure came back|through QA|checker:/i.test(t.note) },
+  { reason: "Checks keep failing", action: "Read the failure, then queue it again or split it.", match: (t) => /verify failed|same failure came back|through (?:QA|testing)|(?:tester|checker):/i.test(t.note) },
   { reason: "Something else", action: "Open it and decide: queue again or close.", match: () => true },
 ]
 
@@ -85,6 +93,86 @@ export function needsMe(db: DB, now: number) {
     add("Deploy failing", "Open the deploy card in #needs-you and tap Retry once the fix is in.", { title: `${k.slice("deploy:fails:".length)}: failed ${v} time${v === "1" ? "" : "s"} in a row`, app: k.slice("deploy:fails:".length), since: "" })
   for (const c of nowPanel(db, now).jobs.failing) add("A Dobby job is failing", "Run dobby doctor on the Mac; it says what to fix.", { title: c.detail ? `${c.name}: ${c.detail}` : c.name, since: c.since })
   return [...groups.values()].sort((a, b) => b.items.length - a.items.length)
+}
+
+// ── 1c. Home: the inbox, working now, the week's curve ──────────────────────
+const PR = /github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)/
+const INBOX_MAX = 12
+export type Check = { name: string; state: "pass" | "fail" | "wait" }
+export type InboxKind = "merge" | "deploy" | "answer" | "decide"
+export type InboxRow = { key: string; kind: InboxKind; id: number | null; project: string; ref: string; title: string; status: string; primary: string; warn: boolean; url: string | null; branch: string | null; checks: Check[]; diff: DiffStat | null; age: string; offers: string[] }
+/** The actions a row offers, by the names POST /api/action takes. */
+const OFFERS: Record<InboxKind, string[]> = { merge: ["merge", "decline"], deploy: ["deploy"], answer: ["answer", "decline"], decide: ["retry", "decline", "takeOver"] }
+
+/** Five checks for a ticket: the build's verify stands for Tests, Types and Lint (one command), then testing and the PR review. */
+function ticketChecks(db: DB, t: T): Check[] {
+  const last = (kind: string) => q<{ ok: number }>(db, "SELECT ok FROM runs WHERE ticket=? AND kind=? ORDER BY id DESC LIMIT 1", t.id, kind)[0]
+  const st = (r?: { ok: number }): Check["state"] => (r ? (r.ok ? "pass" : "fail") : "wait")
+  const pr = t.note?.match(PR)
+  const rv = pr ? q<{ verdict: string }>(db, "SELECT verdict FROM reviews WHERE pr=? AND repo LIKE ? ORDER BY at DESC LIMIT 1", Number(pr[3]), `%/${pr[2]}`)[0]?.verdict : undefined
+  const build = st(last("build"))
+  return [
+    { name: "Tests", state: build }, { name: "Types", state: build }, { name: "Lint", state: build },
+    { name: "Tester", state: st(last("check")) }, { name: "Review", state: rv === "pass" ? "pass" : rv === "fail" ? "fail" : "wait" },
+  ]
+}
+
+/** What waits on the owner, by kind then newest: a PR at its gate (merge), a failing deploy (deploy), a question (answer), a stuck ticket (decide). */
+export function inbox(db: DB, now: number, diff?: (project: string, branch: string | null) => DiffStat | null) {
+  const rows: { at: number; row: InboxRow }[] = []
+  const ticketRow = (t: T & { branch: string | null }, kind: InboxKind, status: string, primary: string, warn: boolean): InboxRow => ({
+    key: `t${t.id}`, kind, id: t.id, project: t.project, ref: `${t.project} #${t.id}`, title: title(t.title), status, primary, warn, branch: t.branch, url: t.note?.match(PR)?.[0] ? `https://${t.note.match(PR)![0]}` : null,
+    checks: ticketChecks(db, t), diff: diff?.(t.project, t.branch) ?? null, age: ago(t.updated_at, now),
+    offers: kind === "decide" && t.status === "fixing" && PR.test(t.note ?? "") ? [...OFFERS.decide, "allowRound"] : OFFERS[kind],
+  })
+  for (const t of q<T & { branch: string | null }>(db, "SELECT id, project, title, status, note, created_at, updated_at, goal, onto, branch FROM tickets WHERE status IN ('approval','failed','fixing')")) {
+    const note = t.note ?? ""
+    const reason = STUCK_REASONS.find((x) => x.match({ status: t.status, note }))!.reason
+    let row: InboxRow | null = null
+    if (t.status === "approval") {
+      row = ticketRow(t, "merge", "Waiting for your OK", "Merge", false)
+      if (row.checks.every((c) => c.state === "pass")) row.status = "Passed review and testing"
+    } else if (reason === "Waiting on your answer") row = ticketRow(t, "answer", clip(note.replace(/^BLOCKED:\s*(needs (an )?answer( from the owner)?:?\s*)?/i, ""), 90), "Answer", false)
+    else if (/needs you:.*every merge waits for you.*draft PR: https/s.test(note)) row = ticketRow(t, "merge", "Draft PR waits for your merge", "Merge", false) // strict / everyMerge owner: the owner's Merge marks the draft ready and lands it
+    else if (reason !== "Not a code change" && reason !== "Merged into another ticket") row = ticketRow(t, "decide", reason, "Retry", true)
+    if (row) rows.push({ at: ms(t.updated_at), row })
+  }
+  for (const { k, v } of q<{ k: string; v: string }>(db, "SELECT k, v FROM kv WHERE k LIKE 'deploy:fails:%'")) {
+    const name = k.slice("deploy:fails:".length)
+    rows.push({ at: now, row: { key: `d-${name}`, kind: "deploy", id: null, project: name, ref: name, title: `Deploy ${name}`, status: `Failed ${v} time${v === "1" ? "" : "s"} in a row`, primary: "Retry deploy", warn: true, url: null, branch: null, checks: [], diff: null, age: "", offers: OFFERS.deploy } })
+  }
+  const order: InboxKind[] = ["merge", "deploy", "answer", "decide"]
+  rows.sort((a, b) => order.indexOf(a.row.kind) - order.indexOf(b.row.kind) || b.at - a.at) // by kind, then newest
+  return { total: rows.length, rows: rows.slice(0, INBOX_MAX).map((r) => r.row) }
+}
+
+/** Running tickets: who has it, which round of how many, what it is doing. The runs table only has finished steps, so a build that finished means testing is up next. */
+export function working(db: DB, now: number) {
+  return q<T>(db, "SELECT id, project, title, status, note, created_at, updated_at, goal, onto FROM tickets WHERE status='running' ORDER BY updated_at").map((t) => {
+    const lastRun = q<{ kind: string; ok: number }>(db, "SELECT kind, ok FROM runs WHERE ticket=? ORDER BY id DESC LIMIT 1", t.id)[0]
+    const qa = lastRun?.kind === "build" && !!lastRun.ok
+    const used = buildsUsed(db, t.id)
+    return { key: `t${t.id}`, id: t.id, project: t.project, ref: `${t.project} #${t.id}`, title: title(t.title), role: qa ? "Testing" : "Builder", round: Math.min(MAX_BUILDS, Math.max(1, qa ? used : used + 1)), of: MAX_BUILDS, step: qa ? "checking" : "building", age: ago(t.updated_at, now), stuck: now - ms(t.updated_at) > STUCK_MS }
+  })
+}
+
+/** A ticket that has been running with no update for this long is stuck (the working row gets a badge and "See last step"). */
+export { STUCK_MS }
+
+/** The roles doing something right now: builder and checker from the running tickets, reviewer from a review that started in the last half hour. */
+export function teamLive(db: DB, now: number): string[] {
+  const live = new Set<string>(working(db, now).map((w) => (w.role === "Testing" ? "checker" : "builder")))
+  if (q<{ n: number }>(db, "SELECT COUNT(*) n FROM reviews WHERE verdict='running' AND at>=?", new Date(now - 1_800_000).toISOString())[0]?.n) live.add("reviewer")
+  return [...live]
+}
+
+/** This week's stored plan readings, at most `max` points, for the instrument's real curve. */
+export function weekSeries(db: DB, max = 120) {
+  const last = q<{ week_reset: number }>(db, "SELECT week_reset FROM usage_ticks ORDER BY at DESC LIMIT 1")[0]
+  if (!last) return []
+  const all = q<{ at: number; week: number }>(db, "SELECT at, week FROM usage_ticks WHERE week_reset>? AND week_reset<=? ORDER BY at", last.week_reset - 3_600_000, last.week_reset)
+  const step = Math.ceil(all.length / max) || 1
+  return all.filter((_, i) => i % step === 0 || i === all.length - 1).map((r) => ({ t: r.at, pct: r.week }))
 }
 
 // ── 2. Outcomes ─────────────────────────────────────────────────────────────
@@ -137,7 +225,7 @@ export function quality(db: DB, now: number, days: number) {
     once: counts.filter((n) => n === 1).length, twice: counts.filter((n) => n === 2).length, more: counts.filter((n) => n >= 3).length,
   }
 
-  // The Checker's verdict is not stored on its run; a check counts as failed when the ticket built again afterwards, or its run itself failed.
+  // The Tester's verdict is not stored on its run; a check counts as failed when the ticket built again afterwards, or its run itself failed.
   const runs = q<{ id: number; kind: string; ticket: number; ok: number }>(db, "SELECT id, kind, ticket, ok FROM runs WHERE ticket IS NOT NULL AND kind IN ('build','check') AND at>=? ORDER BY id", since)
   const lastBuild = new Map<number, number>()
   for (const r of runs) if (r.kind === "build") lastBuild.set(r.ticket, r.id)
@@ -199,7 +287,7 @@ export function goals(db: DB) {
 
 // ── 6. Queue ────────────────────────────────────────────────────────────────
 export const BUCKETS = ["under 1 day", "1-3 days", "3-7 days", "over 7 days"] as const
-export function queue(db: DB, now: number) {
+export function queue(db: DB, now: number, limits?: unknown) {
   const ts = tickets(db)
   const bucket = (iso: string) => { const d = (now - ms(iso)) / DAY; return d < 1 ? 0 : d < 3 ? 1 : d < 7 ? 2 : 3 }
   const apps = new Map<string, number[]>()
@@ -226,7 +314,70 @@ export function queue(db: DB, now: number) {
   }
   const next = rows.sort((a, b) => a.rank - b.rank || b.priority - a.priority || a.id - b.id).slice(0, 10).map(({ id }) => ts.find((t) => t.id === id)!)
     .map((t) => ({ id: t.id, title: title(t.title), app: t.project, since: ago(t.created_at, now) }))
-  return { backlog, failed, next, ownerOnly }
+  return { backlog, failed, next, ownerOnly, ...queueView(db, now, limits) }
+}
+
+// ── 6b. The order of work: estimates, the stop line, backlog and ideas ──────
+/** What a size costs when there is no history to go on, in % of the week. */
+const SIZE_PCT: Record<string, number> = { S: 2, M: 5, L: 11 }
+const MIN_SAMPLES = 3
+/** Per size: the median week-% of shipped tickets of that size (their runs' cost over the plan's $ per point), else the default. */
+export function estimates(db: DB): Record<"S" | "M" | "L", number> {
+  const spent = q<{ size: string; usd: number }>(db, "SELECT t.size, SUM(r.cost_usd) usd FROM tickets t JOIN runs r ON r.ticket=t.id WHERE t.status='shipped' AND t.onto IS NULL GROUP BY t.id HAVING usd > 0")
+  const est = (size: string) => {
+    const xs = spent.filter((r) => r.size === size).map((r) => weekPoints(r.usd))
+    return Math.max(1, Math.round(xs.length >= MIN_SAMPLES ? median(xs)! : SIZE_PCT[size]))
+  }
+  return { S: est("S"), M: est("M"), L: est("L") }
+}
+
+type QRow = { id: number; project: string; title: string; done_when: string; size: string; priority: number; status: string; depends_on: number | null; created_at: string }
+/** Queued tickets in the order builders take them (running first, then priority, then id), each with its estimate, whether it fits the week's room, and what it waits on. */
+export function queueView(db: DB, now: number, limits?: unknown) {
+  const est = estimates(db)
+  const w = (limits as { week?: { used: number; cap: number; resetsAt: number } } | null | undefined)?.week
+  const room = w ? Math.max(0, w.cap - w.used) : null
+  const rows = q<QRow>(db, "SELECT id, project, title, done_when, size, priority, status, depends_on, created_at FROM tickets WHERE status IN ('running','ready') AND dup_of IS NULL ORDER BY status='running' DESC, priority DESC, id")
+  const open = new Set(q<{ id: number }>(db, "SELECT id FROM tickets WHERE status NOT IN ('shipped')").map((r) => r.id))
+  let next = true
+  const rest = rows.map((t) => {
+    const estPct = est[t.size as "S" | "M" | "L"] ?? est.M
+    // a running ticket has spent part of its estimate already: that part is in the week's used figure
+    return { t, estPct, leftPct: t.status === "running" ? Math.max(0, estPct - weekPoints(ticketUsd(db, t.id))) : estPct }
+  })
+  const fits = markFits(rest, room)
+  const order = rest.map(({ t, estPct, leftPct }, i) => {
+    const blocked = t.status === "ready" ? (t.depends_on && open.has(t.depends_on) ? `#${t.depends_on}` : paused(db, { kind: "builders", project: t.project, ticket: t.id }) ? "paused" : null) : null
+    const state = t.status === "running" ? "Building" : blocked ? (blocked === "paused" ? "Paused" : `After ${blocked}`) : next ? "Next" : "Ready"
+    if (t.status === "ready" && !blocked) next = false
+    return { id: t.id, n: i + 1, ref: `${t.project} #${t.id}`, project: t.project, title: title(t.title), doneWhen: clip(t.done_when, 400), filed: ago(t.created_at, now), size: t.size, estPct, leftPct, fits: fits[i], waitsOn: blocked, state, running: t.status === "running" }
+  })
+  const total = rest.reduce((a, r) => a + r.leftPct, 0)
+  const parked = q<{ id: number; project: string; title: string; size: string; created_at: string }>(db, "SELECT id, project, title, size, created_at FROM tickets WHERE status='backlog' AND dup_of IS NULL ORDER BY priority DESC, id LIMIT 50")
+    .map((t) => ({ id: t.id, ref: `${t.project} #${t.id}`, project: t.project, title: title(t.title), size: t.size, estPct: est[t.size as "S" | "M" | "L"] ?? est.M, age: ago(t.created_at, now) }))
+  const ideas = q<{ id: number; project: string; title: string; source: string; lens: string | null; why: string | null; size: string | null; score: number | null }>(db, "SELECT id, project, title, source, lens, why, size, score FROM ideas WHERE status IN ('new','proposed') AND dup_of IS NULL ORDER BY score DESC NULLS LAST, id LIMIT 50")
+    .map((i) => ({ ...i, title: title(i.title), why: i.why ? clip(i.why, 240) : null }))
+  return { order, parked, ideas, estimates: est, room, queuedPct: total, stopPct: w?.cap ?? null, resetsAt: w?.resetsAt ?? null }
+}
+
+/** One row per active goal: a mark per ticket (done, in progress, waiting), the count, the milestone's due date and a plain status from this project's pace over 14 days. */
+export function goalRows(db: DB, now: number) {
+  const ts = q<T & { size: string }>(db, "SELECT id, project, title, status, note, created_at, updated_at, goal, onto, size FROM tickets WHERE goal IS NOT NULL AND dup_of IS NULL AND status!='declined' AND onto IS NULL ORDER BY id")
+  const gs = q<{ id: number; project: string; title: string; rank: number; milestone: number | null }>(db, "SELECT id, project, title, rank, milestone FROM goals WHERE status='active' ORDER BY rank, project")
+  const markOf = (s: string) => (s === "shipped" ? "done" : ["running", "fixing", "approval"].includes(s) ? "running" : "waiting") as "done" | "running" | "waiting"
+  return gs.map((g) => {
+    const mine = ts.filter((t) => t.goal === g.id), done = mine.filter((t) => t.status === "shipped").length
+    const dueIso = g.milestone ? milestonesOf(db, g.project).find((m) => m.number === g.milestone)?.due_on ?? null : null
+    const rate = ts.filter((t) => t.project === g.project && t.status === "shipped" && now - ms(t.updated_at) <= 14 * DAY).length / 14 // tickets a day
+    const left = mine.length - done
+    const days = rate > 0 ? left / rate : null
+    const diff = dueIso && days !== null ? Math.round((ms(dueIso) - (now + days * DAY)) / DAY) : null // + = early
+    const status = left === 0 && mine.length ? "Done" : diff === null ? (dueIso ? "No pace yet" : "") : diff >= 1 ? `On track, ${diff} days early` : diff >= 0 ? "On track" : `Tight: ${-diff} days late at this pace`
+    return {
+      id: g.id, project: g.project, title: g.title.replace(/^DRAFT:\s*/, ""), draft: g.title.startsWith("DRAFT:"), done, total: mine.length, due: dueIso, status, late: left > 0 && diff !== null && diff < 0,
+      marks: mine.map((t) => markOf(t.status)), left: mine.filter((t) => t.status !== "shipped").slice(0, 8).map((t) => ({ id: t.id, ref: `#${t.id}`, title: title(t.title), mark: markOf(t.status) })),
+    }
+  })
 }
 
 // ── 7. Reviews ──────────────────────────────────────────────────────────────
@@ -313,7 +464,7 @@ export function ticketTelemetry(db: DB, id: number) {
 
 // ── Ticket drill-down ───────────────────────────────────────────────────────
 /** One ticket with its agent runs and, when its note links a PR, that PR's review verdicts. null = no such ticket. */
-export function ticketDetail(db: DB, id: number, now: number) {
+export function ticketDetail(db: DB, id: number, now: number, diffText?: (project: string, branch: string | null) => DiffText | null) {
   const t = q<T & { size: string; done_when: string; branch: string | null }>(db, "SELECT id, project, title, status, note, created_at, updated_at, goal, size, done_when, branch FROM tickets WHERE id=?", id)[0]
   if (!t) return null
   const runs = q<{ id: number; at: string; kind: string; model: string | null; ok: number; reason: string | null; duration_ms: number | null; cost_usd: number | null }>(db, "SELECT id, at, kind, model, ok, reason, duration_ms, cost_usd FROM runs WHERE ticket=? ORDER BY id", id)
@@ -326,15 +477,57 @@ export function ticketDetail(db: DB, id: number, now: number) {
       .filter((r) => r.repo.split("/")[1] === pr.repo.split("/")[1]).map((r) => ({ ...r, cost: r.cost === null ? null : round(r.cost, 2) }))
     : []
   const goal = t.goal == null ? null : q<{ title: string }>(db, "SELECT title FROM goals WHERE id=?", t.goal)[0]?.title.replace(/^DRAFT:\s*/, "") ?? null
+  // The diff of the ticket's branch, the findings stored for the PR (their paths are data: unsafe ones are dropped), and the rounds between them.
+  const diff = pr && t.branch ? diffText?.(t.project, t.branch) ?? null : null
+  const dfiles = diff ? parseDiff(diff.text) : []
+  const lineText = (path: string, line: number) => dfiles.find((f) => f.path === path)?.lines.find((l) => l.new === line && l.t !== "del")?.text ?? null
+  const fr = pr ? findingsOf(db, pr.repo, pr.pr).filter((f) => safePath(f.path)) : []
+  const findings = fr.map((f) => ({
+    id: f.id, file: f.path, line: f.line, severity: f.severity as "high" | "medium" | "low", word: SEVERITY_WORD[f.severity as keyof typeof SEVERITY_WORD] ?? "Should fix", kind: f.kind,
+    text: f.problem, fix: f.fix, suggestion: f.suggestion, was: lineText(f.path, f.line), round: f.round, state: f.state, rule: clip(f.problem.replace(/\s+/g, " "), 300),
+  }))
+  const blocking = (path: string) => findings.filter((f) => f.file === path && f.state === "open" && f.severity !== "low").length
+  const files = dfiles.map((f) => ({ path: f.path, add: f.add, del: f.del, blocking: blocking(f.path), findings: findings.filter((x) => x.file === f.path && x.state === "open").length }))
+  const rounds = rv.filter((r) => r.verdict === "pass" || r.verdict === "fail").sort((a, b) => a.at.localeCompare(b.at)).map((r, i) => {
+    const mine = fr.filter((f) => f.round === i + 1)
+    return { n: i + 1, at: r.at, verdict: r.verdict, what: r.verdict === "pass" ? "Passed." : mine.length ? `Changes requested: ${mine.slice(0, 2).map((f) => clip(f.problem, 90).replace(/[.\s]+$/, "")).join("; ")}${mine.length > 2 ? `; and ${mine.length - 2} more` : ""}` : "Changes requested." }
+  })
   return {
     id: t.id, app: t.project, title: title(t.title), fullTitle: t.title, status: t.status, size: t.size, goal,
     note: t.note ? clip(t.note, 1000) : null, doneWhen: t.done_when ? clip(t.done_when, 1000) : null, branch: t.branch,
     created: ago(t.created_at, now), updated: ago(t.updated_at, now),
-    runs, runsUsd: round(runs.reduce((a, r) => a + (r.usd ?? 0), 0), 2), pr, reviews: rv, telemetry: ticketTelemetry(db, id),
+    runs, runsUsd: round(runs.reduce((a, r) => a + (r.usd ?? 0), 0), 2), spent: spentText(runs.reduce((a, r) => a + (r.usd ?? 0), 0)), pr, reviews: rv, telemetry: ticketTelemetry(db, id),
+    files, findings, rounds, diff,
   }
 }
 
 /** Everything the page shows, for a 7 or 30 day window. */
-export function snapshot(db: DB, now = Date.now(), days = 7) {
-  return { at: now, days, now: nowPanel(db, now), needsMe: needsMe(db, now), outcomes: outcomes(db, now, days), quality: quality(db, now, days), spend: spend(db, now, days), goals: goals(db), queue: queue(db, now), reviews: reviews(db), telemetry: telemetryPanel(db, now, days), paused: pausedState(db), pause: pauseList(db), health: healthSnapshot(db) }
+export function snapshot(db: DB, now = Date.now(), days = 7, limits: unknown = null, diff?: Parameters<typeof inbox>[2]) {
+  return { at: now, limits, days, inbox: inbox(db, now, diff), working: working(db, now), teamLive: teamLive(db, now), week: { series: weekSeries(db) }, now: nowPanel(db, now), needsMe: needsMe(db, now), outcomes: outcomes(db, now, days), quality: quality(db, now, days), spend: spend(db, now, days), goals: goals(db), queue: queue(db, now, limits), goalRows: goalRows(db, now), reviews: reviews(db), telemetry: telemetryPanel(db, now, days), paused: pausedState(db), pause: pauseList(db), health: healthSnapshot(db), scoreboard: scoreboard(db, 7, now), receipt: receipt(db, days, now) }
 }
+
+// ── Reviews page ────────────────────────────────────────────────────────────
+/** The review dashboard: this week's numbers, and the PRs under review or needing changes (the scoreboard's data), newest first. */
+export function reviewsPage(db: DB, now: number, diff?: (project: string, branch: string | null) => DiffStat | null) {
+  const numbers = reviewNumbers(db, now)
+  const sb = scoreboard(db, 7, now)
+  const ts = tickets(db).filter((t) => t.status !== "backlog")
+  const tix = (t: T & { branch?: string | null }, repo: string, pr: number) => { const m = t.note?.match(/github\.com\/[\w.-]+\/([\w.-]+)\/pull\/(\d+)/); return !!m && m[1] === repo.split("/")[1] && Number(m[2]) === pr }
+  const latest = q<{ repo: string; pr: number; sha: string; verdict: string; choice: string | null; at: string; took_ms: number | null }>(db,
+    "SELECT repo, pr, sha, verdict, choice, at, took_ms FROM reviews r WHERE at=(SELECT max(at) FROM reviews x WHERE x.repo=r.repo AND x.pr=r.pr) ORDER BY at DESC LIMIT 20")
+  const prs = latest.map((r) => {
+    const t = ts.find((x) => tix(x, r.repo, r.pr))
+    const fs = findingsOf(db, r.repo, r.pr)
+    const rounds = q<{ n: number }>(db, "SELECT count(*) n FROM reviews WHERE repo=? AND pr=? AND verdict IN ('pass','fail')", r.repo, r.pr)[0]?.n ?? 0
+    const last = Math.max(0, ...fs.map((f) => f.round)), mine = fs.filter((f) => f.round === last) // the counts are the newest round that raised anything
+    const count = (sev: string) => mine.filter((f) => f.severity === sev).length
+    const branch = q<{ branch: string | null }>(db, "SELECT branch FROM tickets WHERE id=?", t?.id ?? 0)[0]?.branch ?? null
+    return {
+      repo: r.repo, pr: r.pr, ref: `${r.repo.split("/")[1]} #${r.pr}`, ticket: t?.id ?? null, title: t ? title(t.title) : `Pull request ${r.pr}`, url: `https://github.com/${r.repo}/pull/${r.pr}`,
+      verdict: t?.status === "shipped" && r.verdict === "pass" ? "merged" : r.verdict, b: count("high"), s: count("medium"), n: count("low"), round: Math.max(1, rounds),
+      files: (t && diff?.(t.project, branch)?.files) ?? null, tookMin: r.took_ms ? Math.max(1, Math.round(r.took_ms / 60_000)) : null, at: r.at,
+    }
+  })
+  return { at: now, numbers, scoreboard: sb, prs }
+}
+export type ReviewsPage = ReturnType<typeof reviewsPage>

@@ -126,7 +126,7 @@ export function explain(role: string, table: RoutingTable, health: Health = {}, 
 // --- main-thread proposal --------------------------------------------------
 export const tableSchema = z.object({
   main: z.string(),
-  roles: z.record(z.object({
+  roles: z.record(z.string(), z.object({
     primary: z.string(),
     fallback: z.array(z.string()).max(5).default([]),
     effort: z.enum(["low", "medium", "high"]).optional(),

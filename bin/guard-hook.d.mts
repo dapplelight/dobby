@@ -1,5 +1,5 @@
 export type Seg = { words: string[]; redirs: string[]; xargs?: boolean }
-export type Ctx = { cwd: string; wtRoot: string; home: string; foremanRoot: string; dataDir: string; branch: () => string }
+export type Ctx = { cwd: string; wtRoot: string; home: string; dobbyRoot: string; dataDir: string; branch: () => string }
 export function parse(cmd: string): Seg[]
 export function expand(seg: Seg): Seg[] | string
 export function allowedBy(words: string[], patterns: string[]): boolean

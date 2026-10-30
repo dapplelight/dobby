@@ -135,7 +135,7 @@ test("review: one inline review on diff lines, the walkthrough, a failure status
   assert.ok(m.calls.some((c) => c.args.join(" ") === "fetch -q origin main pull/7/head"))
   assert.ok(m.calls.filter((c) => c.args[0] === "worktree" && c.args[1] === "remove").length >= 2) // before and after
   assert.equal(m.pings.length, 1)
-  assert.match(m.pings[0], /Review failed · Tally · Fix the footer[\s\S]*• Totals can double[\s\S]*pull\/7#issuecomment-1/)
+  assert.match(m.pings[0], /Review failed · tally · Fix the footer[\s\S]*• Totals can double[\s\S]*pull\/7#issuecomment-1/)
   assert.deepEqual(db.prepare("SELECT choice, by, verdict, cost FROM reviews").get(), { choice: "sonnet", by: "fallback", verdict: "fail", cost: 0.4 })
 })
 
@@ -388,11 +388,11 @@ test("failure ping: buttons, the same message edited on the next failure, resolv
   assert.deepEqual(JSON.parse((db.prepare("SELECT v FROM kv WHERE k='review:findings:ownerdev/tally#7'").get() as { v: string }).v), ["[high] src/footer.tsx:3 total is wrong Triggered when: two imports Fix: sum once"])
   await rv.runReview(db, "ownerdev/tally", 7, { deps: { ...fail("sha2").deps, ...p }, useJev: false })
   assert.deepEqual(p.pings.map((x) => x.key), ["review:ownerdev/tally#7", "review:ownerdev/tally#7"]) // same key = same Discord message, edited
-  assert.match(p.pings[1].text, /^🔴 Review failed · Tally · Fix the footer\n/)
+  assert.match(p.pings[1].text, /^🔴 Review failed · tally · Fix the footer\n/)
   assert.doesNotMatch(p.pings[1].text, /sha2|Reviewer:|#7|sonnet/) // no commit code, model name or bare number in the card
   assert.equal(p.settled.length, 0)
   await rv.runReview(db, "ownerdev/tally", 7, { deps: { ...mocks({ prJson: pr({ headRefOid: "sha3" }) }).deps, ...p }, useJev: false })
-  assert.deepEqual(p.settled, [{ key: "review:ownerdev/tally#7", text: "✅ Resolved · Tally · Fix the footer" }])
+  assert.deepEqual(p.settled, [{ key: "review:ownerdev/tally#7", text: "✅ Resolved · tally · Fix the footer" }])
   assert.equal(db.prepare("SELECT 1 FROM kv WHERE k LIKE 'review:ping:%'").get(), undefined)
 })
 
@@ -530,7 +530,7 @@ test("outside PR: a failed review gets 2 auto-fix rounds (fix tickets on its bra
 test("failure card: a paused project or the night hours hold it in kv for the brief; the owner touch is logged on the first card only", async () => {
   const db = open(":memory:")
   const { ensure } = await import("../src/usage.ts")
-  const { needsYou } = await import("../src/telegram.ts")
+  const { needsYou } = await import("../src/notify.ts")
   const noon = Date.parse("2026-10-20T06:30:00Z"), night = Date.parse("2026-10-20T19:00:00Z") // 12:00 and 00:30 IST
   assert.equal(rv.holdReview(db, "review:ownerdev/shopfront#150", "card", false, noon), false) // awake and active: posts
   assert.equal(rv.holdReview(db, "review:ownerdev/shopfront#150", "card", true, noon), true) // paused project
@@ -578,7 +578,7 @@ const tick = () => new Promise((r) => setImmediate(r))
 test("automerge: a pass waits for checks (Dobby's own review workflow ignored), merges the reviewed head, confirms MERGED, then deploys", async () => {
   const a = automerge({ sha: "am1", checks: ci(["test", "pass", "CI"], ["review", "fail", "Claude Review"]) })
   await a.go()
-  assert.deepEqual(a.gh, ["pr checks 7 -R ownerdev/tally --json name,bucket,workflow", "pr merge 7 -R ownerdev/tally --squash --delete-branch --match-head-commit am1"])
+  assert.deepEqual(a.gh, ["pr checks 7 -R ownerdev/tally --required --json name,bucket,workflow", "pr merge 7 -R ownerdev/tally --squash --delete-branch --match-head-commit am1"])
   assert.equal(a.ticket().status, "shipped")
   await tick()
   assert.deepEqual(a.deployed, ["tally"])
@@ -639,10 +639,14 @@ test("automerge: a refused merge fails the ticket; gh exits 0 but the PR stays o
   assert.equal(refused.gh.filter((c) => c.includes("merge")).length, 1) // a policy refusal is not rebased
   const queued = automerge({ sha: "am4", checks: "no checks reported on the 'foreman/5' branch", state: "OPEN" })
   await queued.go()
-  assert.match(queued.ticket().note, /merge did not land: the PR is OPEN/)
+  // a queue slower than 30 min or an unreadable state is not a verdict on the PR: the ticket stays, the head is not marked failed, the next sweep retries
+  assert.equal(queued.ticket().status, "fixing")
+  assert.deepEqual([queued.wait().landing, queued.wait().failed], [undefined, undefined])
   const unreadable = automerge({ sha: "am5", state: "" })
   await unreadable.go()
-  assert.match(unreadable.ticket().note, /merge not confirmed/)
+  assert.equal(unreadable.ticket().status, "fixing")
+  assert.equal(unreadable.wait().failed, undefined)
+  assert.match(await rv.landAutomerge(unreadable.db, unreadable.deps, "ownerdev/tally", 7, { sweep: true }), /^not landed yet, retried on the next scan: merge not confirmed/)
   const merged = automerge({ sha: "am6", merge: { ok: false, out: "HTTP 502 after merge" }, state: "MERGED" })
   await merged.go()
   assert.equal(merged.ticket().status, "shipped")
@@ -685,7 +689,7 @@ test("automerge: the original ticket leaves fixing (with the card) when rounds r
   await refused.go()
   assert.equal(refused.ticket().status, "failed")
   assert.match(refused.ticket().note, /no second auto-fix could start/)
-  assert.match(refused.cards[0], /^🔴 Review failed · Tally · t\n\n• The review still fails and no second auto-fix could start/)
+  assert.match(refused.cards[0], /^🔴 Review failed · tally · t\n\n• The review still fails and no second auto-fix could start/)
   const skipped = automerge({ sha: "am12", info: { isDraft: true } })
   await skipped.go()
   assert.match(skipped.ticket().note, /^The review of the fix was skipped \(draft\)/)
@@ -1150,6 +1154,8 @@ test("owner land (b): a foreman PR whose ticket failed merges on a pass and the 
   await b.go()
   assert.equal(b.gh.filter((c) => c.includes("merge")).length, 0)
   assert.equal(b.ticket().status, "running")
+  // dobby merge on it: the refusal names the next step (newcomer test #406)
+  assert.match(await rv.ownerLand(b.db, b.deps, "ownerdev/tally", 7, true), /^not landed: its ticket #\d+ is still in flight\. It merges itself once its review passes .*Check it with dobby show \d+$/)
 })
 
 test("re-run marker: record() does not write the cached verdict back for a head whose broken review job was just re-run", async () => {
@@ -1224,4 +1230,176 @@ test("owner chat: @dobby with no command verb is a chat, @dobby <verb> is a comm
   assert.equal(chat("> @dobby why?\n\nquoted"), false)
   assert.equal(chat("@dobby why?", "stranger"), false)
   assert.equal(chat("@dobby why?\n\n<!-- foreman-chat -->"), false)
+})
+
+test("automerge: the every-merge floor (strict preset, safety.everyMerge) holds the lander too; review makes it strict", async () => {
+  const { config, setConfig } = await import("../src/config.ts")
+  const before = config()
+  try {
+    setConfig({ ...before, safety: { ...before.safety, everyMerge: "owner" } })
+    const o = automerge({ sha: "fl1" })
+    await o.go()
+    assert.equal(o.gh.filter((c) => c.includes("merge")).length, 0)
+    assert.notEqual(o.ticket().status, "shipped")
+    assert.match(o.ticket().note, /every merge waits for you/)
+    setConfig({ ...before, safety: { ...before.safety, everyMerge: "review" } })
+    const r = automerge({ sha: "fl2" })
+    await r.go()
+    assert.equal(r.wait().strict, true)
+    assert.equal(r.gh.filter((c) => c.includes("merge")).length, 0)
+  } finally { setConfig(before) }
+})
+
+test("automerge: a merge pause set while the checks are being waited for stops the merge, and the key survives", async () => {
+  const P = await import("../src/pause.ts")
+  const a = automerge({ sha: "ps1" })
+  const run = a.deps.run
+  a.deps.run = (cmd: string, args: string[], cwd?: string) => (args[1] === "checks" && P.setPause(a.db, { kind: "merges" }, true), run(cmd, args, cwd))
+  await a.go()
+  assert.equal(a.gh.filter((c) => c.includes("pr merge")).length, 0)
+  assert.equal(a.ticket().status, "fixing")
+  assert.equal(a.wait().landing, undefined)
+  assert.equal(a.wait().failed, undefined)
+})
+
+test("ship helpers: an old run's automerge key is dropped; the verdict is read for the pushed head only", async () => {
+  const { dropStaleAutomerge, reviewVerdictAt } = await import("../src/graphs/ticket.ts")
+  const db = open(":memory:")
+  db.prepare("INSERT INTO kv VALUES ('automerge:ownerdev/tally#7', ?)").run(JSON.stringify({ ticket: 5, rounds: 1 }))
+  dropStaleAutomerge(db, "ownerdev/tally", 7, 6) // another ticket's key stays
+  assert.ok(db.prepare("SELECT 1 FROM kv WHERE k='automerge:ownerdev/tally#7'").get())
+  dropStaleAutomerge(db, "ownerdev/tally", 7, 5)
+  assert.equal(db.prepare("SELECT 1 FROM kv WHERE k='automerge:ownerdev/tally#7'").get(), undefined)
+  db.prepare("INSERT INTO reviews (repo,pr,sha,choice,verdict,at) VALUES ('ownerdev/tally',7,'old','opus','fail','t1')").run()
+  assert.equal(reviewVerdictAt(db, "ownerdev/tally", 7, "old"), "fail")
+  assert.equal(reviewVerdictAt(db, "ownerdev/tally", 7, "new"), undefined) // the new head's review never ran: not "failed"
+})
+
+test("automerge: a head the owner approved lands under the owner floor; ownerLand with the owner's Merge skips only the floor; a transient failure gives up after 3 tries with one card", async () => {
+  const { config, setConfig } = await import("../src/config.ts")
+  const before = config()
+  try {
+    setConfig({ ...before, safety: { ...before.safety, everyMerge: "owner" } })
+    const ok = automerge({ sha: "ap1" })
+    ok.db.prepare("UPDATE kv SET v=? WHERE k='automerge:ownerdev/tally#7'").run(JSON.stringify({ ticket: 5, rounds: 0, approved: "ap1" }))
+    await ok.go()
+    assert.equal(ok.ticket().status, "shipped")
+    const other = automerge({ sha: "ap3" }) // approved for another head: the floor holds
+    other.db.prepare("UPDATE kv SET v=? WHERE k='automerge:ownerdev/tally#7'").run(JSON.stringify({ ticket: 5, rounds: 0, approved: "old" }))
+    await other.go()
+    assert.notEqual(other.ticket().status, "shipped")
+    // the owner's own Merge: refused without approval, goes through with it
+    const h = automerge({ noWait: true, sha: "ap2", ticket: "failed", info: { author: { login: "ownerdev" } } })
+    h.db.prepare("UPDATE tickets SET branch='foreman/5' WHERE id=5").run()
+    assert.match(await rv.ownerLand(h.db, h.deps as any, "ownerdev/tally", 7), /every merge waits for you/)
+    h.db.prepare("INSERT INTO reviews (repo,pr,sha,choice,verdict,at) VALUES ('ownerdev/tally',7,'ap2','opus','pass','t')").run()
+    await rv.ownerLand(h.db, h.deps as any, "ownerdev/tally", 7, true)
+    assert.equal(h.ticket().status, "shipped")
+  } finally { setConfig(before) }
+  // transient: retried twice, the third gives up (ticket failed, one card), a head is never retried forever
+  const t = automerge({ sha: "tr1", state: "" })
+  const cards: string[] = []
+  ;(t.deps as any).notify = async (x: string) => (cards.push(x), true)
+  await t.go(); await rv.landAutomerge(t.db, t.deps, "ownerdev/tally", 7, { sweep: true })
+  assert.equal(t.ticket().status, "fixing")
+  assert.equal(t.wait().retries, 2)
+  await rv.landAutomerge(t.db, t.deps, "ownerdev/tally", 7, { sweep: true })
+  assert.equal(t.ticket().status, "failed")
+  assert.equal(cards.filter((c) => /Couldn't merge/.test(c)).length, 1)
+})
+
+test("owner-gated draft (#359): it is reviewed like any Dobby PR, and the owner's own Merge marks it ready first; Dobby's own landing never does", async () => {
+  const { config, setConfig } = await import("../src/config.ts")
+  const { ownerDraft } = await import("../src/reviewer/settings.ts")
+  const draft = { isDraft: true, headRefName: "foreman/5", body: "Needs the owner: every merge waits for you (the strict preset). Dobby will not merge this." }
+  assert.equal(ownerDraft(draft), true)
+  assert.equal(ownerDraft({ ...draft, body: "wip" }), false) // a plain draft is still skipped
+  assert.equal(ownerDraft({ ...draft, headRefName: "fix/x" }), false)
+  assert.equal(rv.gateRules("ownerdev/tally", pr(draft), files("src/footer.tsx"))?.choice ?? null, null) // not "none: draft": it goes on to be judged
+  assert.equal(rv.gateRules("ownerdev/tally", pr({ ...draft, body: "wip" }), files("src/footer.tsx"))?.choice, "none")
+  const before = config()
+  try {
+    setConfig({ ...before, safety: { ...before.safety, everyMerge: "owner" } })
+    const h = automerge({ noWait: true, sha: "dr1", ticket: "failed", info: { ...draft, author: { login: "ownerdev" } } })
+    const ran: string[] = []
+    const inner = h.deps.run
+    ;(h.deps as any).run = (c: string, a: string[], cwd?: string) => (c === "gh" && a[1] === "ready" && ran.push(a.join(" ")), inner(c, a, cwd))
+    h.db.prepare("INSERT INTO reviews (repo,pr,sha,choice,verdict,at) VALUES ('ownerdev/tally',7,'dr1','opus','pass','t')").run()
+    assert.match(await rv.ownerLand(h.db, h.deps as any, "ownerdev/tally", 7), /every merge waits for you/) // not approved: nothing is readied
+    assert.deepEqual(ran, [])
+    await rv.ownerLand(h.db, h.deps as any, "ownerdev/tally", 7, true)
+    assert.deepEqual(ran, ["pr ready 7 -R ownerdev/tally"])
+    assert.equal(h.ticket().status, "shipped")
+    // a draft Dobby did not open for the owner still refuses
+    const p = automerge({ noWait: true, sha: "dr2", ticket: "failed", info: { isDraft: true, body: "wip", author: { login: "ownerdev" } } })
+    assert.match(await rv.ownerLand(p.db, p.deps as any, "ownerdev/tally", 7, true), /not an open, ready PR/)
+  } finally { setConfig(before) }
+})
+
+test("owner merge (#372): the draft Dobby opened lands on the owner's Merge whatever github.owner and accounts say; the unapproved path still checks the author", async () => {
+  const { config, setConfig } = await import("../src/config.ts")
+  const before = config()
+  const draft = { isDraft: true, headRefName: "foreman/5", body: "Needs the owner: every merge waits for you (the strict preset). Dobby will not merge this." }
+  try {
+    // gh is signed in as "alice"; the repo is ownerdev/tally; alice is neither the repo's owner nor in accounts
+    for (const owner of ["", "alice", "ownerdev"]) {
+      setConfig({ ...before, github: { ...before.github, owner: owner === "ownerdev" ? "" : owner, accounts: owner === "ownerdev" ? ["ownerdev"] : [] }, safety: { ...before.safety, everyMerge: "owner" } })
+      const h = automerge({ noWait: true, sha: `o372${owner}`, ticket: "failed", info: { ...draft, author: { login: "alice" } } })
+      h.db.prepare("INSERT INTO reviews (repo,pr,sha,choice,verdict,at) VALUES ('ownerdev/tally',7,?,'opus','pass','t')").run(`o372${owner}`)
+      assert.doesNotMatch(await rv.ownerLand(h.db, h.deps as any, "ownerdev/tally", 7, true), /not the owner's PR/, `github.owner "${owner}"`)
+      assert.equal(h.ticket().status, "shipped")
+    }
+    // not approved, not the owner's author, not in accounts: still refused
+    setConfig({ ...before, github: { ...before.github, owner: "", accounts: [] }, safety: { ...before.safety, everyMerge: "auto" } })
+    const p = automerge({ noWait: true, sha: "o372x", ticket: "failed", info: { author: { login: "alice" } } })
+    assert.match(await rv.ownerLand(p.db, p.deps as any, "ownerdev/tally", 7), /not the owner's PR/)
+  } finally { setConfig(before) }
+})
+
+test("review scan (#372): a Dobby project's repo is scanned even when its org is not in github.accounts", () => {
+  const { config, setConfig } = cfg
+  const before = config()
+  try {
+    setConfig({ ...before, github: { ...before.github, owner: "alice", accounts: ["alice"] } })
+    const db = open(":memory:")
+    const r = (c: string, a: string[]) => (a[0] === "remote" ? { ok: true, out: "https://github.com/someorg/tally.git\n" } : { ok: true, out: String(Math.floor(Date.now() / 1000)) })
+    assert.deepEqual(rv.reposThatMatter(db, r, false), [])
+    const project = { name: "tally", repo: `${dir}/projects/tally`, base: "main", install: "true", verify: "true", priority: 5, jev: false, paused: false, rules: "" }
+    assert.deepEqual(rv.reposThatMatter(db, r, false, Date.now(), { tally: project }).map((x) => x.slug), ["someorg/tally"])
+  } finally { setConfig(before) }
+})
+
+test("owner merge (#375): a docs-only owner-gated draft whose review was skipped merges on the owner's Merge; a code PR with no passing review is still refused", async () => {
+  const { config, setConfig } = await import("../src/config.ts")
+  const before = config()
+  const draft = { isDraft: true, headRefName: "foreman/5", body: "Needs the owner: every merge waits for you (the strict preset). Dobby will not merge this." }
+  try {
+    setConfig({ ...before, safety: { ...before.safety, everyMerge: "owner" } })
+    const mk = (sha: string, names: string) => {
+      const h = automerge({ noWait: true, sha, ticket: "failed", info: { ...draft, author: { login: "ownerdev" } } })
+      h.db.prepare("INSERT INTO reviews (repo,pr,sha,choice,by,verdict,cost,at) VALUES ('ownerdev/tally',7,?,'none','rule','skip',0,'t')").run(sha)
+      return { h, deps: withDiff(h, names) as any }
+    }
+    const docs = mk("dm1", "README.md\ndocs/a.md")
+    await rv.ownerLand(docs.h.db, docs.deps, "ownerdev/tally", 7, true)
+    assert.equal(docs.h.ticket().status, "shipped")
+    const code = mk("dm2", "README.md\nsrc/a.ts")
+    assert.match(await rv.ownerLand(code.h.db, code.deps, "ownerdev/tally", 7, true), /no passing review/)
+    assert.notEqual(code.h.ticket().status, "shipped")
+  } finally { setConfig(before) }
+})
+
+test("owner-waiting draft PR that conflicts with main: the ticket says so (once, cleared when clean), and the owner's Merge refuses in plain words", async () => {
+  const url = "https://github.com/ownerdev/tally/pull/7"
+  const a = automerge({ noWait: true, sha: "cf1", ticket: "failed", info: { mergeable: "CONFLICTING", isDraft: true, author: { login: "ownerdev" } } })
+  a.db.prepare("UPDATE tickets SET note=? WHERE id=5").run(`needs you: every merge waits for you. The finished work is a draft PR: ${url}.`)
+  assert.match((await rv.syncHeldMerged(a.db, a.deps as any)).join("\n"), /conflicts with the base branch/)
+  assert.match(a.ticket().note, /^needs you: .*\nConflicts with main: /s) // still a needs-you ticket, with the PR link kept
+  assert.deepEqual(await rv.syncHeldMerged(a.db, a.deps as any), []) // flagged once
+  assert.match(await rv.ownerLand(a.db, a.deps as any, "ownerdev/tally", 7, true), /^not landed: Conflicts with main/)
+  assert.equal(a.gh.filter((c) => c.startsWith("pr merge")).length, 0)
+  const clean = automerge({ noWait: true, sha: "cf2", ticket: "failed", info: { mergeable: "MERGEABLE" } })
+  clean.db.prepare("UPDATE tickets SET note=? WHERE id=5").run(`needs you: x ${url}\n${rv.CONFLICT_NOTE}`)
+  await rv.syncHeldMerged(clean.db, clean.deps as any)
+  assert.ok(!clean.ticket().note.includes("Conflicts with main"))
 })

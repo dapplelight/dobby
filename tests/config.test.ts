@@ -8,10 +8,10 @@ import Database from "better-sqlite3"
 const dir = mkdtempSync(`${tmpdir()}/foreman-config-`)
 process.env.DOBBY_DIR ??= dir
 process.env.DOBBY_SECRETS ??= `${dir}/secrets.env`
-const { defaults, loadConfig, mergeFlags, quietAt, tzOffset, zoned, zonedDay, configDir, dataDir } = await import("../src/config.ts")
+const { defaults, loadConfig, warnOnce, mergeFlags, quietAt, tzOffset, zoned, zonedDay, configDir, dataDir } = await import("../src/config.ts")
 const { DEFAULT_RULES } = await import("../src/policy.ts")
 const { LAYOUT } = await import("../src/discord.ts")
-const { silentAt } = await import("../src/telegram.ts")
+const { silentAt } = await import("../src/notify.ts")
 const { migrate } = await import("../src/migrate.ts")
 
 test("defaults are neutral: the given time zone, nobody's names; the owner's values come from their private config (fixture)", () => {
@@ -106,4 +106,34 @@ test("mergeFlags: squash and delete the branch by default; the owner can change 
   const gh = defaults().github
   assert.deepEqual(mergeFlags({ github: gh }), ["--squash", "--delete-branch"])
   assert.deepEqual(mergeFlags({ github: { ...gh, mergeMethod: "rebase", deleteBranch: false } }), ["--rebase"])
+})
+
+test("a bad value drops only its own key, and the warning names the key, the value and what is allowed", () => {
+  const none = `${dir}/none.json`, priv = `${dir}/loud.json`
+  const load = (x: unknown) => { writeFileSync(priv, JSON.stringify(x)); return loadConfig({ repo: none, private: priv }) }
+  let l = load({ timezone: "Europe/London", quietHours: { start: 25, end: 7 } })
+  assert.deepEqual([l.config.timezone, l.config.quietHours], ["Europe/London", defaults().quietHours])
+  assert.deepEqual(l.warnings, [`${priv}: quietHours.start: got 25; allowed: at most 23`])
+  l = load({ safety: { preset: "yolo", rules: {}, classifier: "model", unsure: "ask" }, eveningPostHour: 5 })
+  assert.equal(l.config.safety.preset, "balanced")
+  assert.equal(l.config.eveningPostHour, 5)
+  assert.deepEqual(l.warnings, [`${priv}: safety.preset: got "yolo"; allowed: strict, balanced, autonomous`])
+  assert.deepEqual(load({ scout: { enabled: "yes" }, timezone: "Mars/Base" }).warnings, [`${priv}: timezone: got "Mars/Base"; allowed: IANA time zone like Asia/Kolkata`, `${priv}: scout.enabled: got "yes"; allowed: true or false`])
+  assert.deepEqual(load({ quietHour: { start: 1 }, quietHours: { strt: 1 } }).warnings, [`${priv}: unknown key quietHour (ignored); did you mean quietHours?`, `${priv}: unknown key quietHours.strt (ignored); did you mean quietHours.start?`])
+  assert.deepEqual(load({ zzzzzz: 1 }).warnings, [`${priv}: unknown key zzzzzz (ignored)`])
+  writeFileSync(priv, "{ not json")
+  l = loadConfig({ repo: none, private: priv })
+  assert.match(l.warnings[0], /ignored: /)
+  assert.deepEqual(l.sources, ["defaults"])
+})
+
+test("warnOnce prints a set of warnings once, again when it changes or comes back", () => {
+  const file = `${dir}/warn/config-warnings.sha`, out: string[] = []
+  const say = (w: string[]) => warnOnce(w, file, (s) => out.push(s))
+  say(["a"]); say(["a"])
+  assert.deepEqual(out, ["config: a"])
+  say(["a", "b"])
+  assert.equal(out.length, 3)
+  say([]); say(["a", "b"])
+  assert.equal(out.length, 5)
 })

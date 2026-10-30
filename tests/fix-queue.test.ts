@@ -10,14 +10,14 @@ process.env.DOBBY_DIR = dir
 process.env.DOBBY_SECRETS = `${dir}/s.txt`
 writeFileSync(process.env.DOBBY_SECRETS, "")
 process.env.JEV_API_KEY = "" // forces every Jev decision to its fallback
-const { open, logRun } = await import("../src/db.ts")
+const { open, logRun, pruneKv } = await import("../src/db.ts")
 const L = await import("../src/lib.ts")
 const { decide, loadRules, DEFAULT_RULES } = await import("../src/policy.ts")
 const lead = await import("../src/graphs/lead.ts")
 const view = await import("../src/view.ts")
 const usage = await import("../src/usage.ts")
 const D = await import("../src/dashboard.ts")
-const { digest } = await import("../src/telegram.ts")
+const { digest } = await import("../src/notify.ts")
 
 type DBt = ReturnType<typeof open>
 const mk = (db: DBt, o: { project?: string; title: string; done_when?: string; size?: string; priority?: number; status?: string; goal?: number | null; note?: string; onto?: string; updated?: string }) => {
@@ -256,33 +256,25 @@ test("status board: building counts only running; fixing is its own line; shippe
   assert.match(t, /Building now \(1\): Voice notes/)
   assert.match(t, /Waiting on a review fix \(2\)/)
   assert.match(t, /Shipped today \(1\)/)
-  assert.match(t, /Stuck \(1 this week, 2 failed in all\): Fresh failure - tests keep failing/)
+  assert.match(t, /Needs you \(1 this week, 2 failed in all\): Fresh failure - tests keep failing/)
   assert.doesNotMatch(t, /Old failure/)
   const quiet = open(":memory:")
   assert.doesNotMatch(view.statusText(quiet, now), /review fix/, "no fixing tickets: no line")
 })
 
-test("last tick: reads tick:last and both spellings of the health key, newest wins; health's text form is parsed as IST", async () => {
+test("last tick: lastTick reads tick:last only; health no longer writes health:lasttick; prune drops the old copies", async () => {
+  const { lastTick } = await import("../src/health.ts")
+  const { readFileSync } = await import("node:fs")
   const db = open(":memory:")
-  const now = Date.parse("2026-10-20T10:00:00Z") // 15:30 IST
-  assert.equal(view.lastTick(db, now), null)
+  assert.equal(lastTick(db), null)
   db.prepare("INSERT INTO kv VALUES ('health:lasttick', 'Last tick: 14:03 IST')").run()
-  assert.equal(view.lastTick(db, now), Date.parse("2026-10-20T08:33:00Z"), "health.ts spelling, no hyphen")
-  db.prepare("INSERT INTO kv VALUES ('health:last-tick', ?)").run(String(now - 60_000))
-  assert.equal(view.lastTick(db, now), now - 60_000)
-  db.prepare("INSERT INTO kv VALUES ('tick:last', ?)").run(String(now - 5000))
-  assert.equal(view.lastTick(db, now), now - 5000)
-  const late = open(":memory:")
-  late.prepare("INSERT INTO kv VALUES ('health:lasttick', 'Last tick: 23:50 IST')").run()
-  assert.equal(view.lastTick(late, now), Date.parse("2026-10-19T18:20:00Z"), "a clock time still ahead is yesterday's")
-  // health writes the configured label (#127): another label still reads back
-  const { config, setConfig } = await import("../src/config.ts")
-  setConfig({ ...config(), timezoneLabel: "GMT+5:30" })
-  try {
-    const other = open(":memory:")
-    other.prepare("INSERT INTO kv VALUES ('health:lasttick', 'Last tick: 14:03 GMT+5:30')").run()
-    assert.equal(view.lastTick(other, now), Date.parse("2026-10-20T08:33:00Z"))
-  } finally { setConfig(undefined) }
+  db.prepare("INSERT INTO kv VALUES ('health:last-tick', '123')").run()
+  assert.equal(lastTick(db), null, "the old keys are not read")
+  db.prepare("INSERT INTO kv VALUES ('tick:last', '5000')").run()
+  assert.equal(lastTick(db), 5000)
+  pruneKv(db)
+  assert.deepEqual(db.prepare("SELECT k FROM kv").all(), [{ k: "tick:last" }])
+  assert.doesNotMatch(readFileSync(new URL("../src/health.ts", import.meta.url), "utf8"), /VALUES \('health:lasttick'/)
 })
 
 test("metrics: shipped excludes fix pushes everywhere (outcomes, rework, spend per ticket, goals, autonomy); fixes are reported as rework", () => {
@@ -309,7 +301,7 @@ test("metrics: shipped excludes fix pushes everywhere (outcomes, rework, spend p
 test("digest: fix pushes are reported as rework, not as shipped", () => {
   assert.match(digest([], () => undefined, 3), /nothing merged\.\n🔁 3 review fixes pushed onto open PRs/)
   const d = digest([{ id: 1, project: "tally", title: "Dark mode", note: null }], () => undefined, 1)
-  assert.match(d, /Shipped today: Tally 1[\s\S]*🔁 1 review fix pushed/)
+  assert.match(d, /Shipped today: tally 1[\s\S]*🔁 1 review fix pushed/)
   assert.doesNotMatch(digest([{ id: 1, project: "tally", title: "Dark mode", note: null }], () => undefined), /rework/)
 })
 
@@ -402,11 +394,11 @@ test("readUsage: no reader installed = no pacing, said once; the reader coming b
   assert.equal(L.noUsageReader(new URL(import.meta.url).pathname), false)
 })
 
-test("readUsage: a snapshot older than 30 minutes counts as an outage but still returns the numbers", () => {
+test("readUsage: a snapshot older than 30 minutes counts as an outage and returns no numbers", () => {
   const db = open(":memory:")
   const told: string[] = []
   const u = L.readUsage(db, () => cliJson({ snapshotAgeMs: 45 * 60_000 }), Date.now(), (() => told.push("x")) as typeof L.fixed, () => false)
-  assert.equal(u!.fiveUsed, 40)
+  assert.equal(u, null)
   assert.equal(told.length, 1)
 })
 
@@ -437,4 +429,26 @@ test("build cap rollout: tickets with old builds get a baseline and are not park
   for (let i = 0; i < 9; i++) logRun(db, { project: "tally", kind: "build", ticket: id, ok: false })
   assert.equal(L.nextTicket(db)?.id, id) // claimed, not parked
   assert.equal(L.buildsUsed(db, id), 0)
+})
+
+test("goals import: a (due YYYY-MM-DD) in a goal becomes the milestone's due date and leaves the title; a gh failure says why and stops", async () => {
+  const M = await import("../src/milestones.ts")
+  const db = open(":memory:")
+  L.syncGoals(db, "tally", "## Goals\n- Public beta (due 2026-12-01)\n- Trust: zero wrong totals")
+  const calls: string[][] = []
+  const lines = M.importGoals(db, "tally", "o/r", (_c, a) => (calls.push(a), { ok: true, out: JSON.stringify({ number: 10 + calls.length }) }))
+  assert.deepEqual(lines, ["✓ milestone 11: Public beta (due 2026-12-01)", "✓ milestone 12: Trust"])
+  assert.deepEqual(calls[0].slice(4).filter((x) => x !== "-f"), ["title=Public beta", "description=Public beta", "due_on=2026-12-01T00:00:00Z"])
+  assert.ok(!calls[1].some((x) => x.startsWith("due_on")), "no date, no due_on")
+  assert.deepEqual((db.prepare("SELECT title, milestone FROM goals ORDER BY rank").all() as { title: string; milestone: number }[]).map((g) => g.title), ["Public beta", "Trust: zero wrong totals"])
+  // failures: gh missing, a bad token, anything else; the first one stops the run and every line starts with a cross
+  for (const [out, why] of [["spawnSync gh ENOENT", /not installed/], ["gh: Bad credentials (HTTP 401)", /not signed in/], ["HTTP 422: Validation Failed", /Validation Failed/]] as const) {
+    const d = open(":memory:")
+    L.syncGoals(d, "tally", "## Goals\n- One\n- Two")
+    const n: string[][] = []
+    const got = M.importGoals(d, "tally", "o/r", (_c, a) => (n.push(a), { ok: false, out }))
+    assert.equal(got.length, 1, "stops at the first failure")
+    assert.match(got[0], /^✗ One: /); assert.match(got[0], why)
+    assert.equal((d.prepare("SELECT COUNT(*) n FROM goals WHERE milestone IS NOT NULL").get() as { n: number }).n, 0)
+  }
 })

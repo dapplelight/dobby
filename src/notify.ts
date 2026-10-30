@@ -8,14 +8,16 @@ import { dirname } from "node:path"
 import { DATA } from "./db.ts"
 import { RULES as SECRET_RULES } from "./scan.ts"
 import { configDir, quietAt } from "./config.ts"
-import type { Event } from "./discord.ts"
+import { outboundPrivate } from "./privacy.ts"
+import type { Event } from "./chat/common.ts"
 
 // DOBBY_SECRETS: tests point this at a temp file
 export const secretsFile = () => process.env.DOBBY_SECRETS ?? `${configDir()}/secrets.env`
 
 export function readSecrets(text = existsSync(secretsFile()) ? readFileSync(secretsFile(), "utf8") : ""): Record<string, string> {
   // FOREMAN_* keys from before the rename read as DOBBY_*
-  return Object.fromEntries(text.split("\n").map((l) => l.match(/^\s*([A-Z_]+)\s*=\s*"?([^"]*)"?\s*$/)).filter((m) => m !== null).map((m) => [m[1].replace(/^FOREMAN_/, "DOBBY_"), m[2]]))
+  // shell-style lines: `export` allowed, digits in names, "double" or 'single' quotes around the value
+  return Object.fromEntries(text.split("\n").map((l) => l.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/)).filter((m) => m !== null).map((m) => [m[1].replace(/^FOREMAN_/, "DOBBY_"), m[2].replace(/^(["'])(.*)\1$/, "$2")]))
 }
 
 /** The dashboard token from the secrets file; first call generates one (32 random bytes, base64url) and appends it. Never printed or logged. Never overwrites an existing one. */
@@ -30,25 +32,61 @@ export function ensureToken(path = secretsFile()): string {
   return token
 }
 
+/** Write NAME=value into the secrets file (mode 0600), replacing an old line for NAME. The value is never printed, logged or returned. */
+export function setSecret(name: string, value: string, path = secretsFile()): void {
+  if (!/^[A-Z][A-Z0-9_]*$/.test(name) || !value || /[\r\n"]/.test(value)) throw new Error(`cannot store ${name}`)
+  const text = existsSync(path) ? readFileSync(path, "utf8") : ""
+  const kept = text.split("\n").filter((l) => !new RegExp(`^\\s*(FOREMAN_${name.replace(/^DOBBY_/, "")}|${name})\\s*=`).test(l)).join("\n").replace(/\n*$/, "")
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+  writeFileSync(path, `${kept ? `${kept}\n` : ""}${name}=${value}\n`, { mode: 0o600 })
+  chmodSync(path, 0o600)
+}
+
+/** Values to mask: the secrets file plus env vars named *KEY/TOKEN/SECRET/PASSWORD/PAT (8+ chars), for keys that live only in the environment. Values only, never names. */
+export const secretValues = () => [...Object.values(readSecrets()), ...Object.entries(process.env).filter(([k]) => /(KEY|TOKEN|SECRET|PASSWORD|PAT)$/i.test(k)).map(([, v]) => v ?? "")].filter((v) => v.length >= 8)
+
 /**
  * Text Dobby posts (Discord, outbox.log, PR comments and reviews) with secrets masked: the pre-PR scan's patterns
  * (src/scan.ts) plus the exact value of every key in the secrets file (8+ chars). Returns only the masked text; nothing is logged.
  */
-export function redact(text: string, values = Object.values(readSecrets()).filter((v) => v.length >= 8)): string {
+export function redact(text: string, values = secretValues()): string {
   let out = text
   for (const v of values) out = out.split(v).join("[redacted]")
   for (const [, re] of SECRET_RULES) out = out.replace(new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`), "[redacted]")
   return out
 }
 
+/** A redacted copy (0600, under the data dir) of a file gh would read and publish; unreadable or `-` (stdin: runAsync redacts it) = as given. ponytail: copies are not cleaned up, they hold only redacted text. */
+function redactedFile(path: string, values: string[]): string {
+  try {
+    const dir = `${DATA}/redacted`
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    const out = `${dir}/${randomBytes(8).toString("hex")}`
+    writeFileSync(out, redact(readFileSync(path, "utf8"), values), { mode: 0o600 })
+    return out
+  } catch { return path }
+}
+
 /**
  * Arguments for a command that may publish them: every gh argument (titles, bodies, comments, -f fields) is redacted at the
- * one place gh is spawned, so a new call site cannot forget it (#167). Other commands are left as they are.
+ * one place gh is spawned, so a new call site cannot forget it (#167). Files gh reads for us (--body-file/-F, -F key=@file,
+ * --input) are swapped for redacted copies. Other commands are left as they are.
  */
-export function outbound(cmd: string, args: string[]): string[] {
+export function outbound(cmd: string, args: string[], cwd?: string): string[] {
   if (cmd !== "gh") return args
-  const values = Object.values(readSecrets()).filter((v) => v.length >= 8)
-  return args.map((a) => redact(a, values))
+  const values = secretValues()
+  const file = (p: string) => (p === "-" ? p : redactedFile(p, values))
+  return outboundPrivate(args.map((a, i) => {
+    const prev = args[i - 1] ?? ""
+    const eq = a.match(/^(--body-file|--input)=(.*)$/s)
+    if (eq) return `${eq[1]}=${file(eq[2])}`
+    if (/^(--body-file|--input|-F|--field)$/.test(prev)) {
+      const kv = prev === "-F" || prev === "--field" ? a.match(/^([^=]+=)@(.*)$/s) : null
+      if (kv) return `${kv[1]}@${file(kv[2])}`
+      if (prev !== "--field" && !(prev === "-F" && a.includes("="))) return file(a)
+    }
+    return redact(a, values)
+  }), cwd)
 }
 
 /** Quiet hours (config quietHours, default 23:00-08:00): still sent at once, but silent. */
@@ -67,12 +105,18 @@ export function clip(s: string, max: number) {
 export function shortTitle(title: string) {
   const head = title.split(/:\s|\s\(/)[0]
   // drop paths ("apps/web/x.tsx") but keep a PR number ("acme/shop#32" -> "#32")
-  return clip(head.replace(/\S*\/\S*?(#\d+)?(?=[\s,.;)]|$)/g, (_m, n) => n ?? "").replace(/\s{2,}/g, " ").trim(), 80)
+  const P = "(?:in|on|of|at|to|for|from|into|with|by)"
+  let t = head.replace(/[\w.@-]*\/[\w./@-]*?(#\d+)?(?::\d+)?(?=[\s,;)]|\.(?:\s|$)|$)/g, (_m, n) => n ?? "§").replace(/\b[\w-]+\.(?:tsx?|jsx?|json|md|css|sql|py):\d+/g, "§")
+  // a stripped path must not leave "update in" or "in , and": drop a preposition that pointed at it, and the list words around it
+  const had = t.includes("§")
+  t = t.replace(new RegExp(`\\s+${P}\\s+§(?:\\s*[,;]\\s*§|\\s+(?:and|or)\\s+§)*`, "gi"), "").replace(/§(?:\s*[,;]\s*|\s+(?:and|or)\s+)?/g, "").replace(/\s+([,;)])/g, "$1").replace(/\s{2,}/g, " ").trim()
+  const tidy = had ? t.replace(new RegExp(`\\s+(?:${P.slice(3, -1)}|and|or|the|a|an)$`, "i"), "").replace(/[\s,;]+$/, "") : t
+  return clip(tidy, 80) // a path-only title comes back empty on purpose: titleOf falls back to "Ticket #N"
 }
 
 // What each button does, in plain words (the 3rd line of every #needs-you card; also the fallback when Haiku fails).
 const MEANING: [RegExp, (m: RegExpMatchArray) => string][] = [
-  [/^approve\b/i, () => "merges it"], [/^decline\b/i, () => "drops it"], [/^send\b/i, () => "sends exactly this draft (or runs exactly this action)"], [/^discard\b/i, () => "throws the draft away"],
+  [/^approve\b/i, () => "merges it"], [/^decline\b/i, () => "drops it"], [/^cancel\b/i, () => "stops the build and closes its PR"], [/^send\b/i, () => "sends exactly this draft (or runs exactly this action)"], [/^discard\b/i, () => "throws the draft away"],
   [/^keepgoing (\d+)/i, (m) => `builders keep going up to ${m[1]}% of this 5-hour window`], [/^deploynow \S+ migrate/i, () => "runs the migration on production, then deploys"],
   [/^deploynow\b/i, () => "tries the deploy again"], [/^reviewfix\b/i, () => "an Engineer fixes the findings on that PR (nothing merges)"],
   [/^reviewaccept\b/i, () => "marks the review passed anyway"], [/^scoutmerge\b/i, () => "merges this Scout change (agents' prompts or rules)"], [/^scoutreject\b/i, () => "closes this Scout change"], [/^queue\b/i, () => "queues it for an Engineer"],
@@ -88,7 +132,7 @@ export const buttonsText = (buttons: Buttons = []) =>
 export async function needsYou(text: string, buttons: Buttons = [], o: { db?: import("./db.ts").DB; ask?: typeof import("./lib.ts").claude; touch?: boolean } = {}): Promise<string> {
   const { claude } = await import("./lib.ts")
   const { tagFor, touch } = await import("./usage.ts")
-  const db = o.db ?? (await import("./discord.ts")).discordOn() ?? (await import("./db.ts")).open()
+  const db = o.db ?? (await import("./chat/platform.ts")).chatOn() ?? (await import("./db.ts")).open()
   if (o.touch !== false) touch(db, { kind: "needs-you", tag: tagFor(buttons.find((b) => !b.url)?.data ?? ""), note: text.split("\n")[0].slice(0, 100) })
   const meaning = buttonsText(buttons)
   const r = await (o.ask ?? claude)(db, {
@@ -112,9 +156,13 @@ BUTTONS (label = what it does): ${meaning || "none"}`,
 /** For a card that already has its summary (or tests): leave the text as it is. */
 export const asIs = async (text: string) => text
 
+/** One outbox.log line, redacted whole (error text included). */
+const outbox = (line: string) => appendFileSync(`${DATA}/outbox.log`, `${new Date().toISOString()} ${redact(line)}\n`)
+
 /** To the owner on Discord (`to` picks channel and voice; default #needs-you); outbox.log when Discord is not set up. #needs-you cards get their 3-line summary first. */
 export async function notify(text: string, fetcher: typeof fetch = fetch, buttons?: Buttons, to?: Event, card: (text: string, buttons?: Buttons) => Promise<string> = needsYou): Promise<boolean> {
-  const { discordOn, post, prCard, route } = await import("./discord.ts")
+  const { chatOn: discordOn, route, platform } = await import("./chat/platform.ts")
+  const { post, postBrief, prCard } = await platform()
   text = redact(text)
   // a #needs-you card that names a PR is that PR's one card, keyed by the PR and its state (the first line, before the summary)
   const pr = route(to ?? { kind: "approval" }).channel === "needs-you" ? text.match(/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/) : null
@@ -125,20 +173,21 @@ export async function notify(text: string, fetcher: typeof fetch = fetch, button
   // notify paused: everything except #needs-you waits in the outbox (never dropped); #needs-you always goes out
   const held = db && route(to ?? { kind: "approval" }).channel !== "needs-you" ? paused(db, { kind: "notify" }) : null
   if (held) {
-    appendFileSync(`${DATA}/outbox.log`, `${new Date().toISOString()} [notify paused] ${text}\n`)
+    outbox(`[notify paused] ${text}`)
     return false
   }
   if (db) {
     try {
       if (key) await prCard(db, key, head, to ?? { kind: "approval" }, text, buttons, fetcher)
+      else if (to?.kind === "brief" && to.rich) await postBrief(db, to.rich, fetcher)
       else await post(db, to ?? { kind: "approval" }, text, buttons, fetcher)
       return true
     } catch (e) {
-      appendFileSync(`${DATA}/outbox.log`, `${new Date().toISOString()} [${(e as Error).message}] ${text}\n`)
+      outbox(`[${(e as Error).message}] ${text}`)
       return false
     }
   }
-  appendFileSync(`${DATA}/outbox.log`, `${new Date().toISOString()} [discord not set up] ${text}\n`)
+  outbox(`[discord not set up] ${text}`)
   // terminal-only: the tick child of `dobby start` shares the terminal, so what needs the owner shows there too (a job's log otherwise)
   if (route(to ?? { kind: "approval" }).channel === "needs-you") console.log(`\n── needs you ──\n${text}\n(dobby approve <id> | dobby decline <id>; dobby status lists them)\n`)
   return false
@@ -150,9 +199,9 @@ export async function notify(text: string, fetcher: typeof fetch = fetch, button
  */
 export function parseReply(text: string, replyTo = ""): { decision: "approve" | "decline"; id: number } | null {
   const t = text.trim().toLowerCase()
-  const word = t.match(/^(?:(?:dobby|foreman)\s+)?(approve|approved|yes|ok|ship|decline|declined|no|skip)\b/)?.[1]
+  const word = t.match(/^(?:(?:dobby|foreman)\s+)?(approve|approved|yes|ok|ship|decline|declined|cancel|no|skip)\b/)?.[1]
   if (!word) return null
-  const decision = /^(decline|declined|no|skip)$/.test(word) ? "decline" : "approve"
+  const decision = /^(decline|declined|cancel|no|skip)$/.test(word) ? "decline" : "approve"
   const id = Number(t.match(/#?(\d+)/)?.[1] ?? replyTo.match(/#(\d+)/)?.[1])
   return id ? { decision, id } : null
 }
@@ -181,6 +230,5 @@ export function digest(rows: { id: number; project: string; title: string; note:
   for (const r of rows) per.set(r.project, (per.get(r.project) ?? 0) + 1)
   // ponytail: "biggest" = the ticket with the longest plain-words summary; no size is stored per ticket
   const top = (p: string) => rows.filter((r) => r.project === p).sort((a, b) => (plain(b.id)?.length ?? 0) - (plain(a.id)?.length ?? 0)).slice(0, 3)
-  const app = (p: string) => `${p[0].toUpperCase()}${p.slice(1)}`
-  return `🌙 Shipped today: ${[...per].map(([p, n]) => `${app(p)} ${n}`).join(", ")}\n${[...per.keys()].map((p) => `${app(p)}\n${top(p).map((r) => `• ${shortTitle(r.title)}`).join("\n")}`).join("\n")}\nNothing goes live on its own: say "deploy ${[...per.keys()][0]}" in #assistant when you want these live.${rework}`
+  return `🌙 Shipped today: ${[...per].map(([p, n]) => `${p} ${n}`).join(", ")}\n${[...per.keys()].map((p) => `${p}\n${top(p).map((r) => `• ${shortTitle(r.title)}`).join("\n")}`).join("\n")}\nNothing goes live on its own: say "deploy ${[...per.keys()][0]}" in #assistant when you want these live.${rework}`
 }

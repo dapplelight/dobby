@@ -1,4 +1,4 @@
-// Pre-PR scan of the branch diff, before the Checker (no model tokens). Pure: scanDiff(diff) reads added lines only.
+// Pre-PR scan of the branch diff, before the Tester (no model tokens). Pure: scanDiff(diff) reads added lines only.
 // hits  = likely secrets, reported as file:line + rule name. The matched text is never kept, so it can't be printed.
 // deps  = package names and versions added or changed in package.json / lockfiles (just surfaced, never a fail).
 import { spawnSync } from "node:child_process"
@@ -20,6 +20,12 @@ export const RULES: [string, RegExp][] = [
   ["jwt", /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/],
   ["discord-bot-token", /\b[MNO][A-Za-z0-9_-]{23,25}\.[\w-]{6}\.[\w-]{27,}/],
   ["telegram-bot-token", /\b\d{8,10}:[A-Za-z0-9_-]{35}\b/],
+  ["slack-token", /\bxox[abposr]-[A-Za-z0-9-]{10,}/],
+  ["npm-token", /\bnpm_[A-Za-z0-9]{36}\b/],
+  ["huggingface-token", /\bhf_[A-Za-z0-9]{30,}/],
+  ["discord-webhook", /discord(?:app)?\.com\/api\/webhooks\/\d+\/[\w-]+/],
+  ["url-credentials", /https?:\/\/[^/\s:@]+:[^/\s@]+@/],
+  ["bearer-token", /Authorization:\s*Bearer\s+[A-Za-z0-9._~+\/=-]{20,}/i],
 ]
 const ENV_FILE = /(^|\/)\.env(\.(?!example|sample|template)[\w.-]+)?$/
 const LOCK = /(^|\/)(package-lock\.json|bun\.lockb?|yarn\.lock|pnpm-lock\.yaml|npm-shrinkwrap\.json)$/

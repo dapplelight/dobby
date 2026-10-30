@@ -1,6 +1,6 @@
 {
   "name": "dobby-ai",
-  "version": "0.1.0",
+  "version": "0.1.0-beta.1",
   "description": "An AI dev team on your own machine: builds, reviews and ships your tickets as pull requests, with Claude Code.",
   "license": "MIT",
   "repository": {
@@ -12,44 +12,107 @@
   },
   "type": "module",
   "bin": {
+    "dobby-ai": "bin/dobby",
     "dobby": "bin/dobby",
     "foreman": "bin/foreman"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && cp src/dashboard.html dist/",
+    "build": "tsc -p tsconfig.build.json && npm run build:dashboard",
     "prepack": "npm run build",
+    "preinstall": "node bin/preinstall.cjs",
     "test": "node --no-warnings --test tests/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "e2e": "node --no-warnings --test tests/e2e/*.e2e.test.ts",
+    "coverage": "node --no-warnings scripts/coverage-gate.ts",
+    "docs": "npx tsx scripts/gen-docs.ts",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p dashboard",
+    "build:dashboard": "vite build --config dashboard/vite.config.ts && node --no-warnings scripts/check-bundle.ts",
+    "dashboard:dev": "vite --config dashboard/vite.config.ts"
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "0.0.81",
+    "@chat-adapter/discord": "4.43.0",
+    "@chat-adapter/slack": "4.43.0",
+    "@chat-adapter/state-memory": "4.43.0",
     "@clack/prompts": "1.8.1",
+    "@hono/node-server": "2.1.5",
     "@langchain/core": "1.2.14",
     "@langchain/langgraph": "1.4.19",
     "@langchain/langgraph-checkpoint-sqlite": "1.0.4",
+    "@modelcontextprotocol/server": "^2.4.0",
+    "@nimit9/signet-server": "^0.2.7",
     "better-sqlite3": "12.10.0",
+    "chat": "4.43.0",
     "claude-usage-limits": "1.41.1",
-    "zod": "^3.25.76"
+    "hono": "4.13.14",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@base-ui/react": "1.9.0",
+    "@fontsource-variable/geist": "5.3.0",
+    "@fontsource-variable/geist-mono": "5.3.0",
+    "@fontsource-variable/newsreader": "5.3.0",
+    "@modelcontextprotocol/client": "^2.4.0",
+    "@nimit9/signet-lib": "0.1.15",
+    "@nimit9/signet-tokens": "0.1.10",
+    "@nimit9/signet-ui": "0.1.20",
+    "@playwright/test": "1.64.1",
+    "@radix-ui/react-checkbox": "1.4.1",
+    "@radix-ui/react-popover": "1.3.1",
+    "@radix-ui/react-tooltip": "1.4.1",
+    "@tailwindcss/vite": "4.3.3",
+    "@tanstack/react-form": "1.33.5",
+    "@tanstack/react-hotkeys": "0.12.1",
+    "@tanstack/react-query": "5.104.5",
+    "@tanstack/react-router": "1.170.46",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.0.0",
-    "typescript": "5.9.3"
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "cmdk": "1.1.1",
+    "github-slugger": "2.0.0",
+    "lucide-react": "1.61.0",
+    "motion": "14.6.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
+    "remark-parse": "11.0.0",
+    "tailwind-merge": "3.7.0",
+    "tailwindcss": "4.3.3",
+    "typescript": "5.9.3",
+    "unified": "11.0.5",
+    "vite": "8.3.5"
   },
   "files": [
     "bin/dobby",
     "bin/foreman",
     "bin/guard-hook.mjs",
+    "bin/preinstall.cjs",
     "dist",
+    "dashboard/dist",
     "roles",
     "skills",
     "agent-kit",
     "templates",
     "agent-rules/",
     "agent-settings.json",
-    "docs",
+    "docs/manual",
+    "docs/llms.txt",
+    "docs/llms-full.txt",
     "README.md",
     "LICENSE",
     "THIRD_PARTY.md"
-  ]
+  ],
+  "publishConfig": {
+    "tag": "beta",
+    "access": "public"
+  },
+  "overrides": {
+    "@anthropic-ai/sandbox-runtime": {
+      "zod": "$zod"
+    }
+  }
 }

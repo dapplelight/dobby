@@ -82,25 +82,22 @@ test("checks: every check counts except Dobby's own review workflow; required-on
   const none = () => {}
   // 13 Tally tickets: the leftover Actions "review" job failed "Not logged in" and blocked the merge
   const all: string[] = []
-  assert.deepEqual(await waitChecks(stubGh({ checks: () => ({ ok: false, out: rows(["test", "pass", "CI"], ["review", "fail", "Claude Review"]) }) }, all), "ownerdev/tally", 7, none), { ok: true, out: "checks passed (1)" })
-  assert.equal(all[0].includes("--required"), false) // default: all checks, as before
-  // a failing check that is not required still blocks by default (owner-safe)
-  assert.equal((await waitChecks(stubGh({ checks: () => ({ ok: false, out: rows(["preview", "fail", "Vercel"], ["test", "pass", "CI"]) }) }), "r/r", 1, none)).out, "check failed: preview (Vercel). PR left open.")
-  // opt-in required-only (DOBBY_CHECKS=required), all checks when the repo requires none
-  assert.deepEqual(await waitChecks(stubGh({ "--required": () => ({ ok: false, out: rows(["test", "pass", "CI"]) }) }), "ownerdev/tally", 7, none, 80, true), { ok: true, out: "required checks passed (1)" })
+  assert.deepEqual(await waitChecks(stubGh({ checks: () => ({ ok: false, out: rows(["test", "pass", "CI"], ["review", "fail", "Claude Review"]) }) }, all), "ownerdev/tally", 7, none), { ok: true, out: "required checks passed (1)" })
+  assert.equal(all[0].includes("--required"), true) // default: required checks only
+  // default: a failing non-required check does not block (gh --required never lists it)
+  assert.equal((await waitChecks(stubGh({ "--required": () => ({ ok: false, out: rows(["test", "pass", "CI"]) }), checks: () => ({ ok: false, out: rows(["preview", "fail", "Vercel"], ["test", "pass", "CI"]) }) }), "r/r", 1, none)).ok, true)
+  // mergeChecks: "all" counts every check, and the failing one is named
+  const { config, setConfig } = await import("../src/config.ts")
+  const before = config()
+  setConfig({ ...before, mergeChecks: "all" })
+  try { assert.equal((await waitChecks(stubGh({ checks: () => ({ ok: false, out: rows(["preview", "fail", "Vercel"], ["test", "pass", "CI"]) }) }), "r/r", 1, none)).out, "check failed: preview (Vercel). PR left open.") } finally { setConfig(before) }
+  // a repo with no required checks falls back to all checks
+  assert.deepEqual(await waitChecks(stubGh({ "--required": () => ({ ok: false, out: rows(["test", "pass", "CI"]) }) }), "ownerdev/tally", 7, none), { ok: true, out: "required checks passed (1)" })
   const calls: string[] = []
-  const fallback = await waitChecks(stubGh({ "--required": () => ({ ok: false, out: "no required checks reported on the 'foreman/5' branch" }), "checks 7": () => ({ ok: false, out: rows(["build", "pass", "CI"], ["lint", "fail", "CI"], ["Claude Review", "fail"]) }) }, calls), "ownerdev/tally", 7, none, 80, true)
+  const fallback = await waitChecks(stubGh({ "--required": () => ({ ok: false, out: "no required checks reported on the 'foreman/5' branch" }), "checks 7": () => ({ ok: false, out: rows(["build", "pass", "CI"], ["lint", "fail", "CI"], ["Claude Review", "fail"]) }) }, calls), "ownerdev/tally", 7, none)
   assert.equal(fallback.out, "check failed: lint (CI). PR left open.")
   assert.deepEqual(calls.map((c) => c.includes("--required")), [true, false])
   assert.equal((await waitChecks(stubGh({ checks: () => ({ ok: false, out: "no checks reported on the 'x' branch" }) }), "r/r", 1, none)).ok, true) // no CI at all merges as before
-  // the mergeChecks: required setting turns required-only on without the env
-  const { config, setConfig } = await import("../src/config.ts")
-  const before = config()
-  setConfig({ ...before, mergeChecks: "required" })
-  const viaCfg: string[] = []
-  await waitChecks(stubGh({ "--required": () => ({ ok: false, out: rows(["test", "pass", "CI"]) }) }, viaCfg), "r/r", 1, none)
-  setConfig(before)
-  assert.equal(viaCfg[0].includes("--required"), true)
   // pending, then green: polls with the injected sleep; still pending at the cap: names what is still running
   let n = 0
   const slept: number[] = []
@@ -108,6 +105,17 @@ test("checks: every check counts except Dobby's own review workflow; required-on
   assert.deepEqual(slept, [20_000, 30_000])
   assert.match((await waitChecks(stubGh({ checks: () => ({ ok: false, out: rows(["e2e", "pending", "CI"]) }) }), "r/r", 1, none, 2)).out, /^checks still running after 40 min: e2e \(CI\)/)
   assert.match((await waitChecks(stubGh({ checks: () => ({ ok: false, out: "HTTP 502" }) }), "r/r", 1, none)).out, /^could not read the checks/)
+})
+
+test("landPr: a queued merge (gh exits 0, PR still OPEN) is waited for until MERGED; never merging says so", async () => {
+  let views = 0
+  const slept: number[] = []
+  const q = stubGh({ "pr checks": () => ({ ok: true, out: "[]" }), "pr merge": () => ({ ok: true, out: "queued" }), "pr view": () => ({ ok: true, out: ++views < 4 ? "OPEN" : "MERGED" }) }, [])
+  const ok = await landPr(q, { repo: "ownerdev/tally", pr: 7, sha: "rev1", merge: ["pr", "merge", "7"], rebase: () => assert.fail("no rebase"), sleep: (ms) => void slept.push(ms) })
+  assert.equal(ok.ok, true)
+  assert.ok(slept.filter((x) => x === 30_000).length >= 3)
+  const never = await landPr(stubGh({ "pr checks": () => ({ ok: true, out: "[]" }), "pr merge": () => ({ ok: true, out: "" }), "pr view": () => ({ ok: true, out: "OPEN" }) }, []), { repo: "ownerdev/tally", pr: 7, sha: "rev1", merge: ["pr", "merge", "7"], rebase: () => assert.fail("no rebase"), sleep: () => {} })
+  assert.match(never.out, /OPEN 30 minutes after gh pr merge \(a merge queue or auto-merge/)
 })
 
 test("landPr (ship's merge): checks first, merge by branch in the repo, MERGED confirmed; red checks never merge", async () => {
@@ -205,7 +213,7 @@ test("deployProject (stubbed sh): lock, the migrate card bound to its head, noth
     return { ok: true, out: "" } // status clean, pull ok
   }
   const notify = (async (text: string, _f: unknown, buttons?: { data: string }[]) => (env.cards.push({ text, data: buttons?.[0]?.data }), true)) as any
-  const go = (o: { migrate?: boolean; at?: string } = {}) => deployProject(db, "tally", { ...o, sh: sh as any, notify, projects })
+  const go = (o: { migrate?: boolean; at?: string } = {}) => deployProject(db, "tally", { tapped: true, ...o, sh: sh as any, notify, projects })
 
   // a live lock (this process) queues one more run instead of deploying twice
   db.prepare("INSERT INTO kv VALUES ('deploy:lock:tally', ?)").run(`${Date.now()}:${process.pid}`)
@@ -252,7 +260,7 @@ test("deployOnFailure: notify = card only; ticket = one top-priority fix ticket;
   let good = false
   const cards: string[] = [], started: number[] = [], keys: (string | undefined)[] = []
   const notify = (async (text: string, _f: unknown, _b: unknown, to?: { key?: string }) => (cards.push(text), keys.push(to?.key), true)) as any
-  const go = (onFailure: "notify" | "ticket" | "fix") => deployProject(db, "tally", { sh: sh as any, notify, projects, onFailure, startFix: (id) => started.push(id) })
+  const go = (onFailure: "notify" | "ticket" | "fix") => deployProject(db, "tally", { tapped: true, sh: sh as any, notify, projects, onFailure, startFix: (id) => started.push(id) })
   const tickets = () => db.prepare("SELECT id, title, priority, status FROM tickets").all() as { id: number; title: string; priority: number; status: string }[]
 
   assert.match(await go("notify"), /^tally: deploy failed: /)
@@ -284,7 +292,7 @@ test("deployOnFailure: notify = card only; ticket = one top-priority fix ticket;
   const calls: { url: string; method?: string; body: any }[] = []
   const fetcher = (async (url: string, init?: RequestInit) => (calls.push({ url: String(url), method: init?.method, body: JSON.parse(String(init?.body)) }), new Response("{}"))) as unknown as typeof fetch
   good = true
-  assert.equal(await deployProject(db, "tally", { sh: sh as any, notify, projects, fetcher }), "tally: deployed 3333333")
+  assert.equal(await deployProject(db, "tally", { tapped: true, sh: sh as any, notify, projects, fetcher }), "tally: deployed 3333333")
   assert.equal(calls[0].method, "PATCH")
   assert.match(calls[0].body.content, /^✅ Deploy fixed · tally/)
   assert.deepEqual(calls[0].body.components, [])
@@ -355,11 +363,11 @@ test("deployFrom worktree: a fresh worktree of origin/main with the .env files, 
   const worktrees = () => g(repo, "worktree", "list", "--porcelain").stdout.split("\n").filter((l) => l.startsWith("worktree ")).length
 
   const good = `test -f .env.production && cp app.txt '${out}'`
-  assert.equal(await deployProject(db, "tally", { from: "worktree", notify, projects: project(good) }), `tally: deployed ${g(repo, "rev-parse", "--short=7", "origin/main").stdout.trim()}`)
+  assert.equal(await deployProject(db, "tally", { tapped: true, from: "worktree", notify, projects: project(good) }), `tally: deployed ${g(repo, "rev-parse", "--short=7", "origin/main").stdout.trim()}`)
   assert.equal(readFileSync(out, "utf8"), "v1\n") // origin/main's file, not the dirty clone's
   assert.equal(worktrees(), 1)
 
-  assert.match(await deployProject(db, "tally", { from: "worktree", notify, projects: project("echo 'error: build failed'; false") }), /^tally: deploy failed: /)
+  assert.match(await deployProject(db, "tally", { tapped: true, from: "worktree", notify, projects: project("echo 'error: build failed'; false") }), /^tally: deploy failed: /)
   assert.equal(worktrees(), 1)
 
   // deploy_copy: other gitignored files come along; one that is missing fails in plain words, and the worktree still goes
@@ -367,8 +375,104 @@ test("deployFrom worktree: a fresh worktree of origin/main with the .env files, 
   writeFileSync(`${repo}/apps/mobile/google-services.json`, "{}\n")
   const copied = (deploy_copy: string[]) => ({ tally: { ...project(`test -f apps/mobile/google-services.json && cp app.txt '${out}'`).tally, deploy_copy } })
   db.prepare("DELETE FROM kv").run()
-  assert.match(await deployProject(db, "tally", { from: "worktree", notify, projects: copied(["apps/mobile/google-services.json"]) }), /^tally: deployed /)
-  assert.match(await deployProject(db, "tally", { from: "worktree", notify, projects: copied(["apps/mobile/missing.json"]) }), /apps\/mobile\/missing.json is listed in deploy_copy but is not in /)
+  assert.match(await deployProject(db, "tally", { tapped: true, from: "worktree", notify, projects: copied(["apps/mobile/google-services.json"]) }), /^tally: deployed /)
+  assert.match(await deployProject(db, "tally", { tapped: true, from: "worktree", notify, projects: copied(["apps/mobile/missing.json"]) }), /apps\/mobile\/missing.json is listed in deploy_copy but is not in /)
   assert.equal(worktrees(), 1)
   assert.deepEqual(existsSync(`${dir}/deploy-wt`) ? readdirSync(`${dir}/deploy-wt`) : [], [])
+})
+
+test("waitChecks after a rebase: no checks yet is pending when the old head had some; none ever appearing fails; a repo without CI still passes", async () => {
+  const none = () => {}
+  let n = 0
+  const late = stubGh({ checks: () => ({ ok: false, out: n++ < 3 ? "no checks reported on the 'x' branch" : rows(["test", "pass", "CI"]) }) })
+  assert.equal((await waitChecks(late, "r/r", 1, none, 80, false, true)).ok, true)
+  assert.ok(n > 3)
+  const never = await waitChecks(stubGh({ checks: () => ({ ok: false, out: "no checks reported on the 'x' branch" }) }), "r/r", 1, none, 80, false, true)
+  assert.equal(never.ok, false)
+  assert.match(never.out, /no checks appeared on the new head/)
+  // landPr: the first wait saw checks, the rebased head shows none: no second merge
+  const merges: string[] = []
+  let first = true, calls = 0
+  const r = stubGh({ "pr checks": () => ({ ok: true, out: calls++ === 0 ? rows(["test", "pass", "CI"]) : "no checks reported" }), "pr merge": () => (merges.push("m"), first ? ((first = false), { ok: false, out: "not mergeable: merge conflicts" }) : { ok: true, out: "" }), "pr view": () => ({ ok: true, out: "OPEN" }) })
+  const out = await landPr(r, { repo: "ownerdev/tally", pr: 7, sha: "rev1", merge: ["pr", "merge", "7"], rebase: () => ({ ok: true, out: "", sha: "rev2" }), sleep: () => {} })
+  assert.equal(out.ok, false)
+  assert.equal(merges.length, 1)
+})
+
+test("landPr: a pause is asked right before each gh pr merge, and a held merge is flagged; slow queue and unreadable state are transient", async () => {
+  const calls: string[] = []
+  const r = stubGh({ "pr checks": () => ({ ok: true, out: "[]" }), "pr merge": () => ({ ok: true, out: "" }), "pr view": () => ({ ok: true, out: "MERGED" }) }, calls)
+  const held = await landPr(r, { repo: "ownerdev/tally", pr: 7, sha: "rev1", merge: ["pr", "merge", "7"], rebase: () => assert.fail("no rebase"), sleep: () => {}, held: () => "merges paused by you" })
+  assert.equal(held.ok, false)
+  assert.equal(held.held, "merges paused by you")
+  assert.equal(calls.filter((c) => c.includes("pr merge")).length, 0)
+  const q = await landPr(stubGh({ "pr checks": () => ({ ok: true, out: "[]" }), "pr merge": () => ({ ok: true, out: "" }), "pr view": () => ({ ok: true, out: "OPEN" }) }), { repo: "ownerdev/tally", pr: 7, sha: "rev1", merge: ["pr", "merge", "7"], rebase: () => assert.fail("no rebase"), sleep: () => {} })
+  assert.deepEqual([q.ok, q.transient, q.queued], [false, true, true])
+  const u = await landPr(stubGh({ "pr checks": () => ({ ok: true, out: "[]" }), "pr merge": () => ({ ok: true, out: "" }), "pr view": () => ({ ok: false, out: "" }) }), { repo: "ownerdev/tally", pr: 7, sha: "rev1", merge: ["pr", "merge", "7"], rebase: () => assert.fail("no rebase"), sleep: () => {} })
+  assert.deepEqual([u.ok, u.transient], [false, true])
+  const red = await landPr(stubGh({ "pr checks": () => ({ ok: false, out: rows(["test", "fail", "CI"]) }) }), { repo: "ownerdev/tally", pr: 7, sha: "rev1", merge: ["pr", "merge", "7"], rebase: () => assert.fail("no rebase"), sleep: () => {} })
+  assert.equal(red.transient, undefined) // a red check is a verdict
+})
+
+test("deployProject: no deploy/prod tag fails closed (every migration is pending; the recorded last deploy narrows it); a failed listing stops the deploy; each pass renews the lock", async () => {
+  const { deployProject } = await import("../src/deploy.ts")
+  const db = open(":memory:")
+  const dep = mkdtempSync(`${tmpdir()}/foreman-deploy-`)
+  mkdirSync(`${dep}/mig`)
+  writeFileSync(`${dep}/mig/0001_drop.sql`, "DROP TABLE legacy;\n")
+  const projects = { tally: { name: "tally", repo: dep, deploy_dir: dep, deploy: "bun run deploy", migrations: "mig", base: "main", install: "true", verify: "true", priority: 5, jev: false, paused: false, rules: "" } } as any
+  const SHA = "1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  const env = { diffOk: true, diffs: [] as string[], ran: [] as string[], cards: 0 }
+  const sh = (cmd: string) => {
+    if (cmd === "git rev-parse HEAD") return { ok: true, out: `${SHA}\n` }
+    if (cmd.includes("deploy/prod^{commit}")) return { ok: false, out: "" } // no tag
+    if (cmd.startsWith("git rev-parse -q --verify")) return { ok: true, out: `${SHA}\n` }
+    if (cmd.startsWith("git diff --name-only")) return (env.diffs.push(cmd), env.diffOk ? { ok: true, out: "mig/0001_drop.sql\n" } : { ok: false, out: "fatal: bad revision" })
+    if (cmd.includes("bun run deploy")) return (env.ran.push(cmd), { ok: true, out: "Deployed." })
+    return { ok: true, out: "" }
+  }
+  const notify = (async () => (env.cards++, true)) as any
+  const go = (o: { migrate?: boolean; at?: string } = {}) => deployProject(db, "tally", { tapped: true, ...o, sh: sh as any, notify, projects })
+  assert.match(await go(), /^tally: waiting for the owner \(data migration mig\/0001_drop.sql\)/)
+  assert.match(env.diffs[0], /hash-object -t tree/) // no tag, no recorded deploy: everything is pending
+  assert.deepEqual([env.ran.length, env.cards], [0, 1])
+  assert.equal(await go({ migrate: true, at: SHA }), "tally: deployed 1111111")
+  assert.match(env.ran[0], /--migrate$/)
+  // Dobby records the head it deployed and diffs from there when the tag is missing
+  await go()
+  assert.ok(env.diffs.at(-1)!.includes(`git diff --name-only ${SHA} HEAD`))
+  // a listing that fails is not "no migrations"
+  env.diffOk = false
+  assert.match(await go(), /deploy failed: could not list the pending migrations/)
+  // the lock is renewed on each pass of the again-loop
+  env.diffOk = true
+  db.prepare("DELETE FROM kv").run()
+  db.prepare("INSERT INTO kv VALUES ('deploy:lock:tally', ?)").run(`${Date.now() - 40 * 60_000}:${process.pid}`)
+  db.prepare("DELETE FROM kv WHERE k='deploy:lock:tally'").run()
+  let seen = 0
+  const slow = (cmd: string) => { if (cmd.includes("bun run deploy")) seen = Number((db.prepare("SELECT v FROM kv WHERE k='deploy:lock:tally'").get() as { v: string }).v.split(":")[0]); return sh(cmd) }
+  await deployProject(db, "tally", { tapped: true, migrate: true, at: SHA, sh: slow as any, notify, projects })
+  assert.ok(Date.now() - seen < 60_000)
+})
+
+test("landPr: gh saying the PR is already queued waits for MERGED; a transient check failure after a rebase stays transient", async () => {
+  let views = 0
+  const q = await landPr(stubGh({ "pr checks": () => ({ ok: true, out: "[]" }), "pr merge": () => ({ ok: false, out: "Pull request is already in the merge queue" }), "pr view": () => ({ ok: true, out: ++views < 3 ? "OPEN" : "MERGED" }) }), { repo: "ownerdev/tally", pr: 7, sha: "rev1", merge: ["pr", "merge", "7"], rebase: () => assert.fail("no rebase"), sleep: () => {} })
+  assert.equal(q.ok, true)
+  let calls = 0
+  const t = await landPr(stubGh({ "pr checks": () => ({ ok: true, out: calls++ === 0 ? "[]" : "HTTP 502" }), "pr merge": () => ({ ok: false, out: "not mergeable: merge conflicts" }), "pr view": () => ({ ok: true, out: "OPEN" }) }), { repo: "ownerdev/tally", pr: 7, sha: "rev1", merge: ["pr", "merge", "7"], rebase: () => ({ ok: true, out: "", sha: "rev2" }), sleep: () => {} })
+  assert.deepEqual([t.ok, t.transient], [false, true])
+})
+
+test("deployProject: a deploy step that finds nothing to deploy still records the head as live; a check named network-tests is not transient", async () => {
+  const { deployProject } = await import("../src/deploy.ts")
+  const db = open(":memory:")
+  const dep = mkdtempSync(`${tmpdir()}/foreman-deploy-`)
+  const projects = { tally: { name: "tally", repo: dep, deploy_dir: dep, deploy: "bun run deploy", base: "main", install: "true", verify: "true", priority: 5, jev: false, paused: false, rules: "" } } as any
+  const SHA = "3333333cccccccccccccccccccccccccccccccc"
+  const sh = (cmd: string) => cmd === "git rev-parse HEAD" ? { ok: true, out: `${SHA}\n` } : cmd.includes("deploy/prod^{commit}") ? { ok: false, out: "" } : cmd.includes("bun run deploy") ? { ok: true, out: "Nothing to deploy since x." } : { ok: true, out: "" }
+  assert.match(await deployProject(db, "tally", { tapped: true, sh: sh as any, notify: (async () => true) as any, projects }), /nothing to deploy at 3333333/)
+  assert.equal((db.prepare("SELECT v FROM kv WHERE k='deploy:last:tally'").get() as { v: string }).v, SHA)
+  const red = await landPr(stubGh({ "pr checks": () => ({ ok: true, out: "[]" }), "pr merge": () => ({ ok: false, out: "check network-tests is required" }), "pr view": () => ({ ok: true, out: "OPEN" }) }), { repo: "ownerdev/tally", pr: 7, sha: "rev1", merge: ["pr", "merge", "7"], rebase: () => assert.fail("no rebase"), sleep: () => {} })
+  assert.equal(red.transient, undefined)
 })

@@ -4,3 +4,4 @@ graphify-out/
 *.log
 .env*
 dist/
+docs/design/dashboard/shots/

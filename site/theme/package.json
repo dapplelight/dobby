@@ -1,0 +1,23 @@
+{
+  "name": "@dapplelight/signet-docs",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Signet's Starlight theme for dapplelight product docs. Lives in the Dobby repo until Signet's rename lands; no product code in here.",
+  "type": "module",
+  "exports": {
+    ".": "./index.ts",
+    "./loader": "./loader.ts",
+    "./links": "./links.ts",
+    "./negotiate": "./functions/negotiate.ts",
+    "./components/*": "./components/*",
+    "./styles/*": "./styles/*"
+  },
+  "peerDependencies": {
+    "@astrojs/starlight": "0.42.x",
+    "astro": "7.x",
+    "@nimit9/signet-tokens": "0.1.x",
+    "@fontsource-variable/geist": "5.x",
+    "@fontsource-variable/geist-mono": "5.x",
+    "yaml": "2.x"
+  }
+}

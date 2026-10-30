@@ -55,7 +55,7 @@ const TEXT: Record<string, RegExp> = {
   secrets: /secret|\btokens?\b|api key|password|credential|real financ\w* data/i,
   config: /\bconfig/i,
 }
-const TITLE: Record<string, RegExp> = { deploys: /deploy|production/i, releases: /release|play console|play store|app store|publish/i }
+const TITLE: Record<string, RegExp> = { deploys: /deploy|production|\bci\b|github actions|\bworkflows?\b|pipeline/i, releases: /release|play console|play store|app store|publish/i }
 const PATH: Record<string, (p: string) => boolean> = {
   payments: nonDoc(/payment|billing/i), auth: nonDoc(/(^|\/)auth|oauth/i), secrets: nonDoc(/\.env|(^|\/)secrets?\b/i),
   deploys: nonDoc(/wrangler\.(toml|jsonc?)$|(^|\/)\.github\/workflows\/|(^|\/)dockerfile/i), config: nonDoc(/wrangler\.(toml|jsonc?)$|eas\.json$|app\.json$|\.config\.\w+$/i),
@@ -75,7 +75,8 @@ export const firmClientPath = (p: string) => {
 
 export type Input = { text: string; title?: string; files?: string[]; sql?: { path: string; sql: string }[]; project?: string; ownerWords?: boolean }
 const FUZZY = ["payments", "auth", "client-sites", "releases"] as const
-const DETERMINISTIC = ["secrets", "deploys", "config"] as const
+const DETERMINISTIC = ["secrets", "deploys", "config", "migrations.schema"] as const
+const MIGRATION_TEXT = /\bmigrat(e|es|ion|ions)\b|\bschema\b|alter table|drop (table|column)|\bdrizzle\b|\.sql\b/i
 
 /** Categories the words and paths suggest. Cheap, local, over-eager on purpose: the classifier trims it. */
 export function candidates(i: Input): Category[] {
@@ -86,6 +87,9 @@ export function candidates(i: Input): Category[] {
   for (const c of ["payments", "auth", "secrets", "config"] as const) if ((soft && TEXT[c].test(i.text) && !(c === "payments" && DOCS_TITLE.test(title))) || files.some(PATH[c])) out.add(c)
   for (const c of ["deploys", "releases"] as const) if ((soft && TITLE[c].test(title)) || files.some(PATH[c])) out.add(c)
   if (/play console/i.test(i.text) && soft) out.add("releases")
+  // Queue time has the text only, no files: a ticket that talks about a migration is held at the migration rule (schema; the files and SQL
+  // decide data vs schema once there is a diff). With files, only a real migration file counts ("no migration file = no migration category").
+  if (soft && !files.length && MIGRATION_TEXT.test(i.text)) out.add("migrations.schema")
   if ((soft && !!i.project && config().clientProjects.includes(i.project) && CLIENT_TEXT.test(i.text)) || (!!i.project && config().clientProjects.includes(i.project) && files.some(clientPath))) out.add("client-sites")
   return [...out]
 }
@@ -237,6 +241,7 @@ export function explainOutcome(o: Awaited<ReturnType<typeof check>>, s: Safety =
   const lines = [`preset: ${s.preset}${Object.keys(s.rules).length ? ` + rules ${JSON.stringify(s.rules)}` : ""}, classifier: ${s.classifier}, unsure: ${s.unsure}`]
   lines.push(o.per.length ? `categories: ${o.per.map((p) => p.category).join(", ")}` : "categories: none")
   for (const p of o.per) lines.push(`  ${p.category}: ${p.action}${p.unsure ? " (unsure)" : ""}${p.why ? `, ${p.why}` : ""}`)
+  if (o.result.noAnswer?.length) lines.push(`note: the classifier gave no answer for ${o.result.noAnswer.join(", ")} (Claude errored, is signed out or is offline), so ${o.result.noAnswer.length === 1 ? "that category rests" : "those categories rest"} on word matching alone. Run \`dobby doctor\`.`)
   lines.push(`action: ${o.action.toUpperCase()}`, `why: ${o.why}`)
   return lines.join("\n")
 }

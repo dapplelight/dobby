@@ -1,0 +1,21 @@
+/* Landing pages: Tailwind + the same Signet tokens and Dobby color overlay as the docs. Pages add layout on top, never colors. */
+@import "tailwindcss";
+/* TODO(signet rename): becomes @dapplelight/signet-tokens once Signet publishes under @dapplelight. */
+@import "@nimit9/signet-tokens/editorial.css";
+@import "@nimit9/signet-tokens/base.css";
+@import "./dobby.css";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+
+@theme {
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, monospace;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  line-height: 1.6;
+}
+::selection { background: color-mix(in srgb, var(--primary) 24%, transparent); }
+:where(a, button):focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: var(--radius-sm); }

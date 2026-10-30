@@ -8,7 +8,7 @@ import { join } from "node:path"
 const dir = mkdtempSync(join(tmpdir(), "foreman-sbx-"))
 process.env.DOBBY_DIR ??= dir
 process.env.DOBBY_SECRETS ??= join(dir, "secrets.env")
-const { builderEnv, INSTALL_DOMAINS, SAFE_GIT, sandboxMode, sandboxSettings, sandboxSupported, scratchDir, stepSettings, withGitConfig } = await import("../src/sandbox.ts")
+const { builderEnv, INSTALL_DOMAINS, SAFE_GIT, sandboxCheck, sandboxMode, sandboxSettings, sandboxSupported, bwrapWorks, scratchDir, stepSettings, withGitConfig } = await import("../src/sandbox.ts")
 const { isolation } = await import("../src/lib.ts")
 
 const FAKE = "fake-value-not-a-secret"
@@ -41,7 +41,7 @@ test("builderEnv: gh and wrangler get empty config homes, git gets no helper, as
   assert.equal(e.GIT_CONFIG_NOSYSTEM, "1")
   assert.equal(e.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB, undefined) // it strips DOBBY_BASH_ALLOW from the guard hook too
   const git = Object.fromEntries(Array.from({ length: Number(e.GIT_CONFIG_COUNT) }, (_, i) => [e[`GIT_CONFIG_KEY_${i}`], e[`GIT_CONFIG_VALUE_${i}`]]))
-  assert.deepEqual(git, { "credential.helper": "", "credential.https://github.com.helper": "", "core.sshCommand": "false", "core.askPass": "false", "core.hooksPath": "/dev/null", "core.fsmonitor": "false" }) // the inherited osxkeychain entry is gone
+  assert.deepEqual(git, { "credential.helper": "", "credential.https://github.com.helper": "", "core.sshCommand": "false", "core.askPass": "false", "commit.gpgsign": "false", "tag.gpgsign": "false", "core.hooksPath": "/dev/null", "core.fsmonitor": "false" }) // the inherited osxkeychain entry is gone
   assert.ok(scratchDir("/w/tally-12").startsWith(tmpdir()), "scratch under the OS temp dir, not a hard-coded /tmp")
 })
 
@@ -110,4 +110,15 @@ test("git config pairs go after the environment's own, once (hooks off for Dobby
   assert.equal(once.GIT_CONFIG_VALUE_1, "/dev/null")
   assert.equal(withGitConfig(once, SAFE_GIT), once)
   assert.equal(withGitConfig({}, SAFE_GIT).GIT_CONFIG_COUNT, "2")
+})
+
+test("sandboxCheck: macOS ok; Linux names the missing tool, an AppArmor block, or passes; Windows says WSL2; bwrapWorks only probes on Linux", () => {
+  assert.equal(sandboxCheck("darwin", { bwrap: false, socat: false }, false).ok, true)
+  const miss = sandboxCheck("linux", { bwrap: false, socat: true }, false)
+  assert.deepEqual([miss.ok, /bubblewrap not installed/.test(miss.detail), /apt install bubblewrap socat/.test(miss.fix!)], [false, true, true])
+  const blocked = sandboxCheck("linux", { bwrap: true, socat: true }, false)
+  assert.deepEqual([blocked.ok, /AppArmor/.test(blocked.detail), /apparmor_restrict_unprivileged_userns/.test(blocked.fix!)], [false, true, true])
+  assert.equal(sandboxCheck("linux", { bwrap: true, socat: true }, true).ok, true)
+  assert.match(sandboxCheck("win32", { bwrap: false, socat: false }, false).fix!, /WSL2/)
+  assert.equal(bwrapWorks("darwin", () => { throw new Error("no probe off Linux") }), true)
 })

@@ -4,9 +4,11 @@
 // Only #needs-you is meant to ping the owner (it @mentions them); the owner mutes the rest.
 import type { DB } from "./db.ts"
 import { open } from "./db.ts"
-import { readSecrets, redact, shortTitle, silentAt, type Buttons } from "./telegram.ts"
+import { readSecrets, redact, shortTitle, silentAt, type Buttons } from "./notify.ts"
 import { getTicket, ideaTitle, short } from "./lib.ts"
-import { config } from "./config.ts"
+import { config, zoned } from "./config.ts"
+import { cut, kv, setKv, type Event, type Owned, type Rich, type Step } from "./chat/common.ts"
+export { detailsBlock, kv, plainGh, setKv, stepLine, type Event, type Owned, type Rich, type Step } from "./chat/common.ts"
 
 const API = "https://discord.com/api/v10"
 // Static layout (owner, 17 Oct): HQ + one category per app; a channel only where something posts today.
@@ -17,11 +19,11 @@ export const LAYOUT: { category: string; channels: string[] }[] = [
   ...Object.entries(APPS).map(([app, a]) => ({ category: a.label, channels: [`${app}-tickets`, `${app}-releases`, ...(a.ideas ? [`${app}-ideas`] : []), ...(config().discord.extraChannels[app] ?? [])] })),
 ]
 export const CHANNELS = LAYOUT.flatMap((c) => c.channels)
-const TOPICS: Record<string, string> = {
+export const TOPICS: Record<string, string> = {
   "needs-you": "Only channel that pings you: approvals, failures, sends", "daily-update": "Chief of Staff: morning and evening update, all apps",
   "system-status": "Site Reliability: background jobs, disk, Dobby's self-fixes", assistant: "Talk to the Assistant (reads Gmail, Calendar, Drive; sends only on your tap)",
   ...Object.fromEntries(Object.keys(APPS).flatMap((a) => [
-    [`${a}-tickets`, "One thread per ticket: Engineer, QA, Code Reviewer, merge"],
+    [`${a}-tickets`, "One thread per ticket: Engineer, Tester, Code Reviewer, merge"],
     [`${a}-releases`, "What merged and what went live, in plain words"],
     [`${a}-ideas`, a === "dobby" ? "Trainer, nightly: better skills per role + retro fixes. 👍 = install / queue, 👎 = drop" : "Idea cards. 👍 = queue it, 👎 = drop it"],
   ])),
@@ -41,16 +43,8 @@ export const PERMISSIONS = [10, 11, 38, 35, 4, 29, 16, 6, 14].reduce((n, b) => n
 export const INTENTS = (1 << 0) | (1 << 9) | (1 << 10) | (1 << 15)
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
-export const kv = (db: DB, k: string) => (db.prepare("SELECT v FROM kv WHERE k=?").get(k) as { v: string } | undefined)?.v
-export const setKv = (db: DB, k: string, v: string) => db.prepare("INSERT OR REPLACE INTO kv VALUES (?, ?)").run(k, v)
 
 // ---- routing: which channel, which team member ------------------------------------
-export type Step = "picked" | "design" | "building" | "verify" | "check" | "merged" | "failed"
-export type Event =
-  | { kind: "ticket"; project: string; ticket: number; title: string; step: Step }
-  | { kind: "lead" | "program"; project: string }
-  | { kind: "shipped" | "idea"; project: string }
-  | { kind: "approval" | "review" | "stuck" | "proposal" | "brief" | "health" | "ask" | "team"; key?: string } // key: one #needs-you card per key
 export type Route = { channel: string; as: string; thread?: number; threadName?: string }
 
 const FIXED: Record<string, [string, string]> = {
@@ -59,17 +53,16 @@ const FIXED: Record<string, [string, string]> = {
 }
 // a project without channels of its own posts to #system-status: #daily-update stays the brief and the digest
 const projectChannel = (p: string, kind = "tickets") => (CHANNELS.includes(`${p}-${kind}`) ? `${p}-${kind}` : "system-status")
-const app = (p: string) => `${p[0].toUpperCase()}${p.slice(1)}`
-const lead = (p: string) => `Engineering Manager · ${app(p)}`
+const lead = (p: string) => `Engineering Manager · ${p}`
 
 export function route(e: Event): Route {
   if (e.kind === "lead") return { channel: projectChannel(e.project), as: lead(e.project) }
-  if (e.kind === "program") return { channel: projectChannel(e.project), as: `Program Manager · ${app(e.project)}` }
-  if (e.kind === "shipped") return { channel: projectChannel(e.project, "releases"), as: `Engineer · ${app(e.project)}` }
-  if (e.kind === "idea") return { channel: projectChannel(e.project, "ideas"), as: e.project === "dobby" ? "Trainer" : `Product Manager · ${app(e.project)}` }
-  if (e.kind === "ticket" && e.step === "merged") return { channel: projectChannel(e.project, "releases"), as: `Engineer · ${app(e.project)}` } // the releases feed, not the thread
+  if (e.kind === "program") return { channel: projectChannel(e.project), as: `Program Manager · ${e.project}` }
+  if (e.kind === "shipped") return { channel: projectChannel(e.project, "releases"), as: `Engineer · ${e.project}` }
+  if (e.kind === "idea") return { channel: projectChannel(e.project, "ideas"), as: e.project === "dobby" ? "Trainer" : `Product Manager · ${e.project}` }
+  if (e.kind === "ticket" && e.step === "merged") return { channel: projectChannel(e.project, "releases"), as: `Engineer · ${e.project}` } // the releases feed, not the thread
   if (e.kind === "ticket") {
-    const as = e.step === "picked" ? lead(e.project) : e.step === "design" ? `Designer · ${app(e.project)}` : e.step === "check" ? `QA Engineer · ${app(e.project)}` : `Engineer · ${app(e.project)}`
+    const as = e.step === "picked" ? lead(e.project) : e.step === "design" ? `Designer · ${e.project}` : e.step === "check" ? `Tester · ${e.project}` : `Engineer · ${e.project}`
     return { channel: projectChannel(e.project), as, thread: e.ticket, threadName: `${shortTitle(e.title).slice(0, 90)} · #${e.ticket}` }
   }
   const [channel, as] = FIXED[e.kind]
@@ -78,10 +71,10 @@ export function route(e: Event): Route {
 
 // One icon per job title (Twemoji, CC-BY 4.0, by Twitter/jdecked), so each role is recognisable at a glance.
 const ICONS: [RegExp, string][] = [
-  [/^QA Engineer/, "1f9ea"], [/^Engineer/, "1f6e0"], [/^Code Reviewer/, "1f50e"], [/^Engineering Manager/, "1f9ed"], [/^Product Manager/, "1f4a1"],
+  [/^Tester/, "1f9ea"], [/^Engineer/, "1f6e0"], [/^Code Reviewer/, "1f50e"], [/^Engineering Manager/, "1f9ed"], [/^Product Manager/, "1f4a1"],
   [/^Program Manager/, "1f4c8"], [/^Designer/, "1f3a8"], [/^Chief of Staff/, "1f4cb"], [/^Assistant/, "1f4dd"], [/^Site Reliability/, "1f6a8"], [/^Trainer/, "1f393"],
 ]
-const avatar = (name: string) => `https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/72x72/${ICONS.find(([re]) => re.test(name))?.[1] ?? "1f4cb"}.png`
+export const avatar = (name: string) => `https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/72x72/${ICONS.find(([re]) => re.test(name))?.[1] ?? "1f4cb"}.png`
 
 // ---- REST -------------------------------------------------------------------------
 /** One Discord call. Waits out a 429 up to twice. Errors never include webhook or interaction tokens. */
@@ -120,7 +113,6 @@ export function chunks(s: string, max: number): string[] {
   }
   return [...out, cur]
 }
-const cut = (s: string, max: number) => (s.length <= max ? s : `${s.slice(0, max - 1)}…`)
 const style = (data: string) => (/^(stuck)?(decline|discard|dropidea)/.test(data) ? 4 : /^(approve|send|reviewaccept|buildidea)/.test(data) ? 3 : 2) // red, green, grey
 // url = a link button (style 5): opens the page, sends nothing back
 const components = (buttons?: Buttons) => buttons?.length
@@ -137,14 +129,14 @@ export async function post(db: DB, e: Event, text: string, buttons?: Buttons, fe
   // Over Discord's 2000 limit: earlier parts go first as plain posts, the last part carries the buttons (no more "…" mid-sentence).
   const parts = chunks(`${owner ? `<@${owner}> ` : ""}${text}`, 1990)
   for (const part of parts.slice(0, -1)) {
-    await api(null, "POST", `/webhooks/${wh}?wait=true${thread ? `&thread_id=${thread}` : ""}`, { content: part, username: r.as, avatar_url: avatar(r.as), allowed_mentions: { parse: [], users: owner ? [owner] : [] }, flags: silentAt(new Date().getHours()) ? 4096 : 0 }, fetcher)
+    await api(null, "POST", `/webhooks/${wh}?wait=true${thread ? `&thread_id=${thread}` : ""}`, { content: part, username: r.as, avatar_url: avatar(r.as), allowed_mentions: { parse: [], users: owner ? [owner] : [] }, flags: (silentAt(zoned().getUTCHours()) ? 4096 : 0) | (e.kind === "brief" ? 4 : 0) }, fetcher)
   }
   text = parts.at(-1)!
   const msg = await api<{ id: string; channel_id: string }>(null, "POST", `/webhooks/${wh}?wait=true&with_components=true${thread ? `&thread_id=${thread}` : ""}`, {
     content: cut(text, 2000),
     username: r.as, avatar_url: avatar(r.as),
     allowed_mentions: { parse: [], users: owner ? [owner] : [] },
-    flags: silentAt(new Date().getHours()) ? 4096 : 0, // SUPPRESS_NOTIFICATIONS in quiet hours
+    flags: (silentAt(zoned().getUTCHours()) ? 4096 : 0) | (e.kind === "brief" ? 4 : 0), // SUPPRESS_NOTIFICATIONS in quiet hours; SUPPRESS_EMBEDS: six PR links must not unfurl
     components: buttons?.length ? components(buttons) : undefined,
   }, fetcher)
   if (r.thread && !thread) {
@@ -153,6 +145,30 @@ export async function post(db: DB, e: Event, text: string, buttons?: Buttons, fe
     setKv(db, `discord:thread:${r.thread}`, t.id)
   }
   return msg.id
+}
+
+/** The Components V2 body: one Container, a TextDisplay per section with dividers between, a link button last. No `content` (V2 forbids it). */
+export function briefPayload(rich: Rich, quiet: boolean, r: { as: string }) {
+  const body = rich.sections.flatMap((text, i) => [...(i ? [{ type: 14, divider: true, spacing: 1 }] : []), { type: 10, content: text }])
+  const row = rich.link ? [{ type: 1, components: [{ type: 2, style: 5, label: "Open dashboard", url: rich.link }] }] : []
+  return { flags: 32768 | (quiet ? 4096 : 0), username: r.as, avatar_url: avatar(r.as), allowed_mentions: { parse: [] }, components: [{ type: 17, accent_color: 0x3ddc84, components: [...body, ...row] }] }
+}
+
+/** The morning summary: a Components V2 message; when Discord answers 4xx, once, the plain Markdown messages instead (the reason is logged). */
+export async function postBrief(db: DB, rich: Rich, fetcher: typeof fetch = fetch): Promise<string> {
+  const r = route({ kind: "brief" })
+  const wh = kv(db, `discord:wh:${r.channel}`)
+  if (!wh) throw new Error(`no webhook for #${r.channel}: run dobby discord setup`)
+  try {
+    const msg = await api<{ id: string }>(null, "POST", `/webhooks/${wh}?wait=true&with_components=true`, briefPayload(rich, silentAt(zoned().getUTCHours()), r), fetcher)
+    return msg.id
+  } catch (e) {
+    if (!/ 4\d\d$/.test((e as Error).message)) throw e
+    console.log(`brief: Discord refused the components message (${(e as Error).message}); sending plain Markdown`)
+    let id = ""
+    for (const part of rich.plain) id = await post(db, { kind: "brief" }, part, undefined, fetcher)
+    return id
+  }
 }
 
 /** Rewrite one of our webhook messages in place: new text, new buttons (none = buttons removed). Edits never ping. */
@@ -191,24 +207,6 @@ export async function prCard(db: DB, key: string, head: string, e: Event, text: 
   setKv(db, `discord:msg:${key}`, fresh)
   setKv(db, `discord:msg:${key}:head`, head)
   return fresh
-}
-
-/** "2nd try" for try 2 and up, "" for the first. */
-const tryText = (n: number) => (n > 1 ? ` · ${n}${["th", "st", "nd", "rd"][n % 10 > 3 || Math.floor(n / 10) === 1 ? 0 : n % 10]} try` : "")
-/** The ticket thread's one status line: "Step 3 of 5: QA is checking · 2nd try". */
-export const stepLine = (step: number, what: string, tries = 1) => `Step ${step} of 5: ${what}${tryText(tries)}`
-/** Raw tool output for a thread: a "details" label and at most 6 quoted lines (the last ones: that is where the error is). */
-export const detailsBlock = (out: string) => `details\n${out.split("\n").map((l) => l.trim()).filter(Boolean).slice(-6).map((l) => `> ${cut(l, 200)}`).join("\n")}`
-const GH_PLAIN: [RegExp, string][] = [
-  [/base branch policy prohibits/i, "The branch rules block this merge: a required check or review is missing."],
-  [/merge conflicts?|cannot be cleanly created/i, "The branch conflicts with its base and needs a conflict fix."],
-  [/not mergeable/i, "GitHub cannot merge this PR yet."],
-  [/a pull request for branch .* already exists/i, "This branch already has an open PR."],
-]
-/** A known GitHub error as one plain sentence with the raw text under details; anything else is the raw text, cut. */
-export const plainGh = (out: string, max = 300) => {
-  const hit = GH_PLAIN.find(([re]) => re.test(out))
-  return hit ? `${hit[1]}\n${detailsBlock(out)}` : cut(out.trim(), max)
 }
 
 /**
@@ -256,7 +254,7 @@ export const ideaCard = (i: { project: string; title: string; pitch?: string | n
     i.why && `**Why now:** ${i.why}`,
     i.how && `**How it works:** ${i.how}`,
     i.experiment && `**First test:** ${i.experiment}`,
-    `-# ${i.project[0].toUpperCase()}${i.project.slice(1)}${i.size ? ` · size ${i.size}` : ""} · 👍 build it · 👎 drop it`,
+    `-# ${i.project}${i.size ? ` · size ${i.size}` : ""} · 👍 build it · 👎 drop it`,
   ].filter(Boolean).join("\n\n")
 export async function postIdea(idea: { id: number; project: string; title: string; pitch?: string | null; why?: string | null; how?: string | null; experiment?: string | null; size?: string | null }) {
   const id = await team({ kind: "idea", project: idea.project }, ideaCard(idea))
@@ -281,6 +279,12 @@ export const brainSay = (thread: string, text: string, buttons?: Buttons) =>
 export async function inviteUrl(fetcher: typeof fetch = fetch) {
   const app = await api<{ id: string }>(token(), "GET", "/oauth2/applications/@me", undefined, fetcher)
   return `https://discord.com/oauth2/authorize?client_id=${app.id}&scope=bot+applications.commands&permissions=${PERMISSIONS}`
+}
+
+/** Null when the Message Content intent is on (flags 1<<18, or 1<<19 for an app not yet verified), else the sentence that says where to switch it on. Without it the listener loops on gateway close 4014. */
+export async function intentHint(fetcher: typeof fetch = fetch): Promise<string | null> {
+  const app = await api<{ id: string; flags?: number }>(token(), "GET", "/applications/@me", undefined, fetcher)
+  return (app.flags ?? 0) & ((1 << 18) | (1 << 19)) ? null : `Turn on the Message Content intent (Privileged Gateway Intents) at https://discord.com/developers/applications/${app.id}/bot, or buttons and replies will not work.`
 }
 
 function token() {
@@ -326,17 +330,11 @@ export async function setup(db: DB, fetcher: typeof fetch = fetch) {
 }
 
 // ---- gateway ----------------------------------------------------------------------
-export type Owned =
-  | { kind: "button"; data: string; id: string; token: string; content: string; app: string }
-  | { kind: "ask"; text: string }
-  | { kind: "react"; messageId: string; channelId: string; up: boolean }
-  | { kind: "brain"; thread: string; text: string }
-
 /** The gateway events Dobby acts on, and only when the server owner made them. Everything else is null. */
 export function ownerEvent(t: string, d: any, owner: string, ch: { ask?: string; ideas?: string[]; brain?: (thread: string) => boolean }): Owned | null {
   if (!owner || !d) return null
   if (t === "INTERACTION_CREATE" && d.type === 3 && (d.member?.user?.id ?? d.user?.id) === owner && d.data?.custom_id)
-    return { kind: "button", data: d.data.custom_id, id: d.id, token: d.token, content: d.message?.content ?? "", app: d.application_id ?? "" }
+    return { kind: "button", data: d.data.custom_id, id: d.id, token: d.token, content: d.message?.content ?? "", app: d.application_id ?? "", ...(Array.isArray(d.message?.components) ? { components: d.message.components } : {}) }
   if (t === "MESSAGE_CREATE" && d.author?.id === owner && !d.webhook_id && d.channel_id === ch.ask && d.content?.trim()) return { kind: "ask", text: d.content.trim() }
   if (t === "MESSAGE_CREATE" && d.author?.id === owner && !d.webhook_id && d.content?.trim() && ch.brain?.(d.channel_id)) return { kind: "brain", thread: d.channel_id, text: d.content.trim() }
   if (t === "MESSAGE_REACTION_ADD" && d.user_id === owner && (ch.ideas ?? []).includes(d.channel_id) && ["👍", "👎"].includes(d.emoji?.name))
@@ -349,7 +347,6 @@ export function plainAck(db: DB | undefined, data: string): string {
   const d = data.trim(), id = Number(d.match(/^\w+\s+(\d+)$/)?.[1])
   const t = db && id ? getTicket(db, id) : undefined, name = t ? `"${short(t.title)}"` : "that"
   const idea = db && id ? ideaTitle(db, id) : undefined, ideaName = idea ? `"${short(idea)}"` : "that idea"
-  const app = (p: string) => `${p[0].toUpperCase()}${p.slice(1)}`
   const m = d.match(/^(\w[\w-]*)/)?.[1].toLowerCase()
   switch (m) {
     case "approve": return `Merging ${name}…`
@@ -362,7 +359,7 @@ export function plainAck(db: DB | undefined, data: string): string {
     case "discard": return "Throwing the draft away…"
     case "reviewfix": return "An Engineer is fixing what the review found…"
     case "reviewaccept": return "Marking the review passed…"
-    case "deploynow": return `Deploying ${app(d.split(/\s+/)[1] ?? "it")}${/\bmigrate\b/.test(d) ? " with its migration" : ""}…`
+    case "deploynow": return `Deploying ${d.split(/\s+/)[1] ?? "it"}${/\bmigrate\b/.test(d) ? " with its migration" : ""}…`
     case "keepgoing": return `Builders keep going up to ${d.match(/(\d+)/)?.[1] ?? "more"}% of this window…`
     case "undo-scout": return "Undoing that change…"
     default: return "Working on it…"
@@ -373,11 +370,11 @@ export function plainAck(db: DB | undefined, data: string): string {
 export const ack = (o: { id: string; token: string; content: string; data: string }, fetcher: typeof fetch = fetch, db?: DB) =>
   api(null, "POST", `/interactions/${o.id}/${o.token}/callback`, { type: 7, data: { content: cut(`${o.content}\n\n→ ${plainAck(db, o.data)}`, 2000), components: [] } }, fetcher)
 
-/** Write a button's result into the tapped message (the interaction token lasts 15 minutes). False = couldn't; caller posts instead. */
-export async function answerTap(o: { app: string; token: string; content: string; data: string }, out: string, fetcher: typeof fetch = fetch) {
+/** Write a button's result into the tapped message (the interaction token lasts 15 minutes). False = couldn't; caller posts instead. A failed action (`ok` false) keeps the card's buttons so the tap can be tried again. */
+export async function answerTap(o: { app: string; token: string; content: string; data: string; components?: unknown[] }, out: string, fetcher: typeof fetch = fetch, ok = true) {
   if (!o.app) return false
   try {
-    await api(null, "PATCH", `/webhooks/${o.app}/${o.token}/messages/@original`, { content: cut(`${o.content}\n\n→ ${out.trim() || "done"}`, 2000), components: [] }, fetcher)
+    await api(null, "PATCH", `/webhooks/${o.app}/${o.token}/messages/@original`, { content: cut(`${o.content}\n\n→ ${out.trim() || "done"}`, 2000), components: ok ? [] : (o.components ?? []) }, fetcher)
     return true
   } catch {
     return false
@@ -396,7 +393,7 @@ const FATAL = [4004, 4010, 4011, 4012, 4013, 4014] // bad token, bad shard/inten
  * same ticket, PR or project ("approve 12" and "queue 12"; "reviewfix a/b 3"; "deploynow web"), one brainstorm thread, one idea
  * card, and the front desk (its history is one conversation). Different lanes run at once. DOBBY_LISTEN_SERIAL=1: one lane, as before.
  */
-const TYPED_ACTION = /^\s*(approve|decline|queue|reviewfix|reviewaccept|deploynow|scoutmerge|scoutreject|send|discard|buildidea|dropidea|undoidea|undo-scout)\s+\S/i
+const TYPED_ACTION = /^\s*(approve|decline|cancel|queue|reviewfix|reviewaccept|deploynow|scoutmerge|scoutreject|send|discard|buildidea|dropidea|undoidea|undo-scout)\s+\S/i
 export function laneOf(o: Owned, env = process.env): string {
   if (env.DOBBY_LISTEN_SERIAL === "1") return "all"
   if (o.kind === "button") {

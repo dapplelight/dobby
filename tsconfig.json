@@ -1,1 +1,1 @@
-{ "compilerOptions": { "target": "es2023", "module": "nodenext", "moduleResolution": "nodenext", "strict": true, "noEmit": true, "allowImportingTsExtensions": true, "erasableSyntaxOnly": true, "skipLibCheck": true, "types": ["node"] }, "include": ["src", "tests"] }
+{ "compilerOptions": { "target": "es2023", "module": "nodenext", "moduleResolution": "nodenext", "strict": true, "noEmit": true, "allowImportingTsExtensions": true, "erasableSyntaxOnly": true, "skipLibCheck": true, "types": ["node"] }, "include": ["src", "tests", "scripts", "stats-worker"] }

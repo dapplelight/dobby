@@ -4,9 +4,10 @@
 // of Dobby's data or credential files, no network except localhost. Dobby's own steps (prepare installs, verify, push, merge)
 // run in Dobby's shell, outside the agent, with network and credentials as before.
 // Docs: https://code.claude.com/docs/en/sandboxing (Seatbelt on macOS, bubblewrap + socat on Linux/WSL2, none on native Windows).
+import { spawnSync } from "node:child_process"
 import { existsSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
-import { config } from "./config.ts"
+import { config, configDir } from "./config.ts"
 import { basename, delimiter, join } from "node:path"
 
 export type SandboxMode = "on" | "env-only" | "off"
@@ -36,7 +37,7 @@ export function builderEnv(baseEnv: NodeJS.ProcessEnv, worktree: string, scratch
     if (SECRETISH.test(k) && !CLAUDE_AUTH.includes(k)) continue
     out[k] = v
   }
-  const git: [string, string][] = [["credential.helper", ""], ["credential.https://github.com.helper", ""], ["core.sshCommand", "false"], ["core.askPass", "false"], ...SAFE_GIT]
+  const git: [string, string][] = [["credential.helper", ""], ["credential.https://github.com.helper", ""], ["core.sshCommand", "false"], ["core.askPass", "false"], ...NO_SIGNING, ...SAFE_GIT]
   return {
     ...out,
     GH_CONFIG_DIR: join(scratch, "gh"), XDG_CONFIG_HOME: join(scratch, "config"), GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1",
@@ -49,6 +50,8 @@ export function builderEnv(baseEnv: NodeJS.ProcessEnv, worktree: string, scratch
  * Git settings for every git Dobby starts: no hooks and no fsmonitor command. A builder can write `.husky/*` or other hook files in its
  * worktree, and Dobby's own commit, rebase, worktree add and push run outside the sandbox with credentials (audit 24 Oct).
  */
+/** Builders commit unsigned: the signing agent (1Password, Secretive, gpg pinentry) is unreachable in the sandbox, so a signed commit fails or hangs. GitHub signs the squash merge. */
+export const NO_SIGNING: [string, string][] = [["commit.gpgsign", "false"], ["tag.gpgsign", "false"]]
 export const SAFE_GIT: [string, string][] = [["core.hooksPath", "/dev/null"], ["core.fsmonitor", "false"]]
 /** `env` plus git `-c` pairs via GIT_CONFIG_COUNT, after any the environment already has. Unchanged when the first pair is already set. */
 export function withGitConfig(env: NodeJS.ProcessEnv, pairs: [string, string][]): NodeJS.ProcessEnv {
@@ -84,7 +87,7 @@ export function sandboxSettings(worktree: string, scratch = scratchDir(worktree)
     filesystem: {
       // Writes: the worktree (cwd; git's shared .git of a linked worktree is allowed by Claude Code itself) + the per-user temp dir + scratch.
       allowWrite: [scratch],
-      denyRead: ["~/.config/dobby", "~/.config/gh", "~/.ssh", "~/.aws", "~/.netrc", "~/.npmrc", "~/.git-credentials", "~/.docker", "~/.wrangler", "~/Library/Preferences/.wrangler", config().paths.data],
+      denyRead: ["~/.config/dobby", ...(process.env.DOBBY_CONFIG ? [configDir()] : []), "~/.config/gh", "~/.ssh", "~/.aws", "~/.netrc", "~/.npmrc", "~/.git-credentials", "~/.docker", "~/.wrangler", "~/Library/Preferences/.wrangler", config().paths.data],
       allowRead: [worktree], // the own worktree under ~/.local/share/dobby/wt stays readable (narrower rule wins)
     },
     network: {
@@ -106,12 +109,29 @@ export function sandboxSupported(platform = process.platform, path = process.env
   return has("bwrap") && has("socat")
 }
 
+let bwrapProbe: boolean | undefined
+/** Linux only: can bubblewrap make a namespace? Ubuntu 24.04+ AppArmor blocks it for unprivileged users even when it is installed. Cached. */
+export function bwrapWorks(platform = process.platform, run = () => spawnSync("bwrap", ["--ro-bind", "/", "/", "true"], { stdio: "ignore", timeout: 10_000 }).status === 0): boolean {
+  if (platform !== "linux") return true
+  return (bwrapProbe ??= run())
+}
+
+/** The doctor row for the OS sandbox. `have`: bwrap and socat found; `works`: the bwrap probe passed. */
+export function sandboxCheck(platform: string, have: { bwrap: boolean; socat: boolean }, works: boolean): { ok: boolean; detail: string; fix?: string } {
+  if (platform === "darwin") return { ok: true, detail: "macOS sandbox (builders run with limited files and network)" }
+  if (platform !== "linux") return { ok: false, detail: "not available on native Windows: builders get the credential scrub only", fix: "run Dobby in WSL2" }
+  const missing = [!have.bwrap && "bubblewrap", !have.socat && "socat"].filter(Boolean)
+  if (missing.length) return { ok: false, detail: `${missing.join(" and ")} not installed: builders get the credential scrub only`, fix: "sudo apt install bubblewrap socat (Fedora: sudo dnf install bubblewrap socat)" }
+  if (!works) return { ok: false, detail: "bubblewrap is installed but blocked (Ubuntu 24.04+ AppArmor restricts user namespaces): builders get the credential scrub only", fix: "sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 (add it to /etc/sysctl.d/ to keep it)" }
+  return { ok: true, detail: "bubblewrap (builders run with limited files and network)" }
+}
+
 /**
  * Which protection a role's run gets. `setting` = DOBBY_BUILDER_SANDBOX (on | off | env-only; default on); `roles` = the run kinds
  * it covers (DOBBY_SANDBOX_ROLES, comma list, default "build": checker, reviewer etc. opt in by adding their kind). `on` on a platform
  * without a sandbox falls back to env-only (the caller logs it).
  */
-export function sandboxMode(kind: string, setting?: string, roles = "build", supported = sandboxSupported()): SandboxMode {
+export function sandboxMode(kind: string, setting?: string, roles = "build", supported = sandboxSupported() && bwrapWorks()): SandboxMode {
   if (!roles.split(",").map((r) => r.trim()).includes(kind)) return "off"
   const s = (setting ?? "on").trim().toLowerCase()
   if (s === "off" || s === "env-only") return s

@@ -1,0 +1,3 @@
+#!/bin/sh
+# Fake launchctl for the tests: no background jobs are loaded, whatever the machine really runs (the real one is never asked).
+exit 0

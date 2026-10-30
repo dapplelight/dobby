@@ -1,0 +1,136 @@
+/*
+ * Dobby "instrument" theme: fills Signet's token contract (CONTRACT.md) with the dashboard design's values.
+ * Dark is the .dark class (Signet's ThemeProvider follows the system); light is :root.
+ * Import after tailwindcss and before @nimit9/signet-tokens/base.css.
+ */
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Fonts are self-hosted (latin only): nothing is fetched from the network. */
+@font-face { font-family: "Geist Variable"; font-weight: 100 900; font-display: swap; src: url("../../../node_modules/@fontsource-variable/geist/files/geist-latin-wght-normal.woff2") format("woff2-variations"); }
+@font-face { font-family: "Geist Mono Variable"; font-weight: 100 900; font-display: swap; src: url("../../../node_modules/@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2") format("woff2-variations"); }
+@font-face { font-family: "Newsreader Variable"; font-weight: 200 800; font-display: swap; src: url("../../../node_modules/@fontsource-variable/newsreader/files/newsreader-latin-wght-normal.woff2") format("woff2-variations"); }
+
+@layer base {
+  /* Light */
+  :root {
+    --bg: #f6f5f1; --raise: #ffffff; --hover: #efeee9; --line: #e2e0d8;
+    --ink: #171612; --ink-2: #5d5b53; --ink-3: #b3b0a4;
+    --mark: #0d7b43; --on-mark: #ffffff; --warn: #ad5118;
+    --sel: rgba(13, 123, 67, 0.18); --grain: 0.035;
+    --add: rgba(13, 123, 67, 0.07); --del: rgba(180, 86, 27, 0.08);
+
+    --bg-base: var(--bg); --bg-surface: var(--raise); --bg-elevated: var(--hover); --bg-overlay: rgba(23, 22, 18, 0.5);
+    --border-default: var(--line); --border-subtle: color-mix(in srgb, var(--line) 60%, transparent); --border-strong: var(--ink-3);
+
+    --accent-green: var(--mark); --accent-blue: var(--ink-2); --accent-amber: var(--warn); --accent-red: var(--warn);
+    --accent-green-subtle: color-mix(in srgb, var(--mark) 10%, transparent);
+    --accent-blue-subtle: color-mix(in srgb, var(--ink-2) 10%, transparent);
+    --accent-amber-subtle: color-mix(in srgb, var(--warn) 10%, transparent);
+    --accent-red-subtle: color-mix(in srgb, var(--warn) 10%, transparent);
+
+    --text-primary: var(--ink); --text-secondary: var(--ink-2); --text-muted: var(--ink-2);
+    --text-hint: var(--ink-3); --text-disabled: var(--ink-3); --text-inverse: var(--bg);
+
+    --background: var(--bg); --foreground: var(--ink);
+    --card: var(--raise); --card-fg: var(--ink); --popover: var(--raise); --popover-fg: var(--ink);
+    --primary: var(--mark); --primary-fg: var(--on-mark);
+    --secondary: var(--hover); --secondary-fg: var(--ink);
+    --muted: var(--hover); --muted-fg: var(--ink-2);
+    --accent: var(--hover); --accent-fg: var(--ink);
+    --destructive: var(--warn); --border: var(--line); --input: var(--line); --ring: var(--mark);
+
+    --chart-1: var(--ink); --chart-2: var(--mark); --chart-3: var(--warn); --chart-4: var(--ink-2); --chart-5: var(--ink-3); --chart-6: var(--line);
+    --focus-ring: var(--ring); --focus-ring-offset: var(--bg-base);
+    --accent-primary: var(--primary); --accent-primary-fg: var(--primary-fg);
+    --accent-primary-subtle: color-mix(in srgb, var(--primary) 10%, transparent);
+    --accent-red-fg: var(--primary-fg);
+
+    /* Depth: only the palette, hover card, finding cards and sheets use a shadow. */
+    --shadow-xs: none; --shadow-sm: none;
+    --shadow-md: 0 2px 6px rgba(23, 22, 18, 0.1);
+    --shadow-lg: 0 12px 32px rgba(23, 22, 18, 0.14), 0 2px 6px rgba(23, 22, 18, 0.08);
+    --shadow-xl: 0 12px 32px rgba(23, 22, 18, 0.18), 0 2px 6px rgba(23, 22, 18, 0.1);
+  }
+
+  .dark {
+    --bg: #0d0d0c; --raise: #161614; --hover: #131311; --line: #262521;
+    --ink: #edece6; --ink-2: #a19f95; --ink-3: #55534c;
+    --mark: #3fe08a; --on-mark: #04200f; --warn: #f0a35e;
+    --sel: rgba(63, 224, 138, 0.28); --grain: 0.07;
+    --add: rgba(63, 224, 138, 0.07); --del: rgba(240, 163, 94, 0.08);
+
+    --bg-overlay: rgba(0, 0, 0, 0.6);
+    --accent-green-subtle: color-mix(in srgb, var(--mark) 12%, transparent);
+    --accent-blue-subtle: color-mix(in srgb, var(--ink-2) 12%, transparent);
+    --accent-amber-subtle: color-mix(in srgb, var(--warn) 12%, transparent);
+    --accent-red-subtle: color-mix(in srgb, var(--warn) 12%, transparent);
+    --accent-primary-subtle: color-mix(in srgb, var(--primary) 12%, transparent);
+    --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.4);
+    --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.38), 0 2px 6px rgba(0, 0, 0, 0.24);
+    --shadow-xl: 0 12px 32px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.3);
+  }
+}
+
+@theme inline {
+  /* Dobby's own names: bg-raise, text-ink-2, border-line, text-mark ... */
+  --color-raise: var(--raise); --color-hover: var(--hover); --color-line: var(--line);
+  --color-ink: var(--ink); --color-ink-2: var(--ink-2); --color-ink-3: var(--ink-3);
+  --color-add: var(--add); --color-del: var(--del); --color-mark: var(--mark); --color-on-mark: var(--on-mark); --color-warn: var(--warn);
+
+  --color-bg-base: var(--bg-base); --color-bg-surface: var(--bg-surface); --color-bg-elevated: var(--bg-elevated);
+  --color-border-default: var(--border-default); --color-border-subtle: var(--border-subtle); --color-border-strong: var(--border-strong);
+  --color-accent-green: var(--accent-green); --color-accent-blue: var(--accent-blue); --color-accent-amber: var(--accent-amber); --color-accent-red: var(--accent-red);
+  --color-accent-green-subtle: var(--accent-green-subtle); --color-accent-red-subtle: var(--accent-red-subtle);
+  --color-accent-amber-subtle: var(--accent-amber-subtle); --color-accent-blue-subtle: var(--accent-blue-subtle);
+  --color-text-primary: var(--text-primary); --color-text-secondary: var(--text-secondary); --color-text-muted: var(--text-muted);
+  --color-text-hint: var(--text-hint); --color-text-disabled: var(--text-disabled); --color-text-inverse: var(--text-inverse);
+
+  --color-background: var(--background); --color-foreground: var(--foreground);
+  --color-card: var(--card); --color-card-foreground: var(--card-fg); --color-popover: var(--popover); --color-popover-foreground: var(--popover-fg);
+  --color-primary: var(--primary); --color-primary-foreground: var(--primary-fg);
+  --color-secondary: var(--secondary); --color-secondary-foreground: var(--secondary-fg);
+  --color-muted: var(--muted); --color-muted-foreground: var(--muted-fg);
+  --color-accent: var(--accent); --color-accent-foreground: var(--accent-fg);
+  --color-destructive: var(--destructive); --color-border: var(--border); --color-input: var(--input); --color-ring: var(--ring);
+
+  --color-chart-1: var(--chart-1); --color-chart-2: var(--chart-2); --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4); --color-chart-5: var(--chart-5); --color-chart-6: var(--chart-6);
+  --color-focus-ring: var(--focus-ring); --color-focus-ring-offset: var(--focus-ring-offset);
+  --color-accent-primary: var(--accent-primary); --color-accent-primary-fg: var(--accent-primary-fg);
+  --color-accent-primary-subtle: var(--accent-primary-subtle); --color-accent-red-fg: var(--accent-red-fg);
+
+  --font-sans: "Geist Variable", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: "Newsreader Variable", Georgia, serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, monospace;
+
+  /* The scale: 11, 12, 13, 14, 15, 17 and 40 (27 on phone). Components read text-xs..text-xl. */
+  --text-xs: 0.6875rem; --text-sm: 0.8125rem; --text-base: 0.875rem; --text-lg: 0.9375rem; --text-xl: 1.0625rem;
+  --text-label: 0.6875rem; --text-caption: 0.75rem; --text-body: 0.8125rem; --text-callout: 0.875rem; --text-subhead: 0.9375rem;
+  --text-headline: 1.0625rem; --text-title: 1.0625rem; --text-stat: 1.6875rem; --text-display: 2.5rem; --text-hero: 2.5rem;
+  --font-weight-normal: 400; --font-weight-medium: 500; --font-weight-semibold: 600; --font-weight-bold: 700;
+  --leading-display: 1.12;
+  --spacing: 0.25rem;
+
+  /* Radius: 4 (kbd), 6-8 (rows, buttons), 10-12 (popovers, cards). */
+  --radius: 0.5rem; --radius-sm: 0.25rem; --radius-md: 0.375rem; --radius-lg: 0.5rem; --radius-xl: 0.625rem; --radius-2xl: 0.75rem;
+  --radius-4xl: 1.75rem; --radius-full: 9999px;
+
+  --shadow-xs: var(--shadow-xs); --shadow-sm: var(--shadow-sm); --shadow-md: var(--shadow-md); --shadow-lg: var(--shadow-lg); --shadow-xl: var(--shadow-xl);
+  --ease-default: cubic-bezier(0.2, 0.8, 0.2, 1); --ease-in: cubic-bezier(0.4, 0, 1, 1); --ease-out: cubic-bezier(0, 0, 0.2, 1); --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* Geist for the UI, tabular numbers everywhere; paper grain over the page. */
+body { font-feature-settings: "ss01", "tnum"; font-size: 14px; }
+body::before {
+  content: ""; position: fixed; inset: 0; z-index: 1000; pointer-events: none; opacity: var(--grain);
+  background-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+::selection { background: var(--sel); }
+:focus-visible { outline: 2px solid var(--mark); outline-offset: 2px; }
+
+@keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@keyframes ping { 0% { r: 3; opacity: 0.55; } 100% { r: 9; opacity: 0; } }
+.live { animation: breathe 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+.ping { animation: ping 2.4s cubic-bezier(0.2, 0.8, 0.2, 1) infinite; }
+@media (prefers-reduced-motion: reduce) { .live, .ping { animation: none; } }

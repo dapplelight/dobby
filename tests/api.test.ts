@@ -50,3 +50,12 @@ test("router: credits when the weekly limit is ahead of pace or the credit month
   tick(30)
   assert.equal(apiWanted(db, Date.parse("2026-10-28T06:00:00Z")).api, true) // last 5 days of October: spend the credits
 })
+
+test("an organisation-level key: billing.workspaceId goes on Messages calls and into Claude Code's env", async () => {
+  const { claudeKeyEnv, workspaceHeaders } = await import("../src/api.ts")
+  process.env.DOBBY_API_KEY = "test"
+  assert.deepEqual(workspaceHeaders(""), {}) // unset: nothing extra
+  assert.deepEqual(workspaceHeaders("wrkspc_1"), { "anthropic-workspace-id": "wrkspc_1" })
+  assert.equal(claudeKeyEnv().ANTHROPIC_CUSTOM_HEADERS, undefined)
+  assert.equal(claudeKeyEnv().ANTHROPIC_API_KEY, "test")
+})

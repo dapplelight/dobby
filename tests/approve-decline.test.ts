@@ -36,10 +36,10 @@ test("approve and decline resume the gate: decline declines the ticket, approve 
   assert.notEqual(status(yes), "declined")
 })
 
-test("approve or decline on a ticket that is not at the gate does not crash", () => {
+test("approve or decline on a missing ticket is one line and exit 1, no stack", () => {
   for (const c of ["approve", "decline"]) {
     const r = run(c, "9999")
-    assert.equal(r.status, 0, r.stderr)
-    assert.match(r.stdout, /not waiting for you/)
+    assert.equal(r.status, 1)
+    assert.match(r.stderr, /^no ticket #9999\n$/)
   }
 })

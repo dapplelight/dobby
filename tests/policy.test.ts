@@ -91,7 +91,7 @@ test("policy: agent prompts and guards are sensitive paths, markdown included (a
   // New on 20 Oct, on purpose beyond the old ALWAYS_BIG oracle: these force the strict (Opus) review.
   const NEW_SENSITIVE = ["roles/builder.md", "roles/front-desk.md", "skills/tdd/SKILL.md", "agent-rules.md", "agent-rules/graphify.md", "agent-settings.json", "src/graphs/ticket.ts",
     "src/graphs/review.ts", "src/lib.ts", "src/frontdesk.ts", "src/scout.ts", "src/policy.ts", "projects/foreman.md", "projects/tally.md", "bin/guard-hook.mjs",
-    "bin/dobby", "src/telegram.ts", "src/discord.ts", "src/cli.ts", "src/scan.ts", "src/merge.ts"]
+    "bin/dobby", "src/notify.ts", "src/discord.ts", "src/cli.ts", "src/scan.ts", "src/merge.ts"]
   for (const p of NEW_SENSITIVE) assert.equal(decide("changed-path", p).action, "ask", p)
   for (const p of ["docs/roles/x.md", "apps/web/src/lib.ts", "src/library.ts", "README.md", "src/graphs/lead.ts", "notes/agent-rules.md.bak.txt"]) assert.equal(decide("changed-path", p).action, "allow", p)
 })

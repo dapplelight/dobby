@@ -1,0 +1,21 @@
+---
+// Pagination, last updated, then the product line: status note, llms.txt, repo, license.
+import config from "virtual:signet-docs/config"
+import LastUpdated from "virtual:starlight/components/LastUpdated"
+import Pagination from "virtual:starlight/components/Pagination"
+---
+
+<footer class="sd-footer">
+  <Pagination />
+  <div class="sd-footer-meta">
+    <LastUpdated />
+  </div>
+  <div class="sd-footer-line">
+    {config.badge && <span>{config.badge.note}</span>}
+    <span class="sd-footer-links">
+      <a href={`/${config.base}/llms.txt`}>llms.txt</a>
+      <a href={`https://github.com/${config.repo}`}>GitHub</a>
+      {config.license && <span>{config.license}</span>}
+    </span>
+  </div>
+</footer>

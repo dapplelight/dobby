@@ -9,18 +9,25 @@ import { paused } from "./pause.ts"
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { DATA, type DB } from "./db.ts"
 import { addTicket, claude, repoArgs, fixed, isDuplicate, loadRole, netRun, parseDoc, ROOT, scoutMerge, type ARun } from "./lib.ts"
-import { mergeFlags } from "./config.ts"
+import { config, mergeFlags, zoned, zonedDay } from "./config.ts"
 import { landPr } from "./merge.ts"
+import { everyMergeFloor } from "./safety.ts"
 import { notLandable, reviewOnce, run, type Run } from "./graphs/review.ts"
-import { notify, redact } from "./telegram.ts"
+import { clip, notify, redact } from "./notify.ts"
 
-const today = () => new Date().toISOString().slice(0, 10)
+const today = () => zonedDay()
+/** The night of D runs 23:00 on D to 05:59 on D+1: shifting back 6h puts the whole night on one date. */
+const start = () => config().scout?.hour ?? 23
+/** Hours since the Scout window opened (0-23), in the configured timezone. */
+const into = (now: number, hour = zoned(now).getUTCHours()) => (hour - start() + 24) % 24
+/** The night a run belongs to: the day its window opened, so 23:30 and 05:45 the next morning are the same night. */
+const night = (now = Date.now()) => zonedDay(now - into(now) * 3600_000)
 const get = (db: DB, k: string) => (db.prepare("SELECT v FROM kv WHERE k=?").get(k) as { v: string } | undefined)?.v
 const set = (db: DB, k: string, v: string) => db.prepare("INSERT OR REPLACE INTO kv VALUES (?, ?)").run(k, v)
 export const roles = () => readdirSync(`${ROOT}roles`).filter((f) => f.endsWith(".md") && !["company.md", "scout.md"].includes(f)).map((f) => f.slice(0, -3)).sort()
 
-/** Due once a day, at night (it runs on the night builders' budget). */
-export const scoutDue = (db: DB, hour = new Date().getHours()) => (hour >= 23 || hour < 6) && get(db, "scout:last") !== today() && !paused(db, { kind: "scout" })
+/** Due once a night, in the 7 hours from config scout.hour (default 23), unless config scout.enabled is false or it is paused. */
+export const scoutDue = (db: DB, hour?: number, now = Date.now()) => config().scout?.enabled !== false && into(now, hour) < 7 && get(db, "scout:last") !== night(now) && !paused(db, { kind: "scout" })
 
 export type Proposal =
   | { type: "skill"; role: string; name: string; repo: string; path: string; sha: string; license: string; stars?: number; why: string }
@@ -54,6 +61,17 @@ export type Applied = { msg: string; sha?: string; pr?: string; branch?: string;
 const slugify = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "change"
 const LIVE_NOTE = "It goes live only after you approve it, it merges, and your checkout pulls main (nothing pulls it automatically)."
 
+/** "" when origin/main was fetched; else why not, in plain words: no origin remote, offline, or a sign-in problem (the git error is kept after it). */
+export function fetchMainWhy(r: Run, root: string): string {
+  const f = r("git", ["fetch", "-q", "origin", "main"], root)
+  if (f.ok) return ""
+  if (!r("git", ["remote", "get-url", "origin"], root).ok) return "this checkout has no origin remote"
+  const why = /could not resolve host|unable to access|network is unreachable|timed out|connection (refused|reset)/i.test(f.out) ? "origin is not reachable (offline?)"
+    : /permission denied|authentication|could not read username|403|401/i.test(f.out) ? "origin refused the sign-in"
+    : "git fetch failed"
+  return f.out.trim() ? `${why}: ${clip(f.out, 120)}` : why
+}
+
 /**
  * A Scout change (or its Undo) as a pull request, never in the owner's checkout and never pushed to main (audit 20 Oct, item 5:
  * the old commit + `pull --rebase --autostash` + `push HEAD:main` in ROOT swept up the owner's own edits and flattened merges).
@@ -64,7 +82,8 @@ const LIVE_NOTE = "It goes live only after you approve it, it merges, and your c
  */
 export function throughPr(db: DB, o: { slug: string; title: string; body: string; apply: (wt: string) => string | null }, r: Run = run, root = ROOT): Applied {
   // never based on a stale local main (security review 20 Oct): no fresh origin/main, no change
-  if (!r("git", ["fetch", "-q", "origin", "main"], root).ok) return { msg: `couldn't fetch origin/main, so nothing changed for ${o.title}` }
+  const noFetch = fetchMainWhy(r, root)
+  if (noFetch) return { msg: `couldn't fetch origin/main (${noFetch}), so nothing changed for ${o.title}` }
   const base = "origin/main"
   let branch = `scout/${today()}-${slugify(o.slug)}`
   if (r("git", ["rev-parse", "--verify", "-q", `refs/heads/${branch}`], root).ok) branch += `-${Date.now().toString(36).slice(-5)}`
@@ -159,7 +178,9 @@ async function scoutAuto(db: DB, out: Applied, repo: string, n: number, review: 
   if (bad.length) return reject(`the injection check failed: ${bad.join("; ")}`)
   const mp = paused(db, { kind: "merges", project: "dobby" })
   if (mp) return `left open: merges ${mp}`
-  const m = await landPr(sh, { repo, pr: n, sha: pr.headRefOid, merge: ["pr", "merge", String(n), "-R", repo, ...mergeFlags()], rebase: () => ({ ok: false, out: "a Scout branch is never rebased" }), sleep })
+  if (everyMergeFloor() === "owner") return askOwner(say, out, repo, n, true) // every merge waits for you: the Approve / Reject card, not a silent PR; the strict review above already covers the "review" floor
+  const m = await landPr(sh, { repo, pr: n, sha: pr.headRefOid, merge: ["pr", "merge", String(n), "-R", repo, ...mergeFlags()], rebase: () => ({ ok: false, out: "a Scout branch is never rebased" }), sleep, held: () => paused(db, { kind: "merges", project: "dobby" }) })
+  if (m.held) return `left open: merges ${m.held}`
   if (!m.ok) { await line("Scout change passed review but did not merge, PR left open", m.out.slice(0, 300)); return `left open: ${m.out.slice(0, 120)}` }
   await say(`🎓 Scout change merged · ${out.msg}${out.why ? `\nWhy: ${out.why}` : ""}\nStrict review passed, injection check clean. ${out.pr}\nIt is live once your checkout pulls main.`,
     fetch, out.sha ? [{ text: "↩️ Undo", data: `undo-scout ${out.sha.slice(0, 12)}` }] : undefined, { kind: "idea", project: "dobby" })
@@ -177,10 +198,13 @@ export async function scoutCard(db: DB, out: Applied, review = (repo: string, n:
   if (!m) return ""
   if ((o.mode ?? scoutMerge()) === "auto") return scoutAuto(db, out, m[1], Number(m[2]), review, say, o.sh ?? netRun, o.sleep)
   const r = await review(m[1], Number(m[2])).catch((e: Error) => ({ state: "error", why: e.message }))
-  const passed = r.state === "success"
-  await say(`🎓 Scout change waits for your OK · ${out.msg}\nReview: ${passed ? "passed" : `${r.state}, ${r.why}`}\n${out.pr}\n${passed ? "Approve merges it; Reject closes it." : "Approve works once the review passes (or you accept the review); Reject closes it."} ${LIVE_NOTE}`,
-    fetch, [{ text: "✅ Approve", data: `scoutmerge ${m[1]} ${m[2]}` }, { text: "🗑 Reject", data: `scoutreject ${m[1]} ${m[2]}` }, { text: "🔗 Open PR", data: "", url: out.pr }], { kind: "approval" })
-  return `review ${r.state}, waiting for the owner`
+  return askOwner(say, out, m[1], Number(m[2]), r.state === "success", r)
+}
+/** The Approve / Reject card of a Scout PR (scout_merge ask, or every merge waits for the owner). */
+async function askOwner(say: typeof notify, out: Applied, repo: string, n: number, passed: boolean, r?: { state: string; why: string }): Promise<string> {
+  await say(`🎓 Scout change waits for your OK · ${out.msg}\nReview: ${passed ? "passed" : `${r?.state}, ${r?.why}`}\n${out.pr}\n${passed ? "Approve merges it; Reject closes it." : "Approve works once the review passes (or you accept the review); Reject closes it."} ${LIVE_NOTE}`,
+    fetch, [{ text: "✅ Approve", data: `scoutmerge ${repo} ${n}` }, { text: "🗑 Reject", data: `scoutreject ${repo} ${n}` }, { text: "🔗 Open PR", data: "", url: out.pr }], { kind: "approval" })
+  return `review ${r?.state ?? "success"}, waiting for the owner`
 }
 
 const okPr = (repo: string, n: number) => /^[\w.-]+\/[\w.-]+$/.test(repo) && Number.isInteger(n) && n > 0
@@ -208,7 +232,8 @@ export function rejectScout(db: DB, repo: string, n: number, r: Run = run): stri
 /** ↩️ Undo on a Scout change: a revert PR when the change is on main, closing its PR when it never merged. Never touches the owner's checkout. */
 export async function undoScout(db: DB, sha: string, r: Run = run, root = ROOT, card = scoutCard): Promise<string> {
   if (!/^[0-9a-f]{7,40}$/i.test(sha)) return "usage: undo-scout <commit>"
-  if (!r("git", ["fetch", "-q", "origin", "main"], root).ok) return "↩️ Couldn't fetch origin/main; nothing changed. Try again later."
+  const noFetch = fetchMainWhy(r, root)
+  if (noFetch) return `↩️ Couldn't fetch origin/main (${noFetch}); nothing changed. Try again later.`
   const base = "origin/main"
   let target = r("git", ["merge-base", "--is-ancestor", sha, base], root).ok ? sha : ""
   if (!target) {
@@ -256,7 +281,7 @@ export async function scout(db: DB, say: Say) {
   const list = roles()
   const role = list[Number(get(db, "scout:next") ?? 0) % list.length]
   set(db, "scout:next", String((list.indexOf(role) + 1) % list.length))
-  set(db, "scout:last", today())
+  set(db, "scout:last", night())
   const r = loadRole(role)
   const since = new Date(Date.now() - 86400_000).toISOString()
   const fails = [

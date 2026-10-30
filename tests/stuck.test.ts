@@ -80,7 +80,7 @@ test("taps: retry closes the PR and re-queues from scratch, decline closes it an
   const a = stuck(URL, 30), b = stuck(URL, 30), c = stuck("x", 30, "shipped")
   assert.equal(stuckTap(db, "retry", a, r, {}), `#${a} back in the queue from scratch; a builder picks it up within about a minute.`)
   assert.deepEqual([getTicket(db, a)!.status, getTicket(db, a)!.branch], ["ready", null])
-  assert.equal(stuckTap(db, "decline", b, r, {}), `#${b} declined.`)
+  assert.equal(stuckTap(db, "decline", b, r, {}), `Cancelled: Demo rsvp. PR closed.`)
   assert.equal(getTicket(db, b)!.status, "declined")
   assert.equal(stuckTap(db, "decline", c, r, {}), `#${c} is shipped now; nothing to do.`)
   assert.deepEqual(calls, [`gh pr close ${URL} --delete-branch`, `gh pr close ${URL} --delete-branch`])

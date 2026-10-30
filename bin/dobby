@@ -11,7 +11,7 @@ if [ -n "$GITHUB_ACTIONS" ]; then
 fi
 # Deploy and verify steps shell out to bun: same PATH as the launchd jobs, whichever shell started us.
 # Appended, never prepended: a Homebrew node ahead of fnm's breaks better-sqlite3's native build.
-export PATH="$PATH:$HOME/.bun/bin"
+export PATH="$PATH:$HOME/.bun/bin:/usr/bin:/bin"
 # Env from before the rename: FOREMAN_X still works as DOBBY_X
 for v in $(printenv | sed -n 's/^\(FOREMAN_[A-Za-z0-9_]*\)=.*/\1/p'); do
   n="DOBBY_${v#FOREMAN_}"
@@ -24,6 +24,15 @@ while [ -L "$self" ]; do
   case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
 done
 root="$(cd "$(dirname "$self")/.." && pwd)"
+[ -f "$root/package.json" ] || { echo "dobby: cannot find its own folder. Is PATH missing /usr/bin and /bin (dirname, readlink)?" >&2; exit 1; }
+# Node 24+ (one number: package.json engines, dobby doctor, the docs). Say so here; an old node would fail with a stack trace.
+v="$(node -v 2>/dev/null)" || { echo "dobby: node was not found on PATH. Install Node 24 or newer (https://nodejs.org)." >&2; exit 1; }
+v="${v#v}"
+if [ "${v%%.*}" -lt 24 ] 2>/dev/null; then echo "dobby: Node $v is too old. Install Node 24 or newer (brew install node, or fnm install 24)." >&2; exit 1; fi
+# better-sqlite3 is built by its install script. A newer npm may skip it unless approved: say so here, not with a stack trace.
+if ! [ -e "$root/node_modules/better-sqlite3/build/Release/better_sqlite3.node" ] && ! [ -e "$root/../better-sqlite3/build/Release/better_sqlite3.node" ]; then
+  (cd "$root" && node -e "require('better-sqlite3')" >/dev/null 2>&1) || { echo "dobby: better-sqlite3 is not built. Run npm approve-scripts better-sqlite3 and npm rebuild better-sqlite3 (or reinstall: npm i -g dobby-ai)." >&2; exit 1; }
+fi
 # dist/ is built into the npm package (node will not strip types under node_modules); a dev checkout runs src/ directly.
 if [ -f "$root/dist/cli.js" ]; then exec node --no-warnings "$root/dist/cli.js" "$@"; fi
 exec node --no-warnings "$root/src/cli.ts" "$@"

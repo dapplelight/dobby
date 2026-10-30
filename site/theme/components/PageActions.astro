@@ -1,0 +1,37 @@
+---
+// One button and a popover: copy the page as markdown, view the .md, open it in Claude or ChatGPT.
+// Works without JS except "Copy page" (native popover; the .md link is a plain link).
+interface Props { md: string }
+const { md } = Astro.props
+const abs = new URL(md, Astro.site ?? Astro.url).href
+const ask = encodeURIComponent(`Read ${abs} and help me with: `)
+---
+
+<div class="sd-actions">
+  <button type="button" class="sd-actions-btn" popovertarget="sd-actions-menu">
+    Page
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
+  </button>
+  <div id="sd-actions-menu" popover class="sd-actions-menu">
+    <button type="button" data-copy-md={md}><span data-label>Copy page as markdown</span></button>
+    <a href={md}>View as markdown</a>
+    <a href={`https://claude.ai/new?q=${ask}`} target="_blank" rel="noopener">Open in Claude</a>
+    <a href={`https://chatgpt.com/?q=${ask}`} target="_blank" rel="noopener">Open in ChatGPT</a>
+  </div>
+</div>
+
+<script>
+  document.querySelectorAll<HTMLButtonElement>("[data-copy-md]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const label = b.querySelector("[data-label]")!
+      try {
+        const text = await (await fetch(b.dataset.copyMd!)).text()
+        await navigator.clipboard.writeText(text)
+        label.textContent = "Copied"
+      } catch {
+        label.textContent = "Could not copy. Use View as markdown."
+      }
+      setTimeout(() => (label.textContent = "Copy page as markdown"), 2000)
+    }),
+  )
+</script>

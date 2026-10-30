@@ -15,7 +15,8 @@ const cfg = await import("../src/config.ts")
 const ext = await import("../src/reviewer-external.ts")
 const rv = await import("../src/graphs/review.ts")
 
-const use = (review?: object) => cfg.setConfig(review ? { ...cfg.defaults(), review } : undefined)
+const github = cfg.config().github // the owner fixture: the accounts are read per call now
+const use = (review?: object) => cfg.setConfig(review ? { ...cfg.defaults(), github, review } : undefined)
 const REPO = "ownerdev/tally", SHA = "head123abc"
 type Fake = { checkRuns?: string; statuses?: string; reviews?: string; threads?: object[] | null; fail?: string; checks?: string; mergeState?: string; head?: string }
 const thread = (o: { login?: string; type?: string; resolved?: boolean; outdated?: boolean; body?: string } = {}) =>

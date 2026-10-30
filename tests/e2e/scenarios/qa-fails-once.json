@@ -1,0 +1,23 @@
+{
+  "roles": {
+    "build": [
+      {
+        "files": {
+          "src/farewell.js": "export const farewell = (name) => `Goodbye, ${name}`\n",
+          "test/farewell.test.js": "import assert from \"node:assert/strict\"\nimport { test } from \"node:test\"\nimport { farewell } from \"../src/farewell.js\"\n\ntest(\"farewell\", () => assert.equal(farewell(\"Asha\"), \"Goodbye, Asha\"))\n"
+        },
+        "reply": "Added src/farewell.js and a test for it."
+      },
+      {
+        "files": {
+          "src/farewell.js": "export const farewell = (name = \"friend\") => `Goodbye, ${name}`\n"
+        },
+        "reply": "Gave the name a default."
+      }
+    ],
+    "check": [
+      { "pass": false, "reason": "farewell() with no name prints undefined" },
+      { "pass": true, "reason": "handles a missing name" }
+    ]
+  }
+}

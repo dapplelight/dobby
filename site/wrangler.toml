@@ -1,0 +1,5 @@
+# Cloudflare Pages project for dobby.dapplelight.in. Static output in dist/; functions/ adds markdown negotiation for /docs/*.
+# Not deployed from here yet.
+name = "dobby-site"
+pages_build_output_dir = "./dist"
+compatibility_date = "2026-10-01"

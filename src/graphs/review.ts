@@ -18,21 +18,26 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, wri
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph"
 import { DATA, graphSaver, open, type DB } from "../db.ts"
 import { ask, sensitivePath } from "../jev.ts"
-import { seedGraph, addTicket, getTicket, repoArgs, claude, heavy, home, ist, labelOf, loadProjects, loadRole, riskPath, netRun, NO_SECRETS, policyCtx, scoutMerge, shAsync, signedOut, stepSh, timeoutMs, type ARun, type Project } from "../lib.ts"
-import { inWorktree, landPr, rebaseAndPush } from "../merge.ts"
-import { asIs, clip, needsYou, notify, outbound, redact, shortTitle, silentAt, type Buttons } from "../telegram.ts"
+import { repoSlug, seedGraph, addTicket, getTicket, repoArgs, claude, heavy, home, ist, labelOf, loadProjects, loadRole, riskPath, netRun, NO_SECRETS, policyCtx, scoutMerge, shAsync, signedOut, stepSh, timeoutMs, type ARun, type Project } from "../lib.ts"
+import { inWorktree, landPr, postPrCost, rebaseAndPush } from "../merge.ts"
+import { bodyPrivate, pushRefusal } from "../privacy.ts"
+import { asIs, clip, needsYou, notify, outbound, redact, shortTitle, silentAt, type Buttons } from "../notify.ts"
 import { alive, deployProject } from "../deploy.ts"
-import { discordOn, edit, kv, plainGh, teamStatus, upsert } from "../discord.ts"
-import { check, everyMergeFloor, isMigrationFile, ownerLevel, sqlFromDiff } from "../safety.ts"
+import { kv, plainGh } from "../chat/common.ts"
+import { chatOn as discordOn, chatPrefix, platform } from "../chat/platform.ts"
+import { check, everyMergeFloor, isMigrationFile, mergeAction, ownerLevel, sqlFromDiff } from "../safety.ts"
 import { config, mergeFlags } from "../config.ts"
-import { autoSkip, handleGuard, pathReviewed, resolve, risky, type PrBrief, type Settings } from "../reviewer/settings.ts"
+import { autoSkip, handleGuard, ownerDraft, pathReviewed, resolve, risky, type PrBrief, type Settings } from "../reviewer/settings.ts"
+import { findingById, saveFindings } from "../findings.ts"
 import { contextPack, extras, learnKey, roleFor, type Learning } from "../reviewer/prompt.ts"
-import { after, chatAsk, commandsScan, pausedKey, PR_KEYS, readCursor, wantsCommands, type Host, type ReplyKind } from "../reviewer/commands.ts"
+import { after, chatAsk, commandsScan, learn, pausedKey, PR_KEYS, readCursor, wantsCommands, type Host, type ReplyKind } from "../reviewer/commands.ts"
 import { externalPrs, externalStep, reviewSettings } from "../reviewer-external.ts"
 
 export type Run = (cmd: string, args: string[], cwd?: string) => { ok: boolean; out: string }
 export const run: Run = (cmd, args, cwd) => {
-  const r = spawnSync(cmd, outbound(cmd, args), { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
+  const refused = cmd === "git" && args[0] === "push" ? pushRefusal(args, cwd) : null
+  if (refused) return { ok: false, out: refused }
+  const r = spawnSync(cmd, outbound(cmd, args, cwd), { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
   return { ok: r.status === 0, out: r.status === 0 ? r.stdout : `${r.stdout ?? ""}${r.stderr ?? ""}${r.error?.message ?? ""}` }
 }
 // ping = the one #needs-you message for a PR (key review:<repo>#<pr>), edited in place; settle = rewrite it with no buttons.
@@ -53,18 +58,18 @@ export const realPing = async (key: string, text: string, buttons: Buttons) => {
   const repo = key.replace(/^review:/, "").replace(/#\d+$/, "")
   if (holdReview(db, key, text, !!projectFor(repo)?.paused)) return
   // the owner touch is logged on the first card for this review only (a re-run edits the same message)
-  text = await needsYou(text, buttons, { db, touch: !(ddb && kv(ddb, `discord:msg:${key}`)) }) // the 3-line plain summary on top, once
+  text = await needsYou(text, buttons, { db, touch: !(ddb && kv(ddb, `${chatPrefix()}:msg:${key}`)) }) // the 3-line plain summary on top, once
   if (!ddb) return notify(text, fetch, buttons, { kind: "review" }, asIs) // Discord not set up: outbox.log
   try {
-    await upsert(ddb, key, { kind: "review" }, text, buttons)
+    await (await platform()).upsert(ddb, key, { kind: "review" }, text, buttons)
   } catch {
     await notify(text, fetch, buttons, { kind: "review" }, asIs) // lands in outbox.log if Discord is down
   }
 }
 export const realSettle = async (key: string, text: string) => {
   const ddb = discordOn()
-  const id = ddb && kv(ddb, `discord:msg:${key}`)
-  if (id) await edit(ddb, "needs-you", id, text).catch((e) => console.log(`discord edit: ${(e as Error).message}`))
+  const id = ddb && kv(ddb, `${chatPrefix()}:msg:${key}`)
+  if (id) await (await platform()).edit(ddb, "needs-you", id, text).catch((e) => console.log(`discord edit: ${(e as Error).message}`))
 }
 export const real: Deps = { run, claude, notify, ping: realPing, settle: realSettle }
 
@@ -95,7 +100,8 @@ export type Choice = "none" | "haiku" | "sonnet" | "opus"
 export type Pick = { choice: Choice; by: "rule" | "jev" | "fallback"; why: string }
 
 const OWNER = config().github.owner // the person whose @dobby chat comments are obeyed
-const OWNERS = config().github.accounts.map((a) => a.toLowerCase()) // accounts whose repos get reviewed
+/** Accounts whose repos get reviewed, plus the signed-in owner: read per call (config can change; gh may be signed in as a user while the repo is in an org). */
+const owners = () => [...config().github.accounts, config().github.owner].filter(Boolean).map((a) => a.toLowerCase())
 /** The reviewer settings in force for a repo (src/reviewer/settings.ts; config `review`). */
 export const settingsFor = (repo?: string): Settings => resolve(config().review, repo)
 // `gh pr diff` is refused above 300 files: such a PR is read from the files API and reviewed CHUNK files at a time.
@@ -109,12 +115,12 @@ export const REVIEW_ARGS = ["--restricted", "--strict-mcp-config", "--tools", "R
 
 /** The hard rules. null = no rule fits, ask Jev. */
 export function gateRules(repo: string, pr: Pr, files: File[], o: { drafts?: boolean } = {}): Pick | null {
-  if (pr.isDraft && !o.drafts) return { choice: "none", by: "rule", why: "draft" }
+  if (pr.isDraft && !o.drafts && !ownerDraft(pr)) return { choice: "none", by: "rule", why: "draft" }
   const hit = files.find((f) => sensitivePath(f.path))
   if (hit) return { choice: "opus", by: "rule", why: `touches ${hit.path}` }
   if (files.every((f) => TEXT.test(f.path))) return { choice: "none", by: "rule", why: files.length ? "docs and text only" : "no files changed" }
-  // Dobby's own ticket PR: its Checker already passed it, so a cheap second look. Owner-authored only, so a branch name alone can't buy a light review.
-  if (/^(dobby|foreman)\//.test(pr.headRefName) && /^Checker: /m.test(pr.body) && pr.author?.login === repo.split("/")[0]) return { choice: "haiku", by: "rule", why: "Dobby ticket, Checker passed" }
+  // Dobby's own ticket PR: its Tester already passed it, so a cheap second look. Owner-authored only, so a branch name alone can't buy a light review.
+  if (/^(dobby|foreman)\//.test(pr.headRefName) && /^(?:Tester|Checker): /m.test(pr.body) && pr.author?.login === repo.split("/")[0]) return { choice: "haiku", by: "rule", why: "Dobby ticket, Tester passed" }
   return null
 }
 
@@ -258,7 +264,7 @@ export function walkthroughParts(w: Walk): { body: string; more: string[] } {
 export function api(d: Deps, method: string, path: string, body: object, jq?: string) {
   const file = `${DATA}/gh-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
   mkdirSync(DATA, { recursive: true })
-  writeFileSync(file, redact(JSON.stringify(body))) // every comment and review Dobby posts goes through here
+  writeFileSync(file, bodyPrivate(path, redact(JSON.stringify(body)))) // every comment and review Dobby posts goes through here
   try {
     return d.run("gh", ["api", "-X", method, path, "--input", file, ...(jq ? ["--jq", jq] : [])])
   } finally {
@@ -341,17 +347,18 @@ export function localRepos(r: Run = run) {
   const out = new Map<string, string>()
   for (const n of readdirSync(root)) {
     const url = r("git", ["remote", "get-url", "origin"], `${root}/${n}`)
-    const slug = url.ok ? url.out.trim().match(/github\.com[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?$/)?.[1] : undefined
+    const slug = url.ok ? repoSlug(url.out) ?? undefined : undefined
     if (slug && !out.has(slug)) out.set(slug, `${root}/${n}`) // first clone wins (web before web-release)
   }
   return [...out].map(([slug, dir]) => ({ slug, dir }))
 }
 
 /** Repos that matter: owned by OWNER, a commit in the last 30 days. Cached in kv for a day. */
-export function reposThatMatter(db: DB, r: Run = run, save = true, now = Date.now()) {
+export function reposThatMatter(db: DB, r: Run = run, save = true, now = Date.now(), projects: Record<string, Project> = loadProjects()) {
   const c = JSON.parse((db.prepare("SELECT v FROM kv WHERE k='review:repos'").get() as { v: string } | undefined)?.v ?? "null") as { at: number; repos: { slug: string; dir: string }[] } | null
   if (c && now - c.at < 86_400_000) return c.repos
-  const repos = localRepos(r).filter((x) => OWNERS.includes(x.slug.split("/")[0].toLowerCase()) && Number(r("git", ["log", "-1", "--all", "--format=%ct"], x.dir).out.trim()) * 1000 > now - 30 * 86_400_000)
+  const mine = new Set(Object.values(projects).map((p) => p.repo.replace(/\/$/, ""))) // a Dobby project's repo always counts, whoever owns it on GitHub (an org the accounts list leaves out)
+  const repos = localRepos(r).filter((x) => (owners().includes(x.slug.split("/")[0].toLowerCase()) || mine.has(x.dir)) && Number(r("git", ["log", "-1", "--all", "--format=%ct"], x.dir).out.trim()) * 1000 > now - 30 * 86_400_000)
   if (save) db.prepare("INSERT OR REPLACE INTO kv VALUES ('review:repos', ?)").run(JSON.stringify({ at: now, repos }))
   return repos
 }
@@ -431,7 +438,7 @@ export function buildReviewGraph(db: DB, deps: Deps = real) {
     const skipped = all.filter((x) => !files.includes(x)).map((x) => x.path)
     let pick: Pick = s.strict ? { choice: "opus", by: "rule", why: "sensitive ticket: strict review" }
       : all.length && !files.length ? { choice: "none", by: "rule", why: "path filters: no reviewed files changed" }
-      : await choose(s.repo, s.info, files, s.useJev, deps.fetcher, { drafts: s.requested || set.auto === "on" })
+      : await choose(s.repo, s.info, files, s.useJev, deps.fetcher, { drafts: s.requested || set.auto === "on" || ownerDraft(s.info) })
     const hot = set.riskBump && (pick.choice === "haiku" || pick.choice === "sonnet") && files.find((x) => risky(set, x.path))
     if (hot) pick = { choice: "opus", by: "rule", why: `risk bump: touches ${hot.path}` }
     return { files, skipped, pick, log: [`gate: ${pick.choice} (${pick.by}: ${pick.why})`] }
@@ -564,8 +571,15 @@ export function buildReviewGraph(db: DB, deps: Deps = real) {
   }
 
   const record = async (s: S): Promise<Partial<S>> => {
-    db.prepare("INSERT OR REPLACE INTO reviews (repo,pr,sha,choice,by,verdict,cost,at) VALUES (?,?,?,?,?,?,?,?)")
-      .run(s.repo, s.pr, s.info.headRefOid, s.pick.choice, s.pick.by, s.pick.choice === "none" ? "skip" : s.verdict, s.pick.choice === "none" ? 0 : (s.cost ?? 0), new Date().toISOString())
+    const claimed = (db.prepare("SELECT at FROM reviews WHERE repo=? AND pr=? AND sha=? AND verdict='running'").get(s.repo, s.pr, s.info.headRefOid) as { at: string } | undefined)?.at
+    const nowIso = new Date().toISOString()
+    db.prepare("INSERT OR REPLACE INTO reviews (repo,pr,sha,choice,by,verdict,cost,at,took_ms) VALUES (?,?,?,?,?,?,?,?,?)")
+      .run(s.repo, s.pr, s.info.headRefOid, s.pick.choice, s.pick.by, s.pick.choice === "none" ? "skip" : s.verdict, s.pick.choice === "none" ? 0 : (s.cost ?? 0), nowIso, claimed ? Math.max(0, Date.parse(nowIso) - Date.parse(claimed)) : null)
+    if (s.pick.choice !== "none" && (s.verdict === "pass" || s.verdict === "fail")) { // the dashboard's findings: this head's, and the earlier ones this push fixed
+      const round = (db.prepare("SELECT count(*) n FROM reviews WHERE repo=? AND pr=? AND verdict IN ('pass','fail')").get(s.repo, s.pr) as { n: number }).n
+      const open = (s.threads ?? []).filter((t) => !(s.fixed ?? []).includes(t.id))
+      try { saveFindings(db, s.repo, s.pr, s.info.headRefOid, round, nowIso, [...(s.inline ?? []), ...(s.outside ?? [])], open) } catch {} // the dashboard's copy must never fail a review
+    }
     if (getKv(db, `review:rerun-sha:${s.repo}#${s.pr}`) === s.info.headRefOid) { // a deliberate re-run of the broken job was asked for this head: no cached verdict, so claim() lets it be reviewed again
       db.prepare("DELETE FROM reviews WHERE repo=? AND pr=? AND sha=?").run(s.repo, s.pr, s.info.headRefOid)
       db.prepare("DELETE FROM kv WHERE k=?").run(`review:rerun-sha:${s.repo}#${s.pr}`)
@@ -583,7 +597,7 @@ export function buildReviewGraph(db: DB, deps: Deps = real) {
         const m = await fixReview(db, s.repo, s.pr, deps, deps.projects)
         if (m.startsWith("🛠") || m.startsWith("🔁") || m.startsWith("Already queued")) {
           const o = getTicket(db, wait.ticket)
-          if (o) await teamStatus({ kind: "ticket", project: o.project, ticket: o.id, title: o.title, step: "check" }, "Waiting on review fix, round 2 of 2")
+          if (o) await (await platform()).teamStatus({ kind: "ticket", project: o.project, ticket: o.id, title: o.title, step: "check" }, "Waiting on review fix, round 2 of 2")
           return { log: ["record", `auto-fix round 2: ${clip(m, 120)}`] }
         }
         // post() held the card for round 2: send it now
@@ -629,7 +643,7 @@ export type Reviewed = { state: string; why: string; url: string; log: string[];
 const BOTS = ["dependabot[bot]", "app/dependabot", "renovate[bot]", "app/renovate"]
 export function trustedAuthor(db: DB, d: Deps, repo: string, login: string | undefined, now = Date.now()): boolean {
   const who = (login ?? "").toLowerCase()
-  if (who && (who === repo.split("/")[0].toLowerCase() || OWNERS.includes(who))) return true
+  if (who && (who === repo.split("/")[0].toLowerCase() || owners().includes(who))) return true
   if (BOTS.includes(who)) return true // dependency bots open PRs from the repo itself, never a stranger's fork
   if (isPrivate(db, d, repo, now)) return true
   return !!login && /^[\w.[\]-]+$/.test(login) && d.run("gh", ["api", `repos/${repo}/collaborators/${login}`]).ok // 204 = collaborator
@@ -718,8 +732,8 @@ export async function reviewOnce(db: DB, repo: string, pr: number, o: { deps?: D
 // ---- automerge: a Dobby PR in its auto-fix loop merges once a review passes ------------------------------------
 // kv automerge:<repo>#<pr> = { ticket: the original ticket (in `fixing`), rounds, strict: a sensitive ticket (only an Opus
 // review or the owner's accept may merge it), landing: "<pid>:<ms>" while one process lands it, failed: the head whose landing failed }
-type Wait = { ticket: number; hand?: boolean; rounds?: number; strict?: boolean; landing?: string; failed?: string }
-const automergeKey = (repo: string, pr: number) => `automerge:${repo}#${pr}`
+type Wait = { ticket: number; hand?: boolean; rounds?: number; strict?: boolean; landing?: string; failed?: string; approved?: string; retries?: number; since?: number }
+export const automergeKey = (repo: string, pr: number) => `automerge:${repo}#${pr}`
 export const getWait = (db: DB, repo: string, pr: number) => JSON.parse(getKv(db, automergeKey(repo, pr)) ?? "null") as Wait | null
 /** The PR's auto-fix loop is for a sensitive ticket: its reviews must be strict (Opus). */
 export const automergeStrict = (db: DB, repo: string, pr: number) => !!getWait(db, repo, pr)?.strict
@@ -782,6 +796,7 @@ export async function landAutomerge(db: DB, d: Deps, repo: string, pr: number, o
   const shipped = async (how: string) => {
     db.prepare("DELETE FROM kv WHERE k=?").run(key)
     db.prepare("UPDATE tickets SET status='shipped', note=? WHERE id=?").run(prUrl, wait.ticket)
+    await postPrCost(d.run === run ? netRun : d.run, db, wait.ticket, prUrl)
     // the app's -shipped feed: what it was, in its own words, plus the link (no ping)
     void d.notify(`✅ Merged · ${labelOf(tk?.project ?? repo.split("/")[1], tk?.title ?? info.title)}\n${how}\n${prUrl}`, fetch, undefined, tk ? { kind: "shipped", project: tk.project } : { kind: "brief" })
     if (proj) void (d.deploy ?? deployProject)(db, proj.name).then((r) => console.log(r)) // ship policy: merged = deployed
@@ -799,7 +814,8 @@ export async function landAutomerge(db: DB, d: Deps, repo: string, pr: number, o
   if (no) return no
   // Defence in depth: whatever put this PR in the wait (a reused PR, a fix round), the safety gate runs on the head that is about to merge.
   if (!o.gated && proj) {
-    const gate = await gatePr(db, d, repo, pr, proj, info)
+    const g0 = await gatePr(db, d, repo, pr, proj, info)
+    const gate = wait.approved === info.headRefOid ? g0 : mergeAction(g0) // the every-merge floor (strict preset, safety.everyMerge) applies to this merge too, unless the owner approved exactly this head
     if (ownerLevel(gate.action)) return gate.retry ? `safety check inconclusive (${gate.retry}); retried on the next scan` : ownerOutcome(db, d, repo, pr, gate)
     if (gate.action === "review" && !wait.strict) { // a review-level change needs an Opus pass: the sweep runs the strict review now
       db.prepare("UPDATE kv SET v=? WHERE k=? AND v=?").run(JSON.stringify({ ...wait, strict: true }), key, raw)
@@ -818,8 +834,13 @@ export async function landAutomerge(db: DB, d: Deps, repo: string, pr: number, o
   const rebase = (sha: string) => proj
     ? rebaseAndPush(ra, proj.repo, `${DATA}/wt/${proj.name}-${wait.ticket}-rebase`, info.headRefName, info.baseRefName, async (wt) => { await heavy(`install in ${wt}`, () => stepSh(proj.install, wt, "install", 4000, { timeoutMs: timeoutMs("install") })); return heavy(`verify in ${wt}`, () => stepSh(inWorktree(proj.verify), wt, "verify", 1000, { timeoutMs: timeoutMs("verify") })) }, sha)
     : { ok: false, out: `no Dobby project for ${repo}, so no rebase` }
-  const m = await landPr(ra, { repo, pr, sha: info.headRefOid, merge: ["pr", "merge", String(pr), "-R", repo, ...mergeFlags()], rebase, sleep: d.sleep })
+  const m = await landPr(ra, { repo, pr, sha: info.headRefOid, merge: ["pr", "merge", String(pr), "-R", repo, ...mergeFlags()], rebase, sleep: d.sleep, held: () => paused(db, { kind: "merges", project: proj0, ticket: wait.ticket }) })
   if (m.ok) return shipped(wait.hand || !wait.rounds ? "The review passed." : "Review found issues; they were fixed automatically, then it passed.")
+  const tries = (wait.retries ?? 0) + 1, since = wait.since ?? Date.now()
+  if (m.held || (m.transient && tries < 3 && Date.now() - since < 6 * 3600_000)) { // a pause, or a failure that is not about the PR (network, slow CI, queue): release the marker, leave the ticket and the head alone, the next sweep tries again (3 tries or 6 hours)
+    db.prepare("UPDATE kv SET v=? WHERE k=? AND v=?").run(JSON.stringify(m.held ? { ...wait, landing: undefined } : { ...wait, landing: undefined, retries: tries, since }), key, taken)
+    return m.held ? `merges ${m.held}; it lands after resume` : `not landed yet, retried on the next scan: ${clip(m.out, 120)}`
+  }
   // checks red, conflict with main, or any refusal: release the key (a later passing head still merges), fail the ticket once
   db.prepare("UPDATE kv SET v=? WHERE k=? AND v=?").run(JSON.stringify({ ...wait, landing: undefined, failed: info.headRefOid }), key, taken)
   db.prepare("UPDATE tickets SET status='failed', note=? WHERE id=? AND status!='shipped'").run(`review passed, merge failed: ${clip(m.out, 300)}\n${prUrl}`, wait.ticket)
@@ -836,21 +857,24 @@ export async function landAutomerge(db: DB, d: Deps, repo: string, pr: number, o
 /** Does a pass merge this PR? A Dobby or Scout branch, or the owner's own PR (ownerLand). Its review ignores learnings and
  * path filters, and a failed head is never re-rolled by `full review`. */
 export const landsOnReview = (repo: string, i: { headRefName?: string; author?: { login: string } }) =>
-  /^(dobby|foreman|scout)\//.test(i.headRefName ?? "") || [repo.split("/")[0].toLowerCase(), ...OWNERS].includes((i.author?.login ?? "-").toLowerCase())
+  /^(dobby|foreman|scout)\//.test(i.headRefName ?? "") || [repo.split("/")[0].toLowerCase(), ...owners()].includes((i.author?.login ?? "-").toLowerCase())
 
-export async function ownerLand(db: DB, d: Deps, repo: string, pr: number): Promise<string> {
+export async function ownerLand(db: DB, d: Deps, repo: string, pr: number, approved = false): Promise<string> {
   const proj = projectFor(repo, d.run, d.projects)
   if (!proj || config().clientProjects.includes(proj.name) || proj.paused) return "not landed: no active Dobby project (client work is never merged by agents)"
-  if (everyMergeFloor() === "owner") return "not landed: every merge waits for you (safety); merge it yourself"
-  const v = d.run("gh", ["pr", "view", String(pr), "-R", repo, "--json", "state,isDraft,author,title,headRefName,baseRefName,isCrossRepository,headRefOid"])
+  if (!approved && everyMergeFloor() === "owner") return "not landed: every merge waits for you (safety); merge it yourself"
+  const v = d.run("gh", ["pr", "view", String(pr), "-R", repo, "--json", "state,isDraft,author,title,body,headRefName,baseRefName,isCrossRepository,headRefOid,mergeable"])
   if (!v.ok) return `gh pr view: ${clip(v.out, 120)}`
-  const i = JSON.parse(v.out) as Pr & { state: string; isCrossRepository?: boolean; headRefOid?: string }
+  const i = JSON.parse(v.out) as Pr & { state: string; isCrossRepository?: boolean; headRefOid?: string; mergeable?: string }
+  if (approved && i.state === "OPEN" && i.mergeable === "CONFLICTING") return `not landed: ${CONFLICT_NOTE} Resolve it (or merge main into the branch), then merge again.`
+  const wasDraft = i.isDraft && approved && ownerDraft(i) // the draft Dobby opened for the owner: their own Merge marks it ready first
   const who = (i.author?.login ?? "").toLowerCase()
-  if (i.state !== "OPEN" || i.isDraft || i.isCrossRepository || i.baseRefName !== proj.base || i.headRefName.startsWith("scout/")) return "not landed: not an open, ready PR on the project's base"
-  if (!who || (who !== repo.split("/")[0].toLowerCase() && !OWNERS.includes(who))) return "not landed: not the owner's PR"
+  if (i.state !== "OPEN" || (i.isDraft && !wasDraft) || i.isCrossRepository || i.baseRefName !== proj.base || i.headRefName.startsWith("scout/")) return "not landed: not an open, ready PR on the project's base"
+  const dobbyOwn = approved && /^(dobby|foreman)\//.test(i.headRefName) // a branch Dobby opened, merged by the owner's own tap: its author is whoever gh is signed in as, in any account config
+  if (!dobbyOwn && (!who || (who !== repo.split("/")[0].toLowerCase() && !owners().includes(who)))) return "not landed: not the owner's PR"
   const seen = JSON.parse(getKv(db, `safety:land:${repo}#${pr}`) ?? "null") as { oid: string; cfg?: string; why: string } | null
   if (seen && seen.oid === i.headRefOid && seen.cfg === JSON.stringify(config().safety)) return `not landed: owner-only work (${seen.why})` // same head, same answer: not classified again on every scan
-  const gate = await gatePr(db, d, repo, pr, proj, i)
+  const gate = approved ? await gatePr(db, d, repo, pr, proj, i) : mergeAction(await gatePr(db, d, repo, pr, proj, i)) // approved = the owner's own Merge: it skips the every-merge floor, never the category gate; every-merge floor: strict review at "review", the owner at "owner"
   if (ownerLevel(gate.action)) {
     // cached per head and per safety config, and only for a real answer: a failed diff read or an unanswered model is retried on the next scan
     if (gate.retry) return `not landed: safety check inconclusive (${gate.retry}); retried on the next scan`
@@ -861,11 +885,19 @@ export async function ownerLand(db: DB, d: Deps, repo: string, pr: number): Prom
   if (/^(dobby|foreman)\//.test(i.headRefName)) {
     const t = db.prepare("SELECT id, status, title, done_when, size FROM tickets WHERE branch=? OR id=? ORDER BY id DESC").get(i.headRefName, Number(i.headRefName.match(/^(?:dobby|foreman)\/(\d+)$/)?.[1])) as { id: number; status: string; title: string; done_when: string; size: string } | undefined
     if (!t) return `not landed: ${i.headRefName} is a Dobby branch but no ticket has it, so nothing says what it should do. Merge it yourself on GitHub if you want it.`
-    if (t.status !== "failed") return "not landed: its ticket is still in flight" // running/fixing tickets land themselves
+    if (t.status !== "failed") return `not landed: its ticket #${t.id} is still in flight. It merges itself once its review passes and merges are on (dobby resume merges). The review runs in dobby start or the tick job. Check it with dobby show ${t.id}` // running/fixing tickets land themselves
     ticket = t.id
     strict ||= riskPath(t).sensitive // as the ship step sets it: a sensitive ticket merges only on an Opus pass
   }
-  db.prepare("INSERT OR IGNORE INTO kv VALUES (?, ?)").run(automergeKey(repo, pr), JSON.stringify({ ticket, hand: true, strict }))
+  if (approved && i.headRefOid) { // the owner's own Merge of a docs/text-only PR: the reviewer skips those on purpose, so the skip stands in for a pass (code PRs still need one)
+    const nm = d.run("gh", ["pr", "diff", String(pr), "-R", repo, "--name-only"])
+    const fs = nm.ok ? nm.out.split("\n").map((f) => f.trim()).filter(Boolean) : []
+    const row = db.prepare("SELECT verdict FROM reviews WHERE repo=? AND pr=? AND sha=?").get(repo, pr, i.headRefOid) as { verdict: string } | undefined
+    if (fs.length && fs.every((f) => TEXT.test(f) && !sensitivePath(f)) && (!row || row.verdict === "skip"))
+      db.prepare("INSERT OR REPLACE INTO reviews (repo,pr,sha,choice,by,verdict,cost,at) VALUES (?,?,?,'none','owner','accepted',0,?)").run(repo, pr, i.headRefOid, new Date().toISOString())
+  }
+  if (wasDraft) { const rd = d.run("gh", ["pr", "ready", String(pr), "-R", repo]); if (!rd.ok) return `not landed: could not mark the draft ready: ${clip(rd.out, 120)}` }
+  db.prepare("INSERT OR IGNORE INTO kv VALUES (?, ?)").run(automergeKey(repo, pr), JSON.stringify({ ticket, hand: true, strict, ...(approved && i.headRefOid ? { approved: i.headRefOid } : {}) }))
   if (strict) db.prepare("UPDATE kv SET v=json_set(v, '$.strict', json('true')) WHERE k=?").run(automergeKey(repo, pr)) // an older hand wait never loses strict
   return landAutomerge(db, d, repo, pr, { gated: true })
 }
@@ -948,6 +980,38 @@ export async function sweepRebase(db: DB, d: Deps, projects: Record<string, Proj
       .find((x) => x.mergeable === "CONFLICTING" && !x.isCrossRepository && /^(dobby|foreman)\//.test(x.headRefName) && getKv(db, `rebase:${slug}#${x.number}`) !== x.headRefOid && Number(getKv(db, `rebase:${slug}#${x.number}:${x.headRefOid}`) ?? 0) < 3 // capped heads are skipped, the next PR gets the slot
         && !db.prepare("SELECT 1 FROM tickets WHERE onto=? AND status IN ('ready','running')").get(x.headRefName)) // a fix ticket is building on it
     if (x) out.push(await rebaseOne(db, d, p, slug, x))
+  }
+  return out
+}
+
+export const CONFLICT_NOTE = "Conflicts with main: the PR cannot merge until the conflict is resolved."
+
+/**
+ * A held draft the owner merged by hand (ticket failed, "needs you: ...", its PR link in the note): nothing else watches that PR, so the ticket
+ * stayed failed and showed as Stuck. A merged PR = shipped, with the steps of any merge: cost line, shipped feed, deploy (which waits for the tap when safety.deploy is ask).
+ */
+export async function syncHeldMerged(db: DB, d: Deps) {
+  const out: string[] = []
+  const rows = db.prepare("SELECT id, project, title, note FROM tickets WHERE status='failed' AND note LIKE 'needs you:%' AND note LIKE '%github.com/%/pull/%' ORDER BY id LIMIT 20").all() as { id: number; project: string; title: string; note: string }[]
+  for (const t of rows) {
+    const m = t.note.match(/https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/)
+    if (!m) continue
+    const v = d.run("gh", ["pr", "view", m[0], "--json", "state,mergeable"])
+    let st: { state?: string; mergeable?: string } = {}
+    try { st = v.ok ? JSON.parse(v.out) : {} } catch { /* unreadable: leave the ticket alone */ }
+    if (st.state === "OPEN") { // a draft held for the owner can rot behind main: say so on the ticket, and clear it when it merges cleanly again
+      const flagged = t.note.includes(CONFLICT_NOTE)
+      if (st.mergeable === "CONFLICTING" && !flagged) db.prepare("UPDATE tickets SET note=? WHERE id=? AND status='failed'").run(`${t.note}\n${CONFLICT_NOTE}`.slice(0, 1000), t.id), out.push(`#${t.id} ${m[0]} conflicts with the base branch`)
+      else if (st.mergeable === "MERGEABLE" && flagged) db.prepare("UPDATE tickets SET note=? WHERE id=? AND status='failed'").run(t.note.replace(`\n${CONFLICT_NOTE}`, ""), t.id)
+    }
+    if (st.state !== "MERGED") continue
+    db.prepare("UPDATE tickets SET status='shipped', note=? WHERE id=? AND status='failed'").run(m[0], t.id)
+    db.prepare("DELETE FROM kv WHERE k IN (?, ?)").run(automergeKey(m[1], Number(m[2])), `safety:card:${m[1]}#${m[2]}`)
+    await postPrCost(d.run === run ? netRun : d.run, db, t.id, m[0])
+    void d.notify(`✅ Merged · ${labelOf(t.project, t.title)}\nThe owner merged it.\n${m[0]}`, fetch, undefined, { kind: "shipped", project: t.project })
+    const proj = projectFor(m[1], d.run, d.projects)
+    if (proj) void (d.deploy ?? deployProject)(db, proj.name).then((r) => console.log(r))
+    out.push(`#${t.id} shipped (the owner merged ${m[0]})`)
   }
   return out
 }
@@ -1038,6 +1102,7 @@ export async function scan(db: DB, o: { dry?: boolean; budget: () => { ok: boole
   // since when reviews have been held by the budget (the pipeline health check warns after 2 hours)
   if (!o.dry) skipped ? db.prepare("INSERT OR IGNORE INTO kv VALUES ('review:skipped-since', ?)").run(String(now)) : db.prepare("DELETE FROM kv WHERE k='review:skipped-since'").run()
   if (!o.dry) {
+    out.push(...await syncHeldMerged(db, d))
     out.push(...await sweepAutomerge(db, d, () => o.budget().ok))
     for (const l of landable) { const r = await ownerLand(db, d, l.repo, l.pr).catch((e) => (e as Error).message); if (!r.startsWith("not landed")) out.push(`${l.repo} #${l.pr} owner land: ${r}`) }
     out.push(...await sweepRebase(db, d))
@@ -1137,7 +1202,7 @@ export async function ownerOutcome(db: DB, d: Deps, repo: string, pr: number, g:
 }
 
 /** 🛠 Fix it: a ready ticket that builds on the PR's own head branch and pushes back to it (no new PR, no merge). Owner-only work is refused. */
-export async function fixReview(db: DB, repo: string, pr: number, d: Deps = real, projects: Record<string, Project> = loadProjects()): Promise<string> {
+export async function fixReview(db: DB, repo: string, pr: number, d: Deps = real, projects: Record<string, Project> = loadProjects(), only?: { lines: string[]; title: string }): Promise<string> {
   if (!okRepo(repo, pr)) return "usage: reviewfix <owner/repo> <pr>"
   const p = projectFor(repo, d.run, projects)
   if (!p) return `Can't: ${repo} has no Dobby project (no dobby.md for its clone under ${config().paths.projects}). Fix it by hand or add the project.`
@@ -1156,14 +1221,46 @@ export async function fixReview(db: DB, repo: string, pr: number, d: Deps = real
     return /already tried/.test(r) ? `Won't: ${repo}#${pr} conflicts with ${info.baseRefName} and Dobby already tried to rebase this head.`
       : /: (pushed|not mechanical|ticket already queued)/.test(r) ? `🔁 ${repo}#${pr} conflicts with ${info.baseRefName}: ${r}` : `Couldn't start: ${repo}#${pr} conflicts with ${info.baseRefName} and the rebase did not run: ${r}` // only a real start counts as a round
   }
-  const found = JSON.parse(getKv(db, `review:findings:${repo}#${pr}`) ?? "[]") as string[]
+  const found = only?.lines ?? JSON.parse(getKv(db, `review:findings:${repo}#${pr}`) ?? "[]") as string[]
   if (!found.length) return rerunReview(db, d, repo, pr, info.headRefName, info.headRefOid)
-  const title = `Fix review findings on ${repo}#${pr}`
+  const title = only?.title ?? `Fix review findings on ${repo}#${pr}`
   const dup = db.prepare("SELECT id FROM tickets WHERE title=? AND status IN ('backlog','ready','running','approval','fixing')").get(title) as { id: number } | undefined
   if (dup) return `Already queued as ticket #${dup.id}: ${title}`
-  const done_when = `Every open Claude Review finding on https://github.com/${repo}/pull/${pr} is fixed (the review then passes on the push):\n${found.map((f) => `- ${f}`).join("\n")}`
+  const done_when = `${only ? "This Claude Review finding" : "Every open Claude Review finding"} on https://github.com/${repo}/pull/${pr} is fixed (the review then passes on the push):\n${found.map((f) => `- ${f}`).join("\n")}`
   const t = addTicket(db, { project: p.name, title, done_when, size: "M", risk: "high", priority: 80, onto: info.headRefName })
   return `🛠 Ticket #${t.id} (${p.name}): ${title}. It builds on ${info.headRefName} and pushes there: no new PR, no merge. Claude Review re-runs on the push.`
+}
+
+/** The dashboard's Apply on one finding: `@dobby fix` scoped to it. A fix ticket on the PR's branch; nothing is pushed or merged here. */
+export async function applyFinding(db: DB, id: number, d: Deps = real, projects: Record<string, Project> = loadProjects()): Promise<string> {
+  const f = findingById(db, id)
+  if (!f) return `no finding #${id}`
+  if (f.state !== "open" && f.state !== "queued") return `Finding #${id} is ${f.state}; there is nothing to apply.`
+  const line = `${f.path}:${f.line} [${f.severity}] ${f.problem}${f.fix ? ` Fix: ${f.fix}` : ""}${f.suggestion ? `\nSuggested replacement for that line:\n${f.suggestion}` : ""}`
+  const r = await fixReview(db, f.repo, f.pr, d, projects, { lines: [line], title: `Fix review finding ${f.path}:${f.line} on ${f.repo}#${f.pr}` })
+  if (r.startsWith("🛠")) db.prepare("UPDATE findings SET state='queued' WHERE id=?").run(id)
+  return r
+}
+/** Dismiss: the finding is intentional. Same effect as `@dobby learn` on its thread: later reviews of the repo leave it out. */
+export function dismissFinding(db: DB, id: number): string {
+  const f = findingById(db, id)
+  if (!f) return `no finding #${id}`
+  if (f.state === "dismissed") return `Finding #${id} is already dismissed.`
+  learn(db, f.repo, { path: f.path, problem: f.problem }, settingsFor(f.repo).maxLearnings)
+  db.prepare("UPDATE findings SET state='dismissed' WHERE id=?").run(id)
+  return `Dismissed: later reviews of ${f.repo} treat ${f.path}:${f.line} as intentional.`
+}
+export const RULE_MAX = 300
+/** The rule a finding would become: its own words unless the owner wrote others. Shown before it is saved. */
+export const ruleText = (problem: string, text?: string) => clip((text?.trim() || problem).replace(/\s+/g, " "), RULE_MAX)
+/** A learning for the whole repo (not one file) from a finding. */
+export function ruleFromFinding(db: DB, id: number, text?: string): string {
+  const f = findingById(db, id)
+  if (!f) return `no finding #${id}`
+  const rule = ruleText(f.problem, text)
+  learn(db, f.repo, { path: "any file", problem: rule }, settingsFor(f.repo).maxLearnings)
+  db.prepare("UPDATE findings SET state='ruled' WHERE id=?").run(id)
+  return `Rule saved for ${f.repo}: ${rule}`
 }
 
 // ---- chat: the owner asks @dobby (or the old @foreman) in a PR thread ----------------------------------------------------------------

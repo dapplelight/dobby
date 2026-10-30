@@ -1,9 +1,11 @@
 // Shared pieces: shell, roles, projects (dobby.md), the usage budget, tickets, and one claude call that always logs itself.
+import { fileURLToPath } from "node:url"
 import { paused } from "./pause.ts"
 import { loginShell } from "./shell.ts"
 import { spawn, spawnSync } from "node:child_process"
-import { apiKey, callApi, useApi } from "./api.ts"
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { AsyncLocalStorage } from "node:async_hooks"
+import { apiKey, callApi, claudeKeyEnv, useApi } from "./api.ts"
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, lstatSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { createRequire } from "node:module"
 import { dirname, join } from "node:path"
@@ -12,15 +14,16 @@ import { logRun, type DB } from "./db.ts"
 import { parseResult } from "./run.ts"
 import type { Ctx } from "./policy.ts"
 import { ticketGate, unsureOwner } from "./safety.ts"
-import { clip, outbound, readSecrets, shortTitle } from "./telegram.ts"
+import { pushRefusal } from "./privacy.ts"
+import { clip, outbound, readSecrets, redact, shortTitle } from "./notify.ts"
 import { builderEnv, INSTALL_DOMAINS, SAFE_GIT, sandboxMode, sandboxSettings, scratchDir, stepSettings, withGitConfig } from "./sandbox.ts"
 import { withTelemetry } from "./telemetry.ts"
 import { rules } from "./tools.ts"
-import { config, draftDirs, zoned, zonedDay } from "./config.ts"
+import { config, configDir, draftDirs, isProjectDraft, privateConfigPath, logStamp, zoned, zonedDay } from "./config.ts"
 import { CEILING, contextTokens, lastAssistantText, repoSlug, runUsage, transcriptDir } from "./savings.ts"
 export { repoSlug }
 
-export const ROOT = new URL("..", import.meta.url).pathname
+export const ROOT = fileURLToPath(new URL("..", import.meta.url))
 // Every git this process and its children start runs without hooks or fsmonitor (SAFE_GIT in sandbox.ts).
 Object.assign(process.env, withGitConfig(process.env, SAFE_GIT))
 // Rules for every agent (src/tools.ts, agent-rules/): core plus caveman, graph first, rtk, ponytail, jev when on and found. They go in as
@@ -70,7 +73,7 @@ export function timeoutMs(k: keyof typeof TIMEOUTS, env = process.env): number {
   return v > 0 ? v : TIMEOUTS[k]
 }
 /** Owner commands that may land a PR (checks wait up to 40 min, rebase, install, verify) or deploy: the long child limit. */
-const LONG_VERBS = /^(approve|decline|reviewaccept|reviewfix|scoutmerge|undo-scout|deploynow|send|run|company|buildidea)\b/i
+const LONG_VERBS = /^(approve|decline|cancel|reviewaccept|reviewfix|scoutmerge|undo-scout|deploynow|send|run|company|buildidea)\b/i
 export const doTimeoutMs = (command: string, env = process.env) => timeoutMs(LONG_VERBS.test(command.trim()) ? "do_long" : "do", env)
 /** SIGTERM first, SIGKILL after this grace, so a child's own hook can stop its groups and clean up. */
 export const KILL_GRACE_MS = 5_000
@@ -79,6 +82,8 @@ export type Out = { ok: boolean; out: string }
 export type ARun = (cmd: string, args: string[], cwd?: string) => Out | Promise<Out>
 export type RunOpts = { cwd?: string; timeoutMs?: number; signal?: AbortSignal; keep?: number; all?: boolean; env?: NodeJS.ProcessEnv; graceMs?: number; input?: string }
 const OUT_CAP = 64 * 1024 * 1024 // like spawnSync's maxBuffer, but the tail is kept instead of failing
+/** Inside `ticketScope`, every runAsync child's process group is recorded in kv `pgid:<ticket>:<pid>` while it runs: `dobby cancel` SIGTERMs exactly those. */
+export const ticketScope = new AsyncLocalStorage<{ db: DB; id: number }>()
 const groups = new Set<number>() // process groups still running: stopped when this process exits or is signalled
 const signalGroup = (pid: number, sig: NodeJS.Signals) => { try { process.kill(-pid, sig) } catch {} }
 /** SIGTERM the group, SIGKILL whatever is left after `grace`. */
@@ -112,15 +117,20 @@ function stopGroupsOnExit() {
 export function runAsync(cmd: string, args: string[], o: RunOpts = {}): Promise<Out & { timedOut?: boolean }> {
   return new Promise((resolve) => {
     let p: ReturnType<typeof spawn>
-    try { p = spawn(cmd, outbound(cmd, args), { cwd: o.cwd, env: o.env, detached: true, stdio: [o.input === undefined ? "ignore" : "pipe", "pipe", "pipe"] }) } catch (e) { return resolve({ ok: false, out: (e as Error).message }) }
-    if (o.input !== undefined) p.stdin!.on("error", () => {}).end(o.input) // input = stdin (a prompt); a child that exits early is not an error here
+    const refused = cmd === "git" && args[0] === "push" ? pushRefusal(args, o.cwd) : null
+    if (refused) return resolve({ ok: false, out: refused })
+    try { p = spawn(cmd, outbound(cmd, args, o.cwd), { cwd: o.cwd, env: o.env, detached: true, stdio: [o.input === undefined ? "ignore" : "pipe", "pipe", "pipe"] }) } catch (e) { return resolve({ ok: false, out: (e as Error).message }) }
+    if (o.input !== undefined) p.stdin!.on("error", () => {}).end(cmd === "gh" ? redact(o.input) : o.input) // input = stdin (a prompt); a child that exits early is not an error here
     stopGroupsOnExit()
     const pid = p.pid
     if (pid) groups.add(pid)
-    let so = "", se = "", timedOut = false, aborted = false, done = false, grace: ReturnType<typeof setTimeout> | undefined
+    const sc = ticketScope.getStore()
+    const pgKey = sc && pid ? `pgid:${sc.id}:${pid}` : ""
+    if (pgKey) try { sc!.db.prepare("INSERT OR REPLACE INTO kv VALUES (?, '1')").run(pgKey) } catch {}
+    let so = "", se = "", ao = "", timedOut = false, aborted = false, done = false, grace: ReturnType<typeof setTimeout> | undefined
     const cap = (s: string) => (s.length > OUT_CAP ? s.slice(-OUT_CAP) : s)
-    p.stdout!.setEncoding("utf8").on("data", (d: string) => (so = cap(so + d)))
-    p.stderr!.setEncoding("utf8").on("data", (d: string) => (se = cap(se + d)))
+    p.stdout!.setEncoding("utf8").on("data", (d: string) => (so = cap(so + d), ao = cap(ao + d)))
+    p.stderr!.setEncoding("utf8").on("data", (d: string) => (se = cap(se + d), ao = cap(ao + d))) // ao: both streams in arrival order, so a failing check's output is not buried under a later passing one's stdout
     const stop = () => { if (pid) stopGroup(pid, o.graceMs) }
     const timer = o.timeoutMs ? setTimeout(() => { timedOut = true; stop() }, o.timeoutMs) : undefined
     const onAbort = () => { aborted = true; stop() }
@@ -132,9 +142,10 @@ export function runAsync(cmd: string, args: string[], o: RunOpts = {}): Promise<
       clearTimeout(timer), clearTimeout(grace)
       o.signal?.removeEventListener("abort", onAbort)
       if (pid) groups.delete(pid)
+      if (pgKey) try { sc!.db.prepare("DELETE FROM kv WHERE k=?").run(pgKey) } catch {}
       const ok = code === 0 && !timedOut && !aborted && !err
       const why = timedOut ? `\n(timed out after ${Math.round(o.timeoutMs! / 1000)} s: stopped)` : aborted ? "\n(aborted: stopped)" : err
-      const out = (ok && !o.all ? so : so + se) + why
+      const out = (ok && !o.all ? so : o.all ? ao : so + se) + why
       resolve({ ok, out: o.keep === undefined ? out : out.slice(-o.keep), ...(timedOut ? { timedOut } : {}) })
     }
     p.on("error", (e) => finish(null, e.message))
@@ -153,12 +164,21 @@ export const shAsync = (cmd: string, cwd: string, keep = 4000, o: Omit<RunOpts, 
  * registries only; verify: no network. DOBBY_BUILDER_SANDBOX=off runs it as before.
  */
 export function stepSh(cmd: string, cwd: string, net: "install" | "verify", keep = 4000, o: Omit<RunOpts, "cwd" | "keep" | "all" | "env"> = {}) {
+  const c = stepCommand(cmd, cwd, net)
+  return runAsync(c.file, c.args, { ...o, cwd, keep, all: true, ...(c.env ? { env: c.env } : {}) })
+}
+/** What stepSh runs, as data: file, args and env (undefined = the process env). */
+export function stepCommand(cmd: string, cwd: string, net: "install" | "verify"): { file: string; args: string[]; env?: NodeJS.ProcessEnv } {
   const box = isolation("build", cwd)
-  if (box.mode === "off") return shAsync(cmd, cwd, keep, o)
-  if (box.mode === "env-only") return runAsync(...loginShell(cmd), { ...o, cwd, keep, all: true, env: box.env })
+  if (box.mode === "off") return { file: loginShell(cmd)[0], args: loginShell(cmd)[1] }
+  if (box.mode === "env-only") return { file: loginShell(cmd)[0], args: loginShell(cmd)[1], env: box.env }
   const file = `${scratchDir(cwd)}/srt-${net}.json`
   writeFileSync(file, JSON.stringify(stepSettings(cwd, net === "install" ? [...INSTALL_DOMAINS, ...(config().installDomains ?? [])] : [])))
-  return runAsync(`${ROOT}node_modules/.bin/srt`, ["-s", file, ...loginShell(cmd).flat()], { ...o, cwd, keep, all: true, env: box.env })
+  return { file: process.execPath, args: [srtCli(), "-s", file, ...loginShell(cmd).flat()], env: box.env }
+}
+/** The srt runner (@anthropic-ai/sandbox-runtime), found the way node finds it: under npx, bunx and pnpm dlx it is hoisted above ROOT, not in ROOT/node_modules/.bin. */
+export function srtCli(from = import.meta.url): string {
+  return join(dirname(createRequire(from).resolve("@anthropic-ai/sandbox-runtime/package.json")), "dist/cli.js")
 }
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
@@ -209,7 +229,8 @@ const LOCK_ERROR = /\.lock'?:? File exists|Unable to create '.*\.lock'|cannot lo
  * Same output as review.ts run.
  */
 export const netRun: ARun = (cmd, args, cwd) => {
-  const go = () => runAsync(cmd, args, { cwd, timeoutMs: timeoutMs(cmd === "git" && args[0] === "push" ? "push" : "git") })
+  // LC_ALL=C: LOCK_ERROR and callers match git's English messages, whatever the owner's locale
+  const go = () => runAsync(cmd, args, { cwd, timeoutMs: timeoutMs(cmd === "git" && args[0] === "push" ? "push" : "git"), ...(cmd === "git" ? { env: { ...process.env, LC_ALL: "C" } } : {}) })
   if (cmd !== "git" || !LOCKED_GIT.has(args[0])) return go()
   return repoLock(gitCommonDir(cwd), async () => {
     const r = await go()
@@ -224,10 +245,50 @@ export function claimKey(db: DB, key: string, now = Date.now()): boolean {
   const mine = `${process.pid}:${now}`
   if (db.prepare("INSERT OR IGNORE INTO kv VALUES (?, ?)").run(key, mine).changes) return true
   const v = (db.prepare("SELECT v FROM kv WHERE k=?").get(key) as { v: string } | undefined)?.v ?? ""
-  const pid = Number(v.split(":")[0])
-  let alive = true
-  try { if (pid) process.kill(pid, 0); else alive = false } catch { alive = false }
-  return !alive && db.prepare("UPDATE kv SET v=? WHERE k=? AND v=?").run(mine, key, v).changes === 1
+  return !claimAlive(v) && db.prepare("UPDATE kv SET v=? WHERE k=? AND v=?").run(mine, key, v).changes === 1
+}
+
+/** Whoever builds a ticket records `build:<id>` = `<pid>:<ms>` (the claimKey format) while it runs; the tick's orphan reset skips live holders. */
+export const setBuildClaim = (db: DB, id: number) => void db.prepare("INSERT OR REPLACE INTO kv VALUES (?, ?)").run(`build:${id}`, `${process.pid}:${Date.now()}`)
+export const clearBuildClaim = (db: DB, id: number) => void db.prepare("DELETE FROM kv WHERE k=?").run(`build:${id}`)
+const pidAlive = (pid: number) => { try { process.kill(pid, 0); return true } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM" } }
+/** The tick lock (kv `lock`) is `<ms>:<pid>`, the ms refreshed every 5 minutes while the tick lives. Old rows are just `<ms>`. */
+export const LOCK_MS = 90 * 60_000 // the longest allowed tick: a lock with no heartbeat for this long is stale
+export const lockValue = () => `${Date.now()}:${process.pid}`
+export const lockAt = (v: string | undefined) => Number((v ?? "").split(":")[0]) || 0
+/** The held tick lock, with `stale` set to why it can be taken over (holder pid gone, or no heartbeat for LOCK_MS); null when free. */
+export function lockHeld(db: DB, now = Date.now(), alive: (pid: number) => boolean = pidAlive): { at: number; pid: number; age: number; stale: string | null } | null {
+  const v = (db.prepare("SELECT v FROM kv WHERE k='lock'").get() as { v: string } | undefined)?.v
+  if (v === undefined) return null
+  const at = lockAt(v), pid = Number(v.split(":")[1]) || 0, age = now - at
+  return { at, pid, age, stale: pid && !alive(pid) ? `process ${pid} is gone` : age >= LOCK_MS ? `no heartbeat for ${Math.round(age / 60_000)} minutes` : null }
+}
+/** Frees a stale tick lock and puts back running tickets nobody is building (a hard crash leaves both). Returns why the lock was stale, if it was. */
+export function reapDead(db: DB, now = Date.now(), alive?: (pid: number) => boolean): string | null {
+  const l = lockHeld(db, now, alive)
+  if (l?.stale) db.prepare("DELETE FROM kv WHERE k='lock'").run()
+  resetOrphans(db)
+  return l?.stale ?? null
+}
+/** A `<pid>:<ms>` claim whose holder is still running. A process that started after the claim was written is a reused pid (reboot), not the holder. */
+export function claimAlive(v: string | undefined): boolean {
+  const [a, b] = (v ?? "").split(":"), pid = Number(a), ms = Number(b)
+  if (!pid || !pidAlive(pid)) return false
+  const started = Date.parse(spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).stdout?.trim() ?? "")
+  return !(ms > 0 && started > ms + 600_000) // 10 min: lstart has whole seconds and the clock can step back (NTP after wake); NaN (no ps) compares false: alive
+}
+/** Running tickets with no live builder (no claim, or its pid is gone) go back to ready; returns the ones reset. */
+export function resetOrphans(db: DB): { id: number; project: string; title: string }[] {
+  const rows = db.prepare("SELECT id, project, title FROM tickets WHERE status='running'").all() as { id: number; project: string; title: string }[]
+  return rows.filter((t) => {
+    if (claimAlive((db.prepare("SELECT v FROM kv WHERE k=?").get(`build:${t.id}`) as { v: string } | undefined)?.v)) return false
+    // a builder outlives its killed worker (detached group): stop what the dead build recorded before re-queueing
+    for (const r of db.prepare("SELECT k FROM kv WHERE k LIKE ?").all(`pgid:${t.id}:%`) as { k: string }[]) { const g = Number(r.k.split(":")[2]); if (g > 1) signalGroup(g, "SIGTERM") }
+    db.prepare("DELETE FROM kv WHERE k LIKE ?").run(`pgid:${t.id}:%`)
+    db.prepare("UPDATE tickets SET status='ready' WHERE id=?").run(t.id)
+    db.prepare("DELETE FROM kv WHERE k=?").run(`build:${t.id}`)
+    return true
+  })
 }
 
 /** Throwaway `-rebase` worktrees (rebaseAndPush) left by a killed process, over an hour old: removed and unregistered at startup. */
@@ -247,6 +308,67 @@ export function sweepRebaseWorktrees(wt: string, now = Date.now(), maxAgeMs = 36
     } catch {}
   }
   return gone
+}
+
+const DAY = 86_400_000
+const GONE = ["shipped", "declined", "failed"] // ended: their worktree and branch are no longer needed
+const liveClaim = (db: DB, id: number) => claimAlive((db.prepare("SELECT v FROM kv WHERE k=?").get(`build:${id}`) as { v: string } | undefined)?.v)
+const git = (repo: string, ...a: string[]) => spawnSync("git", ["-C", repo, ...a], { encoding: "utf8" })
+
+/**
+ * Old dirs under `wt`, removed (git worktree remove --force, then rm -rf if git did not know it; one `worktree prune` per repo).
+ * A `<project>-<id>` dir goes when its ticket is gone or ended (shipped/declined/failed), has no live build claim, and the dir is
+ * over a day old; ready/running/fixing/approval/backlog tickets always keep theirs. Any other dir (base/review/scout checkouts)
+ * goes after a day unless a process still has its path. `repos` = project name -> repo path. Returns the names removed.
+ */
+export function sweepTicketWorktrees(db: DB, wt: string, repos: Record<string, string>, now = Date.now()): string[] {
+  const gone: string[] = [], prune = new Map<string, string[]>()
+  let names: string[] = []
+  try { names = readdirSync(wt) } catch { return gone }
+  const ps = spawnSync("ps", ["-axo", "command="], { encoding: "utf8" }).stdout ?? ""
+  for (const n of names) {
+    const d = `${wt}/${n}`
+    try {
+      const st = lstatSync(d)
+      if (!st.isDirectory() || now - st.mtimeMs < DAY) continue
+      const m = n.match(/^(.+)-(\d+)$/), repo = m && repos[m[1]]
+      let args: string[] | undefined
+      if (repo) {
+        const t = db.prepare("SELECT status FROM tickets WHERE id=?").get(Number(m![2])) as { status: string } | undefined
+        if ((t && !GONE.includes(t.status)) || liveClaim(db, Number(m![2]))) continue
+        git(repo, "worktree", "remove", "--force", d)
+        args = ["-C", repo]
+      } else {
+        if (ps.includes(d)) continue
+        const gitdir = (() => { try { return readFileSync(`${d}/.git`, "utf8").match(/^gitdir:\s*(.+)$/m)?.[1]?.trim() } catch {} })()
+        const common = gitdir?.replace(/\/worktrees\/[^/]+\/?$/, "")
+        if (common) args = ["--git-dir", common]
+      }
+      rmSync(d, { recursive: true, force: true })
+      if (args) prune.set(args.join(" "), args)
+      gone.push(n)
+    } catch {}
+  }
+  for (const args of prune.values()) spawnSync("git", [...args, "worktree", "prune"], { encoding: "utf8" })
+  return gone
+}
+
+/** Local `dobby/<id>` branches of tickets shipped/declined/failed over 7 days ago (no live build claim) whose tip is also on a remote: `git branch -D`. Never the checked-out branch (git refuses a worktree's too). Remote branches stay. Returns how many went. */
+export function sweepTicketBranches(db: DB, repos: Record<string, string>, now = Date.now()): number {
+  let n = 0
+  for (const repo of Object.values(repos)) {
+    if (!existsSync(repo)) continue
+    const head = git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim()
+    for (const b of git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/dobby/").stdout.split("\n")) {
+      const id = b.match(/^dobby\/(\d+)$/)?.[1]
+      if (!id || !/^[\w./-]+$/.test(b) || b === head) continue
+      const t = db.prepare("SELECT status, updated_at FROM tickets WHERE id=?").get(Number(id)) as { status: string; updated_at: string } | undefined
+      if (!t || !GONE.includes(t.status) || now - Date.parse(t.updated_at) < 7 * DAY || liveClaim(db, Number(id))) continue
+      if (!git(repo, "branch", "-r", "--contains", b).stdout.trim()) continue // its tip is on no remote: the only copy of the work (kept local, push refused)
+      if (git(repo, "branch", "-D", b).status === 0) n++
+    }
+  }
+  return n
 }
 
 /**
@@ -274,8 +396,8 @@ export function sweepOrphanProcesses(wt: string): number[] {
   return pids
 }
 
-/** ISO time in front of every console line (tick.log, telegram.log). Only the tick and listen entry points call it. */
-export function stampLogs(c: Pick<Console, "log" | "error"> = console, now = () => new Date().toISOString()) {
+/** Local time with its offset in front of every console line (tick.log, listener.log, start): the zone `status` uses. Only the tick, listen and start entry points call it. */
+export function stampLogs(c: Pick<Console, "log" | "error"> = console, now = () => logStamp()) {
   for (const k of ["log", "error"] as const) {
     const orig = c[k].bind(c)
     c[k] = (...a: unknown[]) => orig(format(...a).replace(/^/gm, `${now()} `))
@@ -295,10 +417,9 @@ export function parseDoc(src: string): Doc {
   }
   return { meta, body: m[2].trim() }
 }
-const RENAMED: Record<string, string> = { "front-desk": "telegram" } // old file names still load
 export const loadRole = (name: string) => {
-  const f = `${ROOT}roles/${name}.md`
-  const doc = parseDoc(readFileSync(existsSync(f) || !RENAMED[name] ? f : `${ROOT}roles/${RENAMED[name]}.md`, "utf8"))
+  const edited = `${dirname(privateConfigPath())}/roles/${name}.md` // the owner's edit (dashboard Team page), kept in the config folder so an upgrade does not wipe it
+  const doc = parseDoc(readFileSync(existsSync(edited) ? edited : `${ROOT}roles/${name}.md`, "utf8"))
   // Skills the owner approved for this role (Scout card 👍): appended to its instructions, frontmatter stripped.
   const skills = (doc.meta.skills ?? "").split(",").map((s) => s.trim()).filter((s) => s && existsSync(`${ROOT}skills/${s}/SKILL.md`))
   if (skills.length) doc.body += `\n\nSKILLS YOU HAVE (use them when they fit; your role's rules above win if they conflict):\n${skills.map((s) => `\n### ${s}\n${parseDoc(readFileSync(`${ROOT}skills/${s}/SKILL.md`, "utf8").replace(/^<!--.*-->\n/, "")).body}`).join("\n")}`
@@ -314,7 +435,7 @@ export function fixed(db: DB, text: string, key?: string) {
     if (Date.now() - last < 6 * 3600_000) return
     db.prepare("INSERT OR REPLACE INTO kv VALUES (?, ?)").run(`fixed:${key}`, String(Date.now()))
   }
-  void import("./discord.ts").then((d) => d.team({ kind: "health" }, `🔧 ${text}`)).catch(() => {})
+  void import("./chat/platform.ts").then((p) => p.platform()).then((p) => p.team({ kind: "health" }, `🔧 ${text}`)).catch(() => {})
 }
 
 /**
@@ -350,18 +471,22 @@ export function readOnlyDir(db: DB, p: { name: string; repo: string; base: strin
   return ok ? dir : p.repo
 }
 
-export type Project = { name: string; repo: string; base: string; install: string; verify: string; priority: number; jev: boolean; paused: boolean; rules: string; deploy?: string; deploy_dir?: string; deploy_copy?: string[]; migrations?: string; areas?: string[]; ownerWords?: boolean; scoutMerge?: "auto" | "ask"; autoPromote?: boolean }
+/** A project whose verify is empty or `true` checks nothing, so nothing it builds may merge on its own. The plain notice, or "" when it has a test command. */
+export const noTestCommand = (p: { name: string; verify: string }) => /^(true|:)?$/.test(p.verify.trim()) ? `no test command for ${p.name}: set verify in projects/${p.name}.md` : ""
+export type Project = { name: string; repo: string; base: string; upstream?: string; install: string; verify: string; priority: number; jev: boolean; paused: boolean; rules: string; deploy?: string; deploy_dir?: string; deploy_copy?: string[]; migrations?: string; areas?: string[]; ownerWords?: boolean; scoutMerge?: "auto" | "ask"; autoPromote?: boolean }
 /** The project file in a repo root: dobby.md, or foreman.md from before the rename. */
 const repoDoc = (dir: string) => [`${dir}/dobby.md`, `${dir}/foreman.md`].map(home).find((p) => existsSync(p))
 /** A project joins the company by having a dobby.md: in its repo root, or a draft <name>.md in ~/.config/dobby/projects (or this repo's projects/). `paused: true` = no Lead runs. */
+/** The project's install command. Prose ("none needed (static site)") is not a shell command: it means nothing to install, like an unset line. */
+export const installCmd = (v?: string) => (!v?.trim() || /^(none|no|n\/a|nothing|not needed|skip)\b/i.test(v.trim()) ? "true" : v.trim())
 export function loadProjects(): Record<string, Project> {
   const out: Record<string, Project> = {}
   const root = config().paths.projects
   const draft = (name: string) => draftDirs().map((d) => `${d}/${name}.md`).find((p) => existsSync(p))
-  const names = new Set([...(existsSync(home(root)) ? readdirSync(home(root)) : []).filter((n) => repoDoc(`${root}/${n}`)), ...draftDirs().flatMap((d) => readdirSync(d).filter((f) => /^[^.]+\.md$/.test(f)).map((f) => f.slice(0, -3)))])
+  const names = new Set([...(existsSync(home(root)) ? readdirSync(home(root)) : []).filter((n) => repoDoc(`${root}/${n}`)), ...draftDirs().flatMap((d) => readdirSync(d).filter(isProjectDraft).map((f) => f.slice(0, -3)))])
   for (const name of names) {
     const d = parseDoc(readFileSync(repoDoc(`${root}/${name}`) ?? draft(name)!, "utf8"))
-    out[name] = { name, repo: home(d.meta.repo ?? `${root}/${name}`), base: d.meta.base ?? "main", install: d.meta.install ?? "true", verify: d.meta.verify ?? "true", priority: Number(d.meta.priority ?? 5), jev: d.meta.jev !== "off", paused: d.meta.paused === "true", rules: d.body, deploy: d.meta.deploy, deploy_dir: d.meta.deploy_dir, deploy_copy: (d.meta.deploy_copy ?? "").split(",").map((x) => x.trim()).filter(Boolean), migrations: d.meta.migrations, areas: (d.meta.areas ?? "").split(",").map((x) => x.trim()).filter(Boolean), ownerWords: d.meta.owner_words !== "off", scoutMerge: d.meta.scout_merge === "auto" ? "auto" : "ask", autoPromote: d.meta.auto_promote !== "off" }
+    out[name] = { name, repo: home(d.meta.repo ?? `${root}/${name}`), base: d.meta.base ?? "main", ...(/^[\w.-]+\/[\w.-]+$/.test(d.meta.upstream ?? "") ? { upstream: d.meta.upstream } : {}), install: installCmd(d.meta.install), verify: d.meta.verify ?? "true", priority: Number(d.meta.priority ?? 5), jev: d.meta.jev !== "off", paused: d.meta.paused === "true", rules: d.body, deploy: d.meta.deploy, deploy_dir: d.meta.deploy_dir, deploy_copy: (d.meta.deploy_copy ?? "").split(",").map((x) => x.trim()).filter(Boolean), migrations: d.meta.migrations, areas: (d.meta.areas ?? "").split(",").map((x) => x.trim()).filter(Boolean), ownerWords: d.meta.owner_words !== "off", scoutMerge: d.meta.scout_merge === "auto" ? "auto" : "ask", autoPromote: d.meta.auto_promote !== "off" }
   }
   return out
 }
@@ -380,18 +505,19 @@ const FIVE_H = 5 * 3600_000
  * average out to 1). Returns the 5-hour % cap for now: day 20-60%, night 30-90%.
  * weekPerFive = weekly % per 1% of a 5-hour window (measured from usage ticks; ~0.1: a full window is ~10% of the week).
  * Behind weekly pace (less used than the share of the week gone, owner 17 Oct): no day cut, and the gap is caught up within a day.
+ * weekCap = the weekly % Dobby may reach (pacing.weekCap); the week's target is that, not 100. At 100 the numbers are the ones above.
  */
-export function paceCap(u: Usage, night: boolean, weekPerFive = 0.1) {
+export function paceCap(u: Usage, night: boolean, weekPerFive = 0.1, weekCap = 100) {
   const windowsLeft = Math.max(1, u.weekMsToReset / FIVE_H)
-  const perWindow = Math.max(0, 100 - u.weekUsed) / windowsLeft / weekPerFive // this window's share, in 5-hour %
+  const perWindow = Math.max(0, weekCap - u.weekUsed) / windowsLeft / weekPerFive // this window's share, in 5-hour %
   // Unused room (owner, 17 Oct): the gap behind weekly pace is spent over the next 5 windows (~1 day), not the whole week.
-  const behindBy = Math.max(0, 100 * (1 - u.weekMsToReset / (7 * 24 * 3600_000)) - u.weekUsed)
+  const behindBy = Math.max(0, weekCap * (1 - u.weekMsToReset / (7 * 24 * 3600_000)) - u.weekUsed)
   const want = perWindow + behindBy / Math.min(windowsLeft, 5) / weekPerFive
   // Use it or lose it (owner, 17 Oct: "let it decide on its own", no fixed hour or %): this window's unused room vanishes at
   // reset, so it is fair game when spending it still leaves the week at or behind pace at that reset. The owner keeps a
   // reserve for urgent work ("we would need some tokens left"): the day/night ceiling's share, shrinking to 0 as reset nears.
   const left = (u.fiveMsToReset ?? FIVE_H) / FIVE_H
-  const paceAtReset = 100 * (1 - (u.weekMsToReset - left * FIVE_H) / (7 * 24 * 3600_000))
+  const paceAtReset = weekCap * (1 - (u.weekMsToReset - left * FIVE_H) / (7 * 24 * 3600_000))
   if (u.weekUsed + (100 - u.fiveUsed) * weekPerFive <= paceAtReset) return Math.round(100 - (100 - (night ? 90 : 60)) * left)
   return Math.round(night ? Math.min(90, Math.max(30, want * 1.6)) : Math.min(60, Math.max(20, want * (behindBy > 0 ? 1 : 0.64))))
 }
@@ -399,29 +525,63 @@ export function paceCap(u: Usage, night: boolean, weekPerFive = 0.1) {
 /** Idle 5-hour window (owner, 19 Oct): at or past its midpoint and still under 30% used, so there is room the queue is not filling. */
 export const windowIdle = (u: Usage) => u.fiveMsToReset !== undefined && u.fiveMsToReset <= FIVE_H / 2 && u.fiveUsed < 30
 
-/** May an unattended run start now? The 5-hour window stays under the pace cap (or the owner's one-window override); the last 5% of the week stays the owner's. */
-export function budgetAllows(u: Usage, hour: number, capOverride?: number, weekPerFive?: number): { ok: boolean; why: string; cap: number } {
+/** The most of the weekly plan Dobby may use (pacing.weekCap, default 95); the rest is the owner's. */
+export const weekCapSetting = () => config().pacing?.weekCap ?? 95
+
+/** May an unattended run start now? The 5-hour window stays under the pace cap (or the owner's one-window override); the week stays under weekCap. */
+/** Builds running in this process: each is counted against the week until it finishes, because the usage reading lags behind them. */
+let building = 0
+// ponytail: flat guess per build (0.3-0.5% of the week, owner 6 Oct); measure it from usage_steps if it matters
+export const WEEK_PER_BUILD = 0.5
+/** Claim a build slot (call right after the budget check, with no await between): returns the release. */
+export const reserveBuild = () => { building++; let done = false; return () => { if (!done) { done = true; building-- } } }
+export function budgetAllows(u: Usage, hour: number, capOverride?: number, weekPerFive?: number, weekCap = weekCapSetting(), running = building): { ok: boolean; why: string; cap: number } {
   const night = hour >= 23 || hour < 8
-  const cap = capOverride ?? paceCap(u, night, weekPerFive) // the owner can raise it for one window from the pause ping
+  const cap = capOverride ?? paceCap(u, night, weekPerFive, weekCap) // the owner can raise it for one window from the pause ping
+  // the week first: over its cap the pace cap collapses, and blaming the 5-hour window offers buttons that cannot help
+  if (u.weekUsed + running * WEEK_PER_BUILD >= weekCap) return { ok: false, why: `weekly at ${u.weekUsed}%${running ? ` with ${running} build(s) running` : ""} (your cap is ${weekCap}%)`, cap }
   if (u.fiveUsed >= cap) return { ok: false, why: `5-hour window at ${u.fiveUsed}% (pace cap ${cap}%)`, cap }
-  if (u.weekUsed >= 95) return { ok: false, why: `weekly at ${u.weekUsed}% (the last 5% stays yours)`, cap }
   return { ok: true, why: `5-hour ${u.fiveUsed}%/${cap}, weekly ${u.weekUsed}%`, cap }
+}
+
+/** "Keep building" (button on the pause ping): the raised 5-hour cap until that window resets, else undefined. */
+export const capOverride = (db: DB, now = Date.now()) => {
+  const o = JSON.parse((db.prepare("SELECT v FROM kv WHERE k='budget:override'").get() as { v: string } | undefined)?.v ?? "null") as { until: number; cap: number } | null
+  return o && o.until > now ? o.cap : undefined
 }
 
 /** API-key mode (config billing.mode): runs pay by the token, so there are no plan windows to pace. */
 export const apiKeyMode = () => config().billing?.mode === "apiKey"
+/** The "keep building up to N%" buttons on a pause ping: plan windows only. A key has dollars against a daily cap, no 5-hour window to raise. */
+export const keepGoingCaps = (fiveUsed: number | undefined, keyMode = apiKeyMode()) => (keyMode ? [] : [70, 80, 90, 100].filter((c) => c > Math.ceil(fiveUsed ?? 0)))
 /** May a run start in API-key mode? Dollars spent (runs.cost_usd) stay under dailyUsd for the last 24 hours and weeklyUsd for the last 7 days. */
-export function spendAllows(db: DB, b = config().billing ?? { mode: "apiKey" as const, dailyUsd: 20 }, now = Date.now()): { ok: boolean; why: string; cap: number } {
+export function spendAllows(db: DB, b = config().billing ?? { mode: "apiKey" as const, dailyUsd: 20 }, now = Date.now(), running = building, estimate = buildEstimate(db)): { ok: boolean; why: string; cap: number } {
   const spent = (ms: number) => (db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM runs WHERE at >= ?").get(new Date(now - ms).toISOString()) as { s: number }).s
-  const day = spent(24 * 3600_000), week = b.weeklyUsd ? spent(7 * 24 * 3600_000) : 0
-  if (day >= b.dailyUsd) return { ok: false, why: `API key: $${day.toFixed(2)} in 24 hours (cap $${b.dailyUsd})`, cap: 0 }
-  if (b.weeklyUsd && week >= b.weeklyUsd) return { ok: false, why: `API key: $${week.toFixed(2)} in 7 days (cap $${b.weeklyUsd})`, cap: 0 }
+  // Builds still running have not written their cost yet: each is reserved at the average build cost, so parallel workers cannot all start under the cap and overshoot it together.
+  const held = running * estimate
+  const day = spent(24 * 3600_000) + held, week = b.weeklyUsd ? spent(7 * 24 * 3600_000) + held : 0
+  const hold = held > 0 ? ` (incl. $${held.toFixed(2)} for ${running} running)` : ""
+  if (day >= b.dailyUsd) return { ok: false, why: `API key: $${day.toFixed(2)} in 24 hours${hold} (cap $${b.dailyUsd})`, cap: 0 }
+  if (b.weeklyUsd && week >= b.weeklyUsd) return { ok: false, why: `API key: $${week.toFixed(2)} in 7 days${hold} (cap $${b.weeklyUsd})`, cap: 0 }
   return { ok: true, why: `API key: $${day.toFixed(2)} of $${b.dailyUsd} in 24 hours${b.weeklyUsd ? `, $${week.toFixed(2)} of $${b.weeklyUsd} in 7 days` : ""}`, cap: 100 }
 }
+/** The status word shown for a ticket: a failed one that only needs the owner reads "needs you". */
+export const statusWord = (t: { status: string; note?: string | null }) => (t.status === "failed" && /^needs you:/.test(t.note ?? "") ? "needs you" : t.status)
+/** The last line of `dobby run <id>`. A ticket handed to the owner is stored as failed with a "needs you:" note, but it is not a failure. Still ready = nothing was built (the run exits 1). */
+export const runEndText = (id: number, t?: { status: string; note?: string | null }) =>
+  t?.status === "failed" && /^needs you:/.test(t.note ?? "") ? `#${id} needs you: ${(t.note ?? "").slice(10).trim()}`
+  : t?.status === "ready" ? `#${id} was not built and is back in the queue${t.note ? `: ${t.note}` : ""}. Run dobby run ${id} again, or see dobby show ${id}`
+  : `#${id} now ${t?.status}`
 
-/** review-scan's budget: the builders' answer, or the looser reviewCap when that still has room (never the owner's last 5% of the week). */
+/** What one more ticket is expected to cost: the average total (build, tests, checks, fixes) of the last 20 tickets that cost anything, else $1.00 (batch 6 tickets cost $0.20 to $1.29; a build row alone undercounts). */
+export function buildEstimate(db: DB): number {
+  const r = db.prepare("SELECT AVG(s) AS a FROM (SELECT SUM(cost_usd) AS s FROM runs WHERE ticket IS NOT NULL GROUP BY ticket HAVING s > 0 ORDER BY MAX(rowid) DESC LIMIT 20)").get() as { a: number | null }
+  return r.a ?? 1
+}
+
+/** review-scan's budget: the builders' answer, or the looser reviewCap when that still has room (never past weekCap). */
 export function reviewBudget(g: { ok: boolean; why: string; cap: number }, u: Usage | null, reviewCap?: number) {
-  if (g.ok || !u || !reviewCap || reviewCap <= g.cap || u.weekUsed >= 95 || u.fiveUsed >= reviewCap) return g
+  if (g.ok || !u || !reviewCap || reviewCap <= g.cap || u.weekUsed >= weekCapSetting() || u.fiveUsed >= reviewCap) return g
   return { ok: true, why: `5-hour ${u.fiveUsed}%/${reviewCap} (review cap; builders stop at ${g.cap}%)`, cap: reviewCap }
 }
 
@@ -434,7 +594,7 @@ function bundledUsageCli() {
 }
 const USAGE_CLI = resolveUsageCli()
 const USAGE_TIMEOUT_MS = 30_000 // audit #14: no timeout meant a hung CLI hung the tick while health said "running"
-const USAGE_STALE_MS = 30 * 60_000
+export const USAGE_STALE_MS = 30 * 60_000
 const usageCli = () => spawnSync("node", [USAGE_CLI, "--json", "--host", "claude"], { cwd: homedir(), encoding: "utf8", timeout: USAGE_TIMEOUT_MS }).stdout ?? ""
 // The snapshot only moves when Claude Code calls the API, so with no session open it goes stale and builds stop: nothing then
 // refreshes it (a deadlock until the owner opens Claude). The plugin's own live reader takes a fresh one (the /usage endpoint).
@@ -505,6 +665,7 @@ export function readUsage(db?: DB, read: () => string = usageCli, now = Date.now
         tell(db, `I cannot read your Claude usage numbers (${u ? "the reading is stale" : "the usage tool gave no answer"} for ${Math.round((now - since) / 60_000)} minutes), so no builds are starting. Check that the Mac is signed in to Claude.`, "usage-unreadable")
       }
     }
+    if (bad) return null // a stale reading is no reading: pacing falls back to the daily cap, as the message above says
   }
   return u
 }
@@ -591,8 +752,11 @@ export function orphanedParents(db: DB) {
   return [...out.values()]
 }
 export function setTicket(db: DB, id: number, patch: Partial<Pick<Ticket, "status" | "branch" | "note" | "priority" | "goal" | "engineer" | "prd" | "design">>) {
+  // cancelled by the owner while a build still runs: that build winding down must not revive it (later revivals are untouched)
+  // (its note goes too: the killed claude reads as "spawn claude ENOENT", which would replace "cancelled by the owner")
+  if (patch.status !== "declined" && (patch.status || patch.note !== undefined) && db.prepare("SELECT 1 FROM kv WHERE k=?").get(`cancel:${id}`) && db.prepare("SELECT 1 FROM kv WHERE k=?").get(`build:${id}`)) (patch = { ...patch }, delete patch.status, delete patch.note)
   const keys = Object.keys(patch) as (keyof typeof patch)[]
-  db.prepare(`UPDATE tickets SET ${keys.map((k) => `${k}=?`).join(",")}, updated_at=? WHERE id=?`).run(...keys.map((k) => patch[k] ?? null), now(), id)
+  db.prepare(`UPDATE tickets SET ${[...keys.map((k) => `${k}=?`), "updated_at=?"].join(",")} WHERE id=?`).run(...keys.map((k) => patch[k] ?? null), now(), id)
 }
 export const getTicket = (db: DB, id: number) => db.prepare("SELECT * FROM tickets WHERE id=?").get(id) as Ticket | undefined
 
@@ -634,7 +798,7 @@ export function splitBacklog(db: DB, project: string, rank: (goal: number | null
 // Card text names things in words (owner, 20 Oct): "Shop · Sign-in full state", never #309, a commit code or a model name.
 /** A title for a phone: up to 50 characters, no paths. */
 export const short = (title: string) => clip(shortTitle(title), 50)
-export const labelOf = (app: string, title: string) => `${app[0].toUpperCase()}${app.slice(1)} · ${short(title)}`
+export const labelOf = (app: string, title: string) => `${app} · ${short(title)}`
 /** "<App> · <short title>" for a ticket; "a ticket" if it is gone. */
 export function label(db: DB, id: number) {
   const t = getTicket(db, id)
@@ -665,10 +829,11 @@ export function nextTicket(db: DB) {
   seedBuildBases(db)
   for (const { id } of db.prepare(`SELECT id FROM tickets t WHERE status='ready' AND (SELECT COUNT(*) FROM runs r WHERE r.kind='build' AND r.ticket=t.id AND COALESCE(r.reason,'') NOT LIKE '${CEILING}%') - COALESCE((SELECT CAST(v AS INTEGER) FROM kv WHERE k='build-base:'||t.id), 0) >= ?`).all(BUILD_CAP) as { id: number }[])
     setTicket(db, id, { status: "failed", note: `${BUILD_CAP} builds without shipping; a hand re-queue gives it ${BUILD_CAP} more` })
-  // a paused project or ticket (src/pause.ts) is skipped, the next one is taken
+  // a paused project (dobby.md `paused: true`, or src/pause.ts) or ticket is skipped, the next one is taken
+  const projects = loadProjects()
   // a ticket with depends_on waits until its parent is shipped (a parent row that no longer exists is no dependency)
   return (db.prepare(`SELECT * FROM tickets t WHERE status='ready' AND size!='L' AND ${unblocked("t")}
-    ORDER BY (SELECT COUNT(*) FROM tickets r WHERE r.status='running' AND r.project=t.project), priority DESC, id ASC`).all() as Ticket[]).find((t) => !paused(db, { kind: "builders", project: t.project, ticket: t.id }))
+    ORDER BY (SELECT COUNT(*) FROM tickets r WHERE r.status='running' AND r.project=t.project), priority DESC, id ASC`).all() as Ticket[]).find((t) => !projects[t.project]?.paused && !paused(db, { kind: "builders", project: t.project, ticket: t.id }))
 }
 
 // A hand re-queue refuses on the title alone, no classifier: a hard rule (Owner:, a real client's name) on title + done_when, or a
@@ -682,6 +847,8 @@ export function seedBuildBases(db: DB) {
 }
 /** Most builds one ticket gets across retries and requeues (audit #8: up to 9 per ticket). A hand re-queue starts a fresh count. */
 export const BUILD_CAP = 4
+/** Builds in one run of a ticket's graph: the first, one verify fix, one checker retry. */
+export const MAX_BUILDS = 3
 /** A hand (re)queue starts afresh: builds and cost count from now, and the same-failure comparison begins again. */
 export function resetCounts(db: DB, id: number) {
   db.prepare("INSERT OR REPLACE INTO kv VALUES (?, ?)").run(`build-base:${id}`, String(buildRuns(db, id)))
@@ -704,6 +871,7 @@ export function queueTicket(db: DB, id: number): string {
   if (!n) return `#${t.id} was not queued: it is ${t.status}, and only backlog or failed tickets can be queued`
   if (key !== undefined) db.prepare("INSERT OR REPLACE INTO kv VALUES (?, ?)").run(`fail-key:${t.id}`, key)
   resetCounts(db, t.id)
+  db.prepare("DELETE FROM kv WHERE k=?").run(`promote-hold:${t.project}`) // the owner chose a ticket: the scheduled Lead may plan again (#369)
   return `#${t.id} queued; a builder picks it up within about a minute`
 }
 
@@ -729,7 +897,7 @@ export function isolation(kind: string, cwd: string, env = process.env, setting 
   if (mode === "off") return { settings: `${ROOT}agent-settings.json`, env, mode }
   if (mode === "env-only" && (setting ?? "on").trim().toLowerCase() === "on" && !warnedNoSandbox) {
     warnedNoSandbox = true
-    console.error(`foreman: no Claude Code sandbox on this platform (${process.platform}; Linux needs bubblewrap and socat), so ${kind} runs get the credential scrub only`)
+    console.error(`dobby: no Claude Code sandbox on this platform (${process.platform}; Linux needs bubblewrap and socat that work, dobby doctor shows which), so ${kind} runs get the credential scrub only`)
   }
   const scratch = scratchDir(cwd)
   for (const d of ["gh", "config"]) mkdirSync(`${scratch}/${d}`, { recursive: true })
@@ -755,29 +923,36 @@ async function claudeOnce(db: DB, o: { project: string; kind: string; ticket?: n
   return new Promise<{ ok: boolean; text: string; reason?: string; cost?: number }>((resolve) => {
     const role = roleArgs(o.args ?? [])
     const box = isolation(o.kind, o.cwd ?? process.cwd())
-    const p = spawn("claude", ["-p", ...(o.kind === "front-desk" ? [] : ["--strict-mcp-config"]), "--settings", box.settings, "--plugin-dir", `${ROOT}agent-kit`, "--append-system-prompt", rules(), "--output-format", "json", "--model", o.model, ...(resume ? ["--resume", resume] : []), ...(o.effort ? ["--effort", o.effort] : []), ...role.args], { cwd: o.cwd, env: { ...withTelemetry(box.env, { project: o.project, kind: o.kind, ticket: o.ticket }), DOBBY_ROOT: ROOT, DOBBY_BASH_ALLOW: JSON.stringify(role.bash), DOBBY_ROLE: o.kind, ...(apiKeyMode() ? { ANTHROPIC_API_KEY: apiKey() } : {}) }, stdio: ["pipe", "pipe", "pipe"] })
+    const p = spawn("claude", ["-p", ...(o.kind === "front-desk" ? [] : ["--strict-mcp-config"]), "--settings", box.settings, "--plugin-dir", `${ROOT}agent-kit`, "--append-system-prompt", rules(), "--output-format", "json", "--model", o.model, ...(resume ? ["--resume", resume] : []), ...(o.effort ? ["--effort", o.effort] : []), ...role.args], { cwd: o.cwd, env: { ...withTelemetry(box.env, { project: o.project, kind: o.kind, ticket: o.ticket }), DOBBY_ROOT: ROOT, DOBBY_BASH_ALLOW: JSON.stringify(role.bash), DOBBY_ROLE: o.kind, ...(apiKeyMode() ? claudeKeyEnv() : {}) }, stdio: ["pipe", "pipe", "pipe"], detached: true })
+    // Its own process group, recorded under the ticket like runAsync's children: `dobby cancel` stops the builder, and this process stops it on exit.
+    const pid = p.pid
+    const sc = ticketScope.getStore()
+    const pgKey = sc && pid ? `pgid:${sc.id}:${pid}` : ""
+    if (pid) trackGroup(pid)
+    if (pgKey) try { sc!.db.prepare("INSERT OR REPLACE INTO kv VALUES (?, '1')").run(pgKey) } catch {}
+    const released = () => { if (pid) untrackGroup(pid); if (pgKey) try { sc!.db.prepare("DELETE FROM kv WHERE k=?").run(pgKey) } catch {} }
     let raw = ""
     p.stdout.on("data", (d) => (raw += d))
     p.stdin.end(o.prompt)
     // stallMs (short read-only roles): a run that has not answered by then is hung (18 Oct: claude froze at startup); kill it so the tick is not blocked 45 minutes
     let stalled = false
-    const timer = setTimeout(() => { stalled = !!o.stallMs; p.kill("SIGKILL") }, o.stallMs ?? 45 * 60_000)
+    const timer = setTimeout(() => { stalled = !!o.stallMs; if (pid) stopGroup(pid, 0); else p.kill("SIGKILL") }, o.stallMs ?? 45 * 60_000)
     // Context ceiling (config builderContextCeiling, builders only): the session transcript says how big the context is; past the ceiling the run is ended and the caller continues fresh.
     let capped = 0
     const dir = o.ceiling ? transcriptDir(o.cwd ?? process.cwd()) : ""
     const t0 = Date.now() - 2000
     const poll = o.ceiling ? setInterval(() => {
       const n = contextTokens(dir, t0)
-      if (n > o.ceiling! && !capped) { capped = n; p.kill("SIGTERM"); setTimeout(() => p.kill("SIGKILL"), 5000).unref() }
+      if (n > o.ceiling! && !capped) { capped = n; if (pid) stopGroup(pid); else p.kill("SIGTERM") }
     }, 10_000) : undefined
     // A spawn that cannot start (missing cwd, claude mid-update) is a failed run, not a crash of the whole tick.
     p.on("error", (e) => {
-      clearTimeout(timer); clearInterval(poll)
+      clearTimeout(timer); clearInterval(poll); released()
       logRun(db, { project: o.project, kind: o.kind, ticket: o.ticket, model: o.model, ok: false, reason: `spawn: ${e.message}` })
       resolve({ ok: false, text: "", reason: `spawn: ${e.message}` })
     })
     p.on("close", (code) => {
-      clearTimeout(timer); clearInterval(poll)
+      clearTimeout(timer); clearInterval(poll); released()
       if (capped) {
         const reason = `${CEILING}: ${capped} tokens`
         logRun(db, { project: o.project, kind: o.kind, ticket: o.ticket, model: o.model, ok: false, reason, duration_ms: Date.now() - t0 - 2000, ...runUsage(dir, t0) }) // paid work: ticketBudget and the build caps must see it
@@ -836,10 +1011,11 @@ export function parseGroups(text: string): string[][] {
 // ---- memory ------------------------------------------------------------------
 /** Claude Code's auto-memory folder for a repo path: ~/.claude/projects/<path with / and . as ->/memory. */
 export const memoryDir = (repo: string) => home(`~/.claude/projects/${repo.replace(/[/.]/g, "-")}/memory`)
-/** The founder's working rules (built by `dobby company`), for roles that make judgment calls. Empty until built. */
+/** The founder's working rules (built by `dobby company` into the private config folder), for roles that make judgment calls. Empty until built. */
+export const companyPath = () => `${configDir()}/company.md`
 export function company(): string {
   try {
-    return `\n\nHOW THE FOUNDER WORKS (company.md):\n${readFileSync(`${ROOT}company.md`, "utf8")}`
+    return `\n\nHOW THE FOUNDER WORKS (company.md):\n${readFileSync(companyPath(), "utf8")}`
   } catch {
     return ""
   }
@@ -849,11 +1025,15 @@ export function company(): string {
 export const signedOut = (r: { ok: boolean; reason?: string | null; text?: string }) =>
   !r.ok && /failed to authenticate|oauth session expired|not logged in|please run \/login/i.test(`${r.reason ?? ""} ${r.text ?? ""}`)
 
+/** A failed run's reason for people: a claude that is not on PATH reads "spawn: spawn claude ENOENT", which says nothing about what to do. The stored reason stays as it is (didNotStart reads it). */
+export const plainReason = (reason?: string | null) => (/spawn claude ENOENT/.test(reason ?? "") ? "Claude Code is not installed or not on PATH: npm install -g @anthropic-ai/claude-code" : reason ?? "")
+
 export type DoctorInput = {
   tickets: { id: number; status: string; updated_at: string }[]
   pauses: { text: string; at: number }[] // pauseList(): ms since epoch
   origins: { project: string; base: string; ok: boolean }[] // does origin/<base> resolve in the project's repo (all its worktrees share refs)
   auth: { ok: boolean; reason?: string | null; text?: string }
+  stray?: string // config.strayDrafts(): the default config folder holding the project files this isolated install lacks
   scan?: { at: number; todo: number; reviewed: number; skipped: string } // kv review:scan:last, written by each review-scan
 }
 const STUCK_MS = 2 * 3600_000
@@ -866,9 +1046,10 @@ export function doctor(i: DoctorInput, at = Date.now()) {
   const stale = i.pauses.filter((p) => old(p.at, STALE_PAUSE_MS))
   const list = (xs: string[]) => xs.join(", ")
   return [
-    { name: "stuck tickets", ok: !stuck.length, detail: stuck.length ? `running over 2 hours: ${list(stuck.map((t) => `#${t.id}`))}` : "none running over 2 hours" },
-    { name: "origin/base", ok: !badOrigin.length, detail: badOrigin.length ? `origin/<base> does not resolve: ${list(badOrigin.map((o) => `${o.project} (${o.base})`))}` : "resolves in every project" },
-    { name: "claude session", ok: i.auth.ok, detail: i.auth.ok ? "signed in" : signedOut(i.auth) ? "signed out: run `claude`, then `/login`" : i.auth.reason === "stalled" ? "claude did not answer in 60 s" : `claude probe failed: ${i.auth.reason ?? i.auth.text ?? "unknown"}`.slice(0, 200) },
+    { name: "stuck tickets", ok: !stuck.length, detail: stuck.length ? `running over 2 hours: ${list(stuck.map((t) => `#${t.id}`))}` : "none running over 2 hours", ...(stuck.length ? { fix: stuck.map((t) => `dobby retry ${t.id}`).join("; ") } : {}) },
+    { name: "origin/base", ok: !badOrigin.length, detail: badOrigin.length ? `origin/<base> does not resolve: ${list(badOrigin.map((o) => `${o.project} (${o.base})`))}` : i.origins.length ? "resolves in every project" : "no projects yet" },
+    ...(i.stray ? [{ name: "project files", ok: false, detail: `none in this install's projects folder, but ${i.stray} has some (an older build wrote them there). Copy them over: cp ${i.stray}/*.md <this install's config folder>/projects/` }] : []),
+    { name: "claude session", ok: i.auth.ok, detail: i.auth.ok ? "signed in" : signedOut(i.auth) ? "signed out: run `claude`, then `/login`" : i.auth.reason === "stalled" ? "claude did not answer in 60 s" : `claude probe failed: ${plainReason(i.auth.reason) || i.auth.text || "unknown"}`.slice(0, 200) },
     { name: "old pauses", ok: !stale.length, detail: stale.length ? `paused over 7 days: ${list(stale.map((p) => p.text))}` : "none older than 7 days" },
     // a skip is a fact to see, not a broken pipeline: ok stays true unless no scan ran for 2 hours (it runs every 15 minutes)
     { name: "review scan", ok: !i.scan || !old(i.scan.at, STUCK_MS), detail: !i.scan ? "no scan recorded yet" : `last ${new Date(i.scan.at).toISOString().slice(11, 16)} UTC: reviewed ${i.scan.reviewed} of ${i.scan.todo}${i.scan.skipped ? `; skipped the rest: ${i.scan.skipped}` : ""}` },
@@ -877,7 +1058,7 @@ export function doctor(i: DoctorInput, at = Date.now()) {
 
 const authPing = async (text: string) => {
   if (process.env.NODE_TEST_CONTEXT) return // `node --test` child: never post to the real #system-status
-  await import("./telegram.ts").then((t) => t.notify(text, fetch, undefined, { kind: "health" })).catch(() => {})
+  await import("./notify.ts").then((t) => t.notify(text, fetch, undefined, { kind: "health" })).catch(() => {})
 }
 
 /**
@@ -923,8 +1104,9 @@ export function undoIdea(db: DB, id: number) {
   return n ? `↩️ Brought back "${short(ideaTitle(db, id)!)}"` : "Nothing to undo: that idea is not dropped."
 }
 
-/** `--repo owner/repo` from the dir's origin remote, so gh never picks an `upstream` remote. Empty when origin is unknown. */
-export function repoArgs(dir: string, git: (args: string[], cwd: string) => { ok: boolean; out: string }): string[] {
+/** `--repo owner/repo` from the dir's origin remote, so gh never picks an `upstream` remote. Empty when origin is unknown. `upstream` (project file) wins: the original of a fork. */
+export function repoArgs(dir: string, git: (args: string[], cwd: string) => { ok: boolean; out: string }, upstream?: string): string[] {
+  if (upstream) return ["--repo", upstream] // a fork whose owner sends PRs to the original
   const o = git(["remote", "get-url", "origin"], dir)
   const slug = o.ok ? repoSlug(o.out) : null
   return slug ? ["--repo", slug] : []
@@ -941,8 +1123,15 @@ export async function prDone(dir: string, branch: string, run: ARun = netRun): P
 }
 
 /** repoArgs for the async callers (the ticket graph): the same `--repo` flag, without blocking the event loop. */
-export async function repoArgsAsync(dir: string): Promise<string[]> {
+export async function repoArgsAsync(dir: string, upstream?: string): Promise<string[]> {
+  if (upstream) return ["--repo", upstream]
   const o = await netRun("git", ["remote", "get-url", "origin"], dir)
   const slug = o.ok ? repoSlug(o.out) : null
   return slug ? ["--repo", slug] : []
+}
+
+/** The PR head for gh: `branch`, or `forkOwner:branch` when the PR goes to the original of a fork (project file `upstream:`). */
+export async function prHead(dir: string, branch: string, upstream?: string): Promise<string> {
+  const fork = upstream ? (await repoArgsAsync(dir))[1]?.split("/")[0] : ""
+  return fork ? `${fork}:${branch}` : branch
 }

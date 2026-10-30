@@ -1,70 +1,72 @@
 # Dobby
 
-An AI dev team that runs on your own machine. You file tickets, and Dobby builds, tests, reviews and ships them as pull requests on your GitHub repos. Merges are off until you turn them on, and each deploy waits for your tap unless you choose otherwise.
+Dobby runs Claude Code on your tickets and opens reviewed pull requests on your GitHub repos. It runs on your own machine and on your own Claude plan.
 
-Each role is a Claude Code run with its own rules: Lead, Builder, QA, Code Reviewer, Product Manager and Chief of Staff. Builders work inside an OS sandbox with no credentials and no network.
+Dobby is in public beta.
 
 ## Quick start
 
-```sh
-npx dobby-ai init
-```
+You need macOS or Linux (WSL2 on Windows), Node 24, git and 15 GB of free disk. Dobby runs on Claude Code only today. Support for other agent harnesses is coming.
 
-`init` asks at most three questions:
-1. Which repos to work on.
-2. Where to chat: the terminal or Discord.
-3. Recommended or custom settings.
-
-It then checks each repo's install and test commands, installs the background jobs, and offers a first ticket. On a fresh install, merges stay paused until you run `dobby resume merges`.
-
-Then:
+Sign in to the GitHub CLI, then to Claude Code (a Pro or Max plan, or an Anthropic API key):
 
 ```sh
-dobby add <project> "Fix the footer spacing" "the footer has 16px padding on phones"
-dobby start        # or let the background jobs run it
-dobby status       # what is building, shipped today, stuck
-dobby doctor       # checks the setup and prints the fix for anything wrong
+gh auth login
+claude
 ```
 
-## Requirements
+Install Dobby. This puts the `dobby` command on your PATH. `npx dobby-ai init` also runs setup, but it does not keep the `dobby` command.
 
-- macOS or Linux (systemd), with zsh
-- Node 24+, git, and the GitHub CLI (`gh auth login`)
-- Claude Code, signed in to a Pro or Max plan, or an Anthropic API key (see [docs/billing.md](docs/billing.md))
-- Linux sandbox: bubblewrap and socat. Without them, builders get the credential scrub only.
+```sh
+npm i -g dobby-ai
+dobby init
+```
 
-## Add-ons
+If npm warns that better-sqlite3 has install scripts that are not allowed, Dobby still works. See [Install](docs/manual/install.md).
 
-- `dobby add discord`: buttons for approvals and one thread per ticket
-- `dobby add dashboard`: a local web dashboard ([docs/dashboard-phone.md](docs/dashboard-phone.md) for phone access)
-- `dobby add jobs`: run everything in the background instead of `dobby start`
+`dobby init` looks for repos with a GitHub remote in ~/projects, ~/code, ~/dev, ~/src, ~/work, ~/Developer, ~/repos and ~/GitHub. For another folder, run `dobby init --projects <folder>`.
 
-## Safety
+Setup asks before it installs the background jobs that build while you are away. To try Dobby without them, skip the jobs and keep `dobby start` open in a terminal:
 
-- Builders run in Claude Code's sandbox. Dobby runs their tests and installs in the same sandbox.
-- A command guard checks every shell command an agent runs.
-- Pull requests from strangers on public repos are never reviewed by a model.
-- Tickets an agent files (for example from an email) wait for your tap.
-- What waits for you is one setting, `safety` in your config:
-  - **Balanced** (recommended): data migrations, client sites and releases wait for you; login, payments and secrets get the strict review; everything else merges after a passing review.
-  - **Strict**: every merge waits for you. Dobby opens a draft PR and you merge it.
-  - **Autonomous**: nothing waits for you; risky changes get the strict review.
-  - Each category can be set on its own, and `safety.everyMerge` sets the floor for every merge.
-- Deploys: after a merge, Dobby sends a Deploy tap and nothing goes live until you tap it (`safety.deploy: "ask"`, the default for new installs). Set it to `"auto"` to deploy on merge. Migrations that change existing data always wait for you.
-- Dobby merges only its own PRs and your own PRs, after a passing review and at the exact commit that passed.
+```sh
+dobby init --no-jobs
+dobby start
+```
+
+Then write a ticket: a project, a title and a done-when line.
+
+```sh
+dobby add shopfront "Fix the footer spacing" "the footer has 16px padding on phones"
+dobby status
+```
+
+[Your first hour](docs/manual/first-hour.md) follows that ticket to a merged pull request.
+
+## What waits for you
+
+- A fresh install opens pull requests but does not merge them until you run `dobby resume merges`.
+- Deploys wait for your tap by default, and a migration that changes existing data always waits.
+- The safety preset (Balanced, Strict or Autonomous) decides which other changes wait for you.
+- Builders run in an OS sandbox with no credentials and no network.
 
 ## Docs
 
-- [Billing: plan or API key](docs/billing.md)
-- [The reviewer](docs/reviewer.md) and [external reviewers](docs/reviewer-external.md) (CodeRabbit, Greptile, Copilot)
-- [Other model providers](docs/providers.md)
+The docs are at [dobby.dapplelight.in/docs](https://dobby.dapplelight.in/docs). The same pages are in [docs/manual](docs/manual/), and `dobby docs` prints them in your terminal.
+
+- [Your first hour](docs/manual/first-hour.md)
+- [What waits for you](docs/manual/what-waits.md)
+- [Security and the sandbox](docs/manual/security.md)
+- [CLI reference](docs/manual/cli.md)
 
 ## Development
 
 ```sh
 npm install
-npm test
+npm test              # unit tests, fast
+npm run e2e           # tickets from start to merge, with a fake Claude and a fake GitHub (tests/e2e); offline
+npm run coverage      # everything above, with a line-coverage gate on src/
 npm run typecheck
+npm run docs          # regenerate the generated manual pages and llms.txt
 ```
 
 ## License

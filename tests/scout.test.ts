@@ -9,10 +9,11 @@ test("scout: strict proposals (safe licenses, pinned commit, clean names) and on
   const got = parseProposals(lines)
   assert.deepEqual(got.map((p) => p.type), ["skill", "retro"])
   const db = open(":memory:")
-  assert.equal(scoutDue(db, 2), true)
-  assert.equal(scoutDue(db, 14), false) // daytime: builders' budget
-  db.prepare("INSERT INTO kv VALUES ('scout:last', ?)").run(new Date().toISOString().slice(0, 10))
-  assert.equal(scoutDue(db, 2), false) // already ran today
+  const two = Date.parse("2026-10-24T20:30:00Z") // 02:00 IST on the 25th (the fixture's zone)
+  assert.equal(scoutDue(db, undefined, two), true)
+  assert.equal(scoutDue(db, undefined, Date.parse("2026-10-25T08:30:00Z")), false) // 14:00 IST, daytime: builders' budget
+  db.prepare("INSERT INTO kv VALUES ('scout:last', ?)").run("2026-10-24") // the night key: the day its 23:00 window opened
+  assert.equal(scoutDue(db, undefined, two), false) // already ran tonight
 })
 
 test("usage: a transcript line is priced from Anthropic's rates; ticks give $ per 1%", async () => {

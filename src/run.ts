@@ -26,7 +26,7 @@ if (import.meta.main) {
   const cut = argv.indexOf("--")
   const own = cut === -1 ? argv : argv.slice(0, cut)
   const pass = cut === -1 ? [] : argv.slice(cut + 1)
-  const flag = (n: string) => own[own.indexOf(`--${n}`) + 1]
+  const flag = (n: string) => { const i = own.indexOf(`--${n}`); const v = i === -1 ? undefined : own[i + 1]; return v?.startsWith("--") ? undefined : v } // absent, or followed by another flag = no value
   const project = flag("project"), kind = flag("kind")
   if (!project || !kind) throw new Error("usage: run.ts --project <p> --kind <k> -- <claude args>")
   const mi = pass.indexOf("--model")

@@ -12,7 +12,7 @@ writeFileSync(process.env.DOBBY_SECRETS, `DASHBOARD_TOKEN=${FAKE_VALUE}\nSHORT=a
 
 const { open } = await import("../src/db.ts")
 const fd = await import("../src/frontdesk.ts")
-const { redact, notify } = await import("../src/telegram.ts")
+const { redact, notify } = await import("../src/notify.ts")
 const rv = await import("../src/graphs/review.ts")
 
 const anthropicLike = `sk-${"ant"}-${"x".repeat(30)}`
@@ -211,6 +211,10 @@ test("scout: PR failure keeps the branch and says nothing is live; no origin = n
   const none = applyRule(db, rule, z.r, z.root)
   assert.equal(none.sha, undefined)
   assert.match(none.msg, /couldn't fetch origin\/main/) // never based on the owner's local main
+  assert.match(none.msg, /\(origin is not reachable|\(git fetch failed|\(origin refused/, 'says why, not just that it failed')
+  const nr = scoutRepo()
+  git(nr.root, 'remote', 'remove', 'origin')
+  assert.match(applyRule(db, rule, nr.r, nr.root).msg, /\(this checkout has no origin remote\)/)
   assert.equal(git(z.root, "branch", "--list", "scout/*"), "")
   assert.match(scoutSays(out), /local branch scout\/.*nothing is live/)
   const y = scoutRepo()
@@ -373,9 +377,32 @@ test("front desk: a draft holding a secret is dropped; action cards name the tic
   const db = open(":memory:")
   const { addTicket } = await import("../src/lib.ts")
   const { id } = addTicket(db, { project: "tally", title: "Fix the CSV import" })
-  assert.match(fd.preview("p1", { kind: "command", to: [], subject: "", body: `queue ${id}` }, db), /queue: Tally · Fix the CSV import\nIt runs: dobby queue \d+/)
+  assert.match(fd.preview("p1", { kind: "command", to: [], subject: "", body: `queue ${id}` }, db), /queue: tally · Fix the CSV import\nIt runs: dobby queue \d+/)
   assert.match(fd.actionTarget("reviewaccept acmeorg/tally 599"), /pull request 599 on acmeorg\/tally/)
   for (const c of ["deploynow tally", "deploynow tally migrate", "reviewaccept a/b 3"]) assert.ok(fd.typedNeedsTap(c), c)
   for (const c of ["queue 3", "pause everything", "reviewfix a/b 3", "run 4"]) assert.ok(!fd.typedNeedsTap(c), c)
   assert.deepEqual(fd.actionArgs("Run 4"), { args: ["run", "4"], background: true })
+})
+
+test("scout auto under the owner every-merge floor: no merge, the Approve / Reject card instead", async () => {
+  const { config, setConfig } = await import("../src/config.ts")
+  const before = config()
+  const db = open(":memory:")
+  db.prepare("INSERT INTO reviews (repo,pr,sha,choice,verdict,at) VALUES ('ownerdev/foreman',41,'h1','opus','pass','t')").run()
+  const calls: string[][] = [], posts: { text: string; buttons?: { text: string; data: string }[] }[] = []
+  const sh = (_c: string, args: string[]) => {
+    calls.push(args)
+    const a = args.join(" ")
+    if (a.startsWith("pr view") && a.includes("headRefName")) return { ok: true, out: JSON.stringify({ headRefName: "scout/x", headRefOid: "h1", state: "OPEN" }) }
+    if (a.startsWith("pr diff")) return { ok: true, out: diffOf("roles/builder.md", "- Find items by id.") }
+    return { ok: true, out: "" }
+  }
+  const say = async (text: string, _f?: unknown, buttons?: { text: string; data: string }[]) => (posts.push({ text, buttons }), true)
+  try {
+    setConfig({ ...before, safety: { ...before.safety, everyMerge: "owner" } })
+    const out = { msg: "New rule", sha: "abcdef1234567890", pr: "https://github.com/ownerdev/foreman/pull/41", pushed: true, why: "" }
+    assert.match(await scoutCard(db, out, async () => ({ state: "success", why: "pass", url: "", log: [] }), say as never, { mode: "auto", sh, sleep: () => {} }), /waiting for the owner/)
+    assert.ok(!calls.some((a) => a[1] === "merge"))
+    assert.deepEqual(posts[0].buttons?.map((b) => b.data).slice(0, 2), ["scoutmerge ownerdev/foreman 41", "scoutreject ownerdev/foreman 41"])
+  } finally { setConfig(before) }
 })

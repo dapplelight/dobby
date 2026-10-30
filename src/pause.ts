@@ -39,6 +39,16 @@ const hm = (ms: number) => zoned(ms).toISOString().slice(5, 16).replace("T", " "
 /** "by the owner since 10-20 14:03 IST until 10-20 16:03 IST" */
 export const describe = (e: Entry) => `by ${e.by} since ${hm(e.at)}${e.until ? ` until ${hm(e.until)}` : ""}`
 
+/** The dashboard's own words: "Everything paused by you since 10:09" (today), "since Sun 10:09" (this week), "since 12 Oct" (older), in the configured timezone. */
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+export function plain(scope: string, e: Entry, now = Date.now()): string {
+  const z = zoned(e.at), age = zoned(now).setUTCHours(0, 0, 0, 0) - new Date(z).setUTCHours(0, 0, 0, 0), time = z.toISOString().slice(11, 16)
+  const fmt = (o: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat("en-GB", { timeZone: "UTC", ...o }).format(z)
+  const when = age <= 0 ? time : age < 7 * 86_400_000 ? `${fmt({ weekday: "short" })} ${time}` : `${z.getUTCDate()} ${MONTHS[z.getUTCMonth()]}`
+  const by = /^(the )?owner$/.test(e.by) ? "you" : e.by
+  return `${scope[0].toUpperCase()}${scope.slice(1)} paused by ${by} since ${when}`
+}
+
 /** Why this work may not run now, or null. kind "all" asks only about the everything level (the tick). */
 export function paused(db: DB, q: { kind: Kind | "all"; project?: string; ticket?: number }, now = Date.now()): string | null {
   const s = read(db)
@@ -58,14 +68,14 @@ export function pausedState(db: DB, now = Date.now()): Paused | null {
 }
 
 /** Everything that is paused now, plain words, for the status board, the brief and the dashboard. */
-export function pauseList(db: DB, now = Date.now()): { scope: string; at: number; by: string; until?: number; text: string }[] {
+export function pauseList(db: DB, now = Date.now()): { scope: string; at: number; by: string; until?: number; text: string; plain: string }[] {
   const s = read(db)
   const out: { scope: string; e: Entry }[] = []
   if (live(s.all, now)) out.push({ scope: "everything", e: s.all! })
   for (const [k, e] of Object.entries(s.kinds ?? {})) if (live(e, now)) out.push({ scope: k, e: e! })
   for (const [k, e] of Object.entries(s.projects ?? {})) if (live(e, now)) out.push({ scope: `project ${k}`, e })
   for (const [k, e] of Object.entries(s.tickets ?? {})) if (live(e, now)) out.push({ scope: `ticket #${k}`, e })
-  return out.map(({ scope, e }) => ({ scope, at: e.at, by: e.by, ...(e.until ? { until: e.until } : {}), text: `${scope} ${describe(e)}` }))
+  return out.map(({ scope, e }) => ({ scope, at: e.at, by: e.by, ...(e.until ? { until: e.until } : {}), text: `${scope} ${describe(e)}`, plain: plain(scope, e, now) }))
 }
 export const pauseLine = (db: DB, now = Date.now()) => { const l = pauseList(db, now); return l.length ? `⏸ Paused: ${l.map((x) => x.text).join("; ")}` : "" }
 

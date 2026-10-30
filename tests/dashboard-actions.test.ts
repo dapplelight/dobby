@@ -120,7 +120,7 @@ test("action allowlist: queue (backlog/failed only), reviewfix, reviewaccept, pa
     for (const bad of [{ repo: "o/r;ls", pr: 1 }, { repo: "o r/x", pr: 1 }, { repo: "../x", pr: 1 }, { repo: "o/r", pr: "1 2" }, { repo: "o/r" }, { pr: 1 }, { repo: "o/r/s", pr: 1 }]) assert.equal((await go({ action: "reviewfix", ...bad })).status, 400, j(bad))
     assert.equal((await go({ action: "pause" })).status, 200)
     assert.equal((await go({ action: "resume" })).status, 200)
-    for (const a of ["deploynow", "deploynow tally", "migrate", "approve", "decline", "send", "discard", "run", "buildidea", "keepgoing", "queue 1", "pause everything", "", null, 5, "PAUSE", "undo-scout", "ask", "__proto__"]) {
+    for (const a of ["deploynow", "deploynow tally", "migrate", "approve", "send", "discard", "run", "buildidea", "keepgoing", "queue 1", "pause everything", "", null, 5, "PAUSE", "undo-scout", "ask", "__proto__"]) {
       const r = await go({ action: a, ticket: bl, project: "tally", repo: "o/r", pr: 1 })
       assert.equal(r.status, 400, String(a)); assert.match(JSON.parse(r.body).message, /not allowed/)
     }
@@ -139,7 +139,7 @@ test("action result: one line from the command; a failing command is 500; other 
     assert.equal(r.status, 500); assert.deepEqual(JSON.parse(r.body), { ok: false, message: "PR closed already." })
     assert.equal((await post(base, { path: "/api/snapshot", body: "{}" })).status, 405)
     assert.equal((await post(base, { method: "PUT" })).status, 405)
-    assert.equal((await post(base, { method: "DELETE" })).status, 405)
+    assert.equal((await post(base, { method: "DELETE", headers: { "content-length": "2" } })).status, 405)
   } finally { server.close() }
 })
 
@@ -162,7 +162,7 @@ test("execForeman: argument array, no shell (a hostile argument stays one argume
 
 // ---- sign-in without pasting: ensureToken, /auth cookie, /api/session ----
 test("ensureToken: creates a 600 file with a long token, is idempotent, never overwrites", async () => {
-  const { ensureToken } = await import("../src/telegram.ts")
+  const { ensureToken } = await import("../src/notify.ts")
   const { statSync, readFileSync, writeFileSync } = await import("node:fs")
   const f = `${mkdtempSync(`${tmpdir()}/foreman-tok-`)}/sub/secrets.env`
   const t = ensureToken(f)
@@ -179,6 +179,20 @@ test("openerFor: argument arrays per platform", () => {
   assert.deepEqual(S.openerFor("darwin", "u"), ["open", ["u"]])
   assert.deepEqual(S.openerFor("linux", "u"), ["xdg-open", ["u"]])
   assert.deepEqual(S.openerFor("win32", "u"), ["cmd", ["/c", "start", "", "u"]])
+})
+
+test("a browser that is not signed in gets a styled page with the one command; fetches keep the plain text", async () => {
+  const { server, base } = await up()
+  try {
+    const html = { accept: "text/html,application/xhtml+xml" }
+    for (const path of ["/auth?token=nope", "/auth?token=", "/auth"]) {
+      const r = await fetch(`${base}${path}`, { redirect: "manual", headers: html })
+      assert.equal(r.status, 401, path); assert.match(r.headers.get("content-type")!, /^text\/html/)
+      const body = await r.text(); assert.match(body, /<h1>This browser is signed out<\/h1>/); assert.match(body, /<code>dobby dashboard open<\/code>/); assert.doesNotMatch(body, /tok-123/)
+    }
+    const plain = await fetch(`${base}/auth?token=nope`, { redirect: "manual" })
+    assert.match(plain.headers.get("content-type")!, /^text\/plain/); assert.match(await plain.text(), /wrong token/)
+  } finally { server.close() }
 })
 
 test("/auth sets the cookie and redirects; bad token 401; cookie + Origin runs actions; /api/session", async () => {
@@ -207,4 +221,26 @@ test("/auth sets the cookie and redirects; bad token 401; cookie + Origin runs a
 test("/api/session without any configured token says canAct false", async () => {
   const { server, base } = await up({ token: null })
   try { assert.deepEqual(await (await fetch(`${base}/api/session`)).json(), { canAct: false }) } finally { server.close() }
+})
+
+// ---- bug-fix round: undo after start, child limits, refusals exit 1 ----
+test("dashboard child limits: merge, deploy and retry get the long limit, not 2 minutes", () => {
+  for (const v of ["merge", "deploy", "retry", "decline", "allowround", "applyfinding"]) assert.equal(S.execTimeoutMs([v, "1"], true), 3 * 3600_000, v)
+  assert.equal(S.execTimeoutMs(["unqueue", "1"], true), 20 * 60_000)
+  assert.equal(S.execTimeoutMs(["reviewfix", "o/r", "1"]), 3 * 3600_000) // through `dobby do`
+})
+
+test("a refused command exits 1 with its plain line (dashboard shows it as a failure)", () => {
+  const run = (...a: string[]) => spawnSync(new URL("../bin/dobby", import.meta.url).pathname, a, { encoding: "utf8", env: process.env })
+  const db = open()
+  const owner = add(db, "shipped", "Old work")
+  const q = run("queue", String(owner))
+  assert.equal(q.status, 1); assert.match(q.stderr, /was not queued/)
+  assert.equal(run("queue", "99999").status, 1)
+  const m = run("merge", "99999"); assert.equal(m.status, 1); assert.match(m.stderr, /no ticket #99999/)
+  assert.equal(run("retry", "99999").status, 1)
+  assert.equal(run("deploy", "nope-project").status, 1)
+  assert.equal(run("do", "frobnicate everything").status, 1)
+  assert.equal(run("queue", String(add(db, "backlog", "Add a copy button"))).status, 0)
+  db.close()
 })

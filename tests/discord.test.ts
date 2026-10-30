@@ -8,7 +8,7 @@ const dir = mkdtempSync(`${tmpdir()}/foreman-test-`)
 process.env.DOBBY_DIR = dir
 process.env.DOBBY_SECRETS = `${dir}/secrets.env`
 writeFileSync(process.env.DOBBY_SECRETS, "")
-const { asIs, notify } = await import("../src/telegram.ts")
+const { asIs, notify } = await import("../src/notify.ts")
 const { chunks, ownerEvent, route, setKv } = await import("../src/discord.ts")
 const { open } = await import("../src/db.ts")
 const fd = await import("../src/frontdesk.ts")
@@ -21,14 +21,14 @@ const stub = (calls: Call[]) => (async (url: string, init?: RequestInit) => {
 
 test("routing: channel and voice per event", () => {
   const t = (step: any) => route({ kind: "ticket", project: "tally", ticket: 7, title: "Fix the footer (apps/web/x.tsx)", step })
-  assert.deepEqual(t("picked"), { channel: "tally-tickets", as: "Engineering Manager · Tally", thread: 7, threadName: "Fix the footer · #7" })
-  assert.deepEqual(t("merged"), { channel: "tally-releases", as: "Engineer · Tally" }) // the -shipped feed, not the thread
+  assert.deepEqual(t("picked"), { channel: "tally-tickets", as: "Engineering Manager · tally", thread: 7, threadName: "Fix the footer · #7" })
+  assert.deepEqual(t("merged"), { channel: "tally-releases", as: "Engineer · tally" }) // the -shipped feed, not the thread
   assert.equal(route({ kind: "ticket", project: "shopfront", ticket: 8, title: "Fix review findings on ownerdev/shopfront#32", step: "building" }).threadName, "Fix review findings on #32 · #8")
-  assert.deepEqual([t("building").as, t("verify").as, t("check").as, t("merged").as, t("failed").as], ["Engineer · Tally", "Engineer · Tally", "QA Engineer · Tally", "Engineer · Tally", "Engineer · Tally"])
+  assert.deepEqual([t("building").as, t("verify").as, t("check").as, t("merged").as, t("failed").as], ["Engineer · tally", "Engineer · tally", "Tester · tally", "Engineer · tally", "Engineer · tally"])
   assert.equal(route({ kind: "ticket", project: "orbit", ticket: 1, title: "x", step: "building" }).channel, "system-status") // no channels of its own
-  assert.deepEqual(route({ kind: "lead", project: "shopfront" }), { channel: "shopfront-tickets", as: "Engineering Manager · Shopfront" })
-  assert.deepEqual(route({ kind: "idea", project: "shopfront" }), { channel: "shopfront-ideas", as: "Product Manager · Shopfront" })
-  assert.deepEqual(route({ kind: "shipped", project: "tally" }), { channel: "tally-releases", as: "Engineer · Tally" })
+  assert.deepEqual(route({ kind: "lead", project: "shopfront" }), { channel: "shopfront-tickets", as: "Engineering Manager · shopfront" })
+  assert.deepEqual(route({ kind: "idea", project: "shopfront" }), { channel: "shopfront-ideas", as: "Product Manager · shopfront" })
+  assert.deepEqual(route({ kind: "shipped", project: "tally" }), { channel: "tally-releases", as: "Engineer · tally" })
   const fixed = (["approval", "stuck", "proposal", "brief", "health", "ask"] as const).map((kind) => Object.values(route({ kind })).join(" / "))
   assert.deepEqual(fixed, ["needs-you / Chief of Staff", "needs-you / Chief of Staff", "needs-you / Assistant", "daily-update / Chief of Staff", "system-status / Site Reliability", "assistant / Assistant"])
   assert.deepEqual(chunks("a\nbb\ncc", 4), ["a\nbb", "cc"]) // long posts split on lines, never cut mid-word

@@ -11,9 +11,9 @@
 import { paused } from "../pause.ts"
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph"
 import type { DB } from "../db.ts"
-import { postIdea } from "../discord.ts"
+import { platform, type Platform } from "../chat/platform.ts"
 import { nearTickets, sameWork } from "../jev.ts"
-import { clip } from "../telegram.ts"
+import { clip } from "../notify.ts"
 import { readOnlyDir, addTicket, claude, company, goalFor, goalsText, istDay, ist, isDuplicate, loadProjects, loadRole, setTicket, syncGoals, type Project, type Ticket } from "../lib.ts"
 
 export type Problem = { type: "problem"; title: string; goal?: number; score?: number; why?: string; evidence?: string; size?: string; experiment?: string }
@@ -23,6 +23,7 @@ export type Mode = "pm" | "area"
 const POSTS: Record<Mode, number> = { pm: 2, area: 0 } // new ideas only: at most 2 a day, from the PM
 const MAX_PRDS = 2
 
+const postIdea: Platform["postIdea"] = async (i) => (await platform()).postIdea(i)
 const kvGet = (db: DB, k: string) => (db.prepare("SELECT v FROM kv WHERE k=?").get(k) as { v: string } | undefined)?.v
 const kvSet = (db: DB, k: string, v: string) => db.prepare("INSERT OR REPLACE INTO kv VALUES (?, ?)").run(k, v)
 

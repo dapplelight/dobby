@@ -3,8 +3,8 @@
 // everything else, and every API failure, stays on `claude -p` and the plan.
 // Key: DOBBY_API_KEY in ~/.config/dobby/secrets.env. Never ANTHROPIC_API_KEY: that would move every `claude -p` off the plan.
 import type { DB } from "./db.ts"
-import { readSecrets } from "./telegram.ts"
-import { zoned } from "./config.ts"
+import { readSecrets } from "./notify.ts"
+import { config, zoned } from "./config.ts"
 
 const MODELS: Record<string, string> = { haiku: "claude-haiku-5-5", sonnet: "claude-sonnet-5-5", opus: "claude-opus-5-5" }
 const RETRY_MS = 24 * 3600_000 // after "credit balance too low", try the API again a day later: picks up the monthly refill by itself
@@ -15,6 +15,25 @@ const set = (db: DB, k: string, v: string | null) =>
   v === null ? db.prepare("DELETE FROM kv WHERE k=?").run(k) : db.prepare("INSERT OR REPLACE INTO kv VALUES (?, ?)").run(k, v)
 
 export const apiKey = () => (process.env.DOBBY_API_KEY ?? readSecrets().DOBBY_API_KEY ?? "").trim()
+
+/** Every place that talks to Anthropic with DOBBY_API_KEY goes through these two: an organisation-level key needs billing.workspaceId (not a secret) sent with each call. */
+export const workspaceId = (id = config().billing?.workspaceId) => id?.trim() || ""
+export const workspaceHeaders = (id?: string): Record<string, string> => (workspaceId(id) ? { "anthropic-workspace-id": workspaceId(id) } : {})
+/** The env a Claude Code process gets for the key: Claude Code sends ANTHROPIC_CUSTOM_HEADERS ("Name: value", one per line) on every request. */
+export const claudeKeyEnv = (): Record<string, string> => ({ ANTHROPIC_API_KEY: apiKey(), ...(workspaceId() ? { ANTHROPIC_CUSTOM_HEADERS: `anthropic-workspace-id: ${workspaceId()}` } : {}) })
+
+/** One cheap real call with the key (GET /v1/models). Returns the plain-words problem, or "" when the key works. */
+export async function probeKey(key: string, fetcher: typeof fetch = fetch, id?: string): Promise<string> {
+  try {
+    const res = await fetcher("https://api.anthropic.com/v1/models?limit=1", { headers: { "x-api-key": key, "anthropic-version": "2023-06-01", ...workspaceHeaders(id) }, signal: AbortSignal.timeout(10_000) })
+    if (res.ok) return ""
+    const why = ((await res.json().catch(() => ({}))) as { error?: { message?: string } }).error?.message ?? `HTTP ${res.status}`
+    if (/not scoped to a workspace/i.test(why)) return "This key isn't in a workspace: set billing.workspaceId, or create the key inside a workspace in Console."
+    return res.status === 401 ? "Anthropic refused the key (401): check DOBBY_API_KEY." : `Anthropic answered ${res.status}: ${why.slice(0, 150)}`
+  } catch (e) {
+    return `could not reach Anthropic (${(e as Error).message})` // offline is not a bad key: the row stays ok, see checks.ts
+  }
+}
 
 /**
  * The router (owner, 17 Oct): two pools, the plan (weekly limit, lost if unused) and API credits (lost at month end).
@@ -52,7 +71,7 @@ export async function callApi(db: DB, model: string, prompt: string, fetcher: ty
   try {
     const res = await fetcher("https://api.anthropic.com/v1/messages", {
       method: "POST",
-      headers: { "x-api-key": apiKey(), "anthropic-version": "2023-06-01", "content-type": "application/json" },
+      headers: { "x-api-key": apiKey(), "anthropic-version": "2023-06-01", ...workspaceHeaders(), "content-type": "application/json" },
       body: JSON.stringify({ model: MODELS[model] ?? model, max_tokens: 4096, messages: [{ role: "user", content: prompt }] }),
       signal: AbortSignal.timeout(120_000),
     })

@@ -1,0 +1,14 @@
+{
+  "roles": {
+    "build": [
+      {
+        "files": {
+          "src/farewell.js": "export const farewell = (name) => `Goodbye, ${name}`\n",
+          "test/farewell.test.js": "import assert from \"node:assert/strict\"\nimport { test } from \"node:test\"\nimport { farewell } from \"../src/farewell.js\"\n\ntest(\"farewell\", () => assert.equal(farewell(\"Asha\"), \"Goodbye, Asha\"))\n",
+          "migrations/0002_backfill.sql": "UPDATE accounts SET currency = 'INR' WHERE currency IS NULL;\n"
+        },
+        "reply": "Added the helper and a backfill migration."
+      }
+    ]
+  }
+}

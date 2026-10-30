@@ -8,9 +8,10 @@ const dir = mkdtempSync(`${tmpdir()}/foreman-ux-`)
 process.env.DOBBY_DIR = dir
 const { open, logRun } = await import("../src/db.ts")
 const { addTicket, setTicket } = await import("../src/lib.ts")
-const { briefOk, budgetLine, fallbackBrief, gather, sendBrief, istDay } = await import("../src/graphs/cos.ts")
-const { briefWatch, lastTick } = await import("../src/health.ts")
-const { digest, takeOutbox } = await import("../src/telegram.ts")
+const { buildBrief, briefMarkdown } = await import("../src/brief.ts")
+const { gather, sendBrief, istDay } = await import("../src/graphs/cos.ts")
+const { briefWatch } = await import("../src/health.ts")
+const { digest, takeOutbox } = await import("../src/notify.ts")
 
 const projects = { tally: { name: "tally", paused: false } } as any
 const usage = { fiveUsed: 12, weekUsed: 40, weekMsToReset: 1 }
@@ -29,17 +30,15 @@ test("brief: newest report per project, settled tickets dropped from needs owner
   assert.ok(f.leads[0].text.includes("Live thing") && !f.leads[0].text.includes("Old thing"))
 })
 
-test("brief: first line is the one action, or says nothing is needed; budget line is plain", () => {
+test("brief: first line is the one action, or says nothing is needed", () => {
   const db = open(":memory:")
-  const none = fallbackBrief(gather(db, projects, usage))
-  assert.equal(none.split("\n")[0], "Nothing needs you today.")
+  const none = briefMarkdown(buildBrief(db, gather(db, projects, usage)))
+  assert.equal(none.split("\n")[1], "Nothing needs you today.")
   const id = addTicket(db, { project: "tally", title: "Add dark mode: toggle" }).id
   setTicket(db, id, { status: "approval" })
-  const b = fallbackBrief(gather(db, projects, usage))
-  assert.match(b.split("\n")[0], /^Do first: Tally: Add dark mode.*1 min/)
-  assert.ok(!/#\d/.test(b), b)
-  assert.ok(briefOk("Do first: x (2 min).\nShipped\n• a\nBuilding today\n• b") && !briefOk("Done\nToday\nNeeds you"))
-  assert.equal(budgetLine(db, usage), "Budget: 5-hour 12%, week 40% · 0 of 0 shipped without you")
+  const b = briefMarkdown(buildBrief(db, gather(db, projects, usage)))
+  assert.match(b.split("\n")[1], /^\*\*Do first:\*\* tally · Add dark mode, waiting for your merge$/)
+  assert.ok(!/#\d/.test(b) && !/buttons below/.test(b), b)
 })
 
 test("send: one budget line, usage detail to #system-status once a day, outbox read back", async () => {
@@ -47,11 +46,11 @@ test("send: one budget line, usage detail to #system-status once a day, outbox r
   const sent: { text: string; kind: string }[] = []
   const fake = (async (text: string, _f: unknown, _b: unknown, e: { kind: string }) => (sent.push({ text, kind: e.kind }), true)) as any
   appendFileSync(`${dir}/outbox.log`, `2026-10-18T10:00:00.000Z [fetch failed] Build paused\nsecond line\n2026-10-18T11:00:00.000Z [discord not set up] Review needs you\n`)
-  const s = { facts: gather(db, projects, usage), brief: "Nothing needs you today." }
+  const s = { facts: gather(db, projects, usage), dir }
   await sendBrief(db, s, fake)
   const brief = sent.find((m) => m.text.includes("Nothing needs you today."))!
-  assert.match(brief.text, /^2 messages could not be posted yesterday:\n• Build paused\n• Review needs you\n/)
-  assert.match(brief.text, /Budget: 5-hour 12%, week 40% · 0 of 0 shipped without you/)
+  assert.match(brief.text, /### Not posted\n- Build paused\n- Review needs you\n/)
+  assert.match(brief.text, /### Budget\nWeek 40%.* · 5-hour 12%/)
   assert.ok(!brief.text.includes("$") && !/cache/i.test(brief.text))
   assert.equal(sent.filter((m) => m.kind === "health").length, 1)
   assert.equal(readFileSync(`${dir}/outbox.log`, "utf8"), "") // cleared
@@ -72,9 +71,9 @@ test("digest: one short message, counts per app and the 3 biggest of each", () =
   const rows = Array.from({ length: 56 }, (_, i) => ({ id: i, project: i % 4 ? "tally" : "foreman", title: `Change number ${i}: long detail`, note: "https://github.com/x/pull/1" }))
   const d = digest(rows, (id) => "• ".padEnd(id + 3, "x"))
   assert.ok(d.length < 500, String(d.length))
-  assert.ok(d.includes("Foreman 14, Tally 42"))
+  assert.ok(d.includes("foreman 14, tally 42"))
   assert.equal(d.split("\n").filter((l) => l.startsWith("•")).length, 6)
-  assert.match(d, /\nTally\n• Change number 55\n/)
+  assert.match(d, /\ntally\n• Change number 55\n/)
 })
 
 test("health: silent-death alert after 09:00 IST, once a day; last tick for the board", async () => {
@@ -89,7 +88,4 @@ test("health: silent-death alert after 09:00 IST, once a day; last tick for the 
   const db2 = open(":memory:")
   db2.prepare("INSERT INTO kv VALUES (?, '1')").run("brief:sent:2026-10-20")
   assert.equal(await briefWatch(db2, send, at(11)), false) // brief went out
-  assert.equal(lastTick(db), "Last tick: never")
-  logRun(db, { project: "tally", kind: "build", ok: true }, "2026-10-20T04:00:00.000Z")
-  assert.equal(lastTick(db), "Last tick: 2026-10-20 09:30 IST")
 })

@@ -34,7 +34,7 @@ test("settings: in the config file; a bad review value drops only the review sec
   const bad = loadConfig({ repo, private: priv })
   assert.equal(bad.config.timezone, "Europe/London")
   assert.equal(bad.config.review, undefined)
-  assert.match(bad.warnings[0], /review ignored: review.handle/)
+  assert.match(bad.warnings[0], /review\.handle/)
   assert.equal(loadConfig({ repo, private: null }).config.review, undefined) // defaults() has no review key: migrate writes nothing new
 })
 
@@ -403,7 +403,7 @@ test("config: an unknown key inside review.repos[...] warns like any other unkno
   const priv = `${dir}/cfg2.json`
   writeFileSync(priv, JSON.stringify({ review: { repos: { "a/b": { learn: false, lern: true } } } }))
   const l = loadConfig({ repo: `${dir}/none.json`, private: priv })
-  assert.deepEqual(l.warnings, [`${priv}: unknown key review.repos.a/b.lern (ignored)`])
+  assert.deepEqual(l.warnings, [`${priv}: unknown key review.repos.a/b.lern (ignored); did you mean review.repos.a/b.learn?`])
   assert.equal(st.resolve(l.config.review, "a/b").learn, false)
 })
 
@@ -510,5 +510,5 @@ test("config: unknown keys inside other records (discord.apps, providers) still 
   const priv = `${dir}/cfg3.json`
   writeFileSync(priv, JSON.stringify({ discord: { apps: { tally: { label: "x", ideas: true, color: "red" } } }, review: { repos: { "a/b": { lern: true } } } }))
   const l = loadConfig({ repo: `${dir}/none.json`, private: priv })
-  assert.deepEqual(l.warnings, [`${priv}: unknown key review.repos.a/b.lern (ignored)`])
+  assert.deepEqual(l.warnings, [`${priv}: unknown key review.repos.a/b.lern (ignored); did you mean review.repos.a/b.learn?`])
 })

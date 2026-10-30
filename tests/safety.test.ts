@@ -117,6 +117,14 @@ test("the explain output names categories, rule, action and why", async () => {
   assert.match(out, /why: migrations\.data: m\/9\.sql changes existing data/)
 })
 
+test("explain says when Claude gave no answer and the categories rest on words alone (#354)", async () => {
+  const input = { text: "Cut a release and publish to npm" }
+  const failing = await S.check(input, { safety: cfg({ classifier: "model" }), ask: async () => { throw new Error("not signed in") } })
+  assert.match(S.explainOutcome(failing, cfg({ classifier: "model" })), /note: the classifier gave no answer for releases .*word matching alone/)
+  const answered = await S.check(input, { safety: cfg({ classifier: "model" }), ask: async () => JSON.stringify({ releases: "yes" }) })
+  assert.doesNotMatch(S.explainOutcome(answered, cfg({ classifier: "model" })), /no answer/)
+})
+
 // ---- fixReview and the owner outcome ------------------------------------------------------------------------------------------------------
 const project = (name: string) => ({ name, repo: `${dir}/projects/tally`, base: "main", install: "true", verify: "true", priority: 5, jev: false, paused: false, rules: "" })
 function deps(files: string[], sql: string) {
@@ -283,4 +291,17 @@ test("every-merge floor: strict makes every merge the owner's, balanced leaves i
   assert.equal(mergeAction(plain, s("autonomous", "review")).action, "review")
   assert.equal(mergeAction({ action: "never" as const, why: "x" }, s("strict")).action, "never") // the floor never loosens
   assert.equal(everyMergeFloor(s("balanced", "owner")), "owner")
+})
+
+test("#359: a migration or CI-config ticket is not 'nothing sensitive' under strict; balanced and autonomous keep their schema/deploy rules; files still beat words", async () => {
+  const strict = cfg({ preset: "strict" })
+  for (const text of ["Add a migration for the posts table", "Change the CI workflow to run lint", "Add a GitHub Actions pipeline"]) {
+    const o = await S.check({ text }, { safety: strict })
+    assert.equal(o.action, "owner", text)
+    assert.notEqual(o.why, "nothing sensitive")
+  }
+  assert.equal((await S.check({ text: "Add a migration for the posts table" }, { safety: cfg({ preset: "balanced" }) })).action, "auto") // schema migrations are auto there
+  assert.equal(S.ticketGate("Add a migration for the posts table", {}, strict), "ask")
+  // with files known, only a real migration file counts
+  assert.deepEqual((await S.check({ text: "Add a migration for the posts table", files: ["src/a.ts"] }, { safety: strict })).result.categories, [])
 })

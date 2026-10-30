@@ -1,0 +1,22 @@
+#!/usr/bin/env node
+// Fake `gitleaks` for the tests: `gitleaks detect --no-git --no-banner --source <dir> --report-format json --report-path <file>`.
+// A line containing LEAKME is a finding (rule "fake-rule"); exit 1 with a JSON report when there is one, 0 when clean.
+// FAKE_GITLEAKS_EXIT=<n> forces that exit code with no report (a crashed scanner). No network, nothing outside --source.
+import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
+
+const argv = process.argv.slice(2)
+const flag = (name) => argv[argv.indexOf(name) + 1]
+if (process.env.FAKE_GITLEAKS_EXIT) process.exit(Number(process.env.FAKE_GITLEAKS_EXIT))
+const found = []
+const walk = (dir) => {
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name)
+    if (statSync(p).isDirectory()) { walk(p); continue }
+    readFileSync(p, "utf8").split("\n").forEach((l, i) => { if (l.includes("LEAKME")) found.push({ File: p, StartLine: i + 1, RuleID: "fake-rule" }) })
+  }
+}
+walk(flag("--source"))
+if (!found.length) process.exit(0)
+writeFileSync(flag("--report-path"), JSON.stringify(found))
+process.exit(1)

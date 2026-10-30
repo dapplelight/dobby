@@ -10,13 +10,13 @@ import { paused } from "../pause.ts"
 import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph"
 import type { DB } from "../db.ts"
-import { team } from "../discord.ts"
-import { clip } from "../telegram.ts"
+import { platform } from "../chat/platform.ts"
+import { clip } from "../notify.ts"
 import { addProgram } from "./program.ts"
 import { nearTickets, sameWork } from "../jev.ts"
 import { check, ownerLevel, ticketGate, unsureOwner } from "../safety.ts"
 import type { Ctx } from "../policy.ts"
-import { readOnlyDir, addTicket, agentFiled, claude, ENGINEERS, getTicket, goalFor, goals as activeGoals, policyCtx, goalsText, cachedOwnerVerdict, splitBacklog, ticketText, verdictKey, ist, istDay, isDuplicate, loadProjects, loadRole, netRun, shAsync, timeoutMs, parentFor, setTicket, unblocked, signedOut, syncGoals, type Project, type Ticket } from "../lib.ts"
+import { readOnlyDir, addTicket, agentFiled, claude, ENGINEERS, getTicket, goalFor, goals as activeGoals, policyCtx, goalsText, cachedOwnerVerdict, queueTicket, splitBacklog, ticketText, verdictKey, ist, istDay, isDuplicate, loadProjects, loadRole, netRun, shAsync, timeoutMs, parentFor, setTicket, unblocked, signedOut, syncGoals, type Project, type Ticket } from "../lib.ts"
 
 // A proper queue (owner, 20 Oct): refill when ready drops under LOW_WATER, fill up to READY_CAP (to 2 x the 4 day workers); 6 promotions per run.
 export const MAX_PROMOTE = 6, MAX_NEW = 3, READY_CAP = 8, LOW_WATER = 4
@@ -163,11 +163,34 @@ export function applyPlan(db: DB, project: string, plan: Plan, dry = false, verd
   return out
 }
 
+// First backlog of a new project (#369): onboarding writes tickets, and the scheduled Lead would queue them before the owner chose any.
+// A hold (kv promote-hold:<project>) keeps the scheduled Lead and the fallback away until the owner queues a ticket (queueTicket) or runs `dobby lead`.
+export const promoteHeld = (db: DB, project: string) => !!db.prepare("SELECT 1 FROM kv WHERE k=?").get(`promote-hold:${project}`)
+export const releasePromote = (db: DB, project: string) => void db.prepare("DELETE FROM kv WHERE k=?").run(`promote-hold:${project}`)
+export type PromoteMode = "ask" | "auto" | "none"
+/**
+ * After a project's FIRST onboarding. auto: nothing held, the scheduled Lead promotes as before. none: held. ask: with `choose` (a terminal),
+ * show the tickets the Lead would queue first (up to 3) and let the owner pick; without it (--yes, no TTY, scheduled start) held.
+ * Returns the line to print.
+ */
+export async function onboardPromote(db: DB, project: string, mode: PromoteMode, choose?: (titles: string[]) => Promise<number[]>): Promise<string> {
+  if (mode === "auto") return ""
+  const gs = activeGoals(db, project)
+  const top = splitBacklog(db, project, (id) => gs.find((g) => g.id === id)?.rank).pickable.filter((t) => t.size !== "L").slice(0, 3)
+  if (mode === "ask" && choose && top.length) {
+    const picked = (await choose(top.map((t) => `#${t.id} ${t.title}`))).map((i) => top[i]).filter(Boolean)
+    if (picked.length) { for (const t of picked) queueTicket(db, t.id); return `queued ${picked.map((t) => `#${t.id}`).join(", ")}; the rest of the backlog stays put` }
+  }
+  db.prepare("INSERT OR REPLACE INTO kv VALUES (?, ?)").run(`promote-hold:${project}`, String(Date.now()))
+  return top.length ? `${top.length} backlog ticket(s) were not queued (lead.onboardPromote: ${mode}). Queue one with: dobby queue ${top[0].id}` : "nothing was queued"
+}
+
 /**
  * No-AI fallback (audit #2): when the queue is still under LOW_WATER after a Lead run (it chose badly, failed or found nothing),
  * promote the top pickable S/M backlog tickets by goal rank, then priority, up to READY_CAP. Same rules as a plan (applyPlan).
  */
 export function fallbackPromote(db: DB, project: string): Applied {
+  if (promoteHeld(db, project)) return { promoted: [], created: [], needsOwner: [], skipped: [`${project}: the first backlog waits for you (dobby queue <id>)`] }
   const ready = (db.prepare(`SELECT COUNT(*) AS n FROM tickets WHERE project=? AND status='ready' AND ${unblocked()}`).get(project) as { n: number }).n
   if (ready >= LOW_WATER) return { promoted: [], created: [], needsOwner: [], skipped: [] }
   const gs = activeGoals(db, project)
@@ -179,7 +202,7 @@ export function fallbackPromote(db: DB, project: string): Applied {
 /** Active (not paused) projects with nothing ready (or, while the 5-hour window sits idle, fewer than READY_CAP ready) whose Lead has not run in 10 minutes. */
 export function leadDue(db: DB, projects: Record<string, Project>, now = Date.now(), idle = false): Project[] {
   return Object.values(projects).filter((p) => {
-    if (p.paused || p.autoPromote === false || paused(db, { kind: "planning", project: p.name })) return false
+    if (p.paused || p.autoPromote === false || promoteHeld(db, p.name) || paused(db, { kind: "planning", project: p.name })) return false
     const ready = (db.prepare(`SELECT COUNT(*) AS n FROM tickets WHERE project=? AND status='ready' AND ${unblocked()}`).get(p.name) as { n: number }).n
     const last = Number((db.prepare("SELECT v FROM kv WHERE k=?").get(`lead-at:${p.name}`) as { v: string } | undefined)?.v ?? 0)
     // A run that found nothing to promote or write sleeps up to 6 h, unless the backlog size changed since (20 Oct audit: ~112 idle runs a day per project)
@@ -212,7 +235,7 @@ function roadmap(p: Project) {
 export function weeklyDue(db: DB, projects: Record<string, Project>, now = Date.now()): Project[] {
   const t = ist(now)
   if (t.getUTCDay() !== 1 || t.getUTCHours() * 60 + t.getUTCMinutes() < 6 * 60 + 30) return []
-  return Object.values(projects).filter((p) => !p.paused && p.autoPromote !== false && !paused(db, { kind: "planning", project: p.name }) && (db.prepare("SELECT v FROM kv WHERE k=?").get(`em-week-at:${p.name}`) as { v: string } | undefined)?.v !== istDay(now))
+  return Object.values(projects).filter((p) => !p.paused && p.autoPromote !== false && !promoteHeld(db, p.name) && !paused(db, { kind: "planning", project: p.name }) && (db.prepare("SELECT v FROM kv WHERE k=?").get(`em-week-at:${p.name}`) as { v: string } | undefined)?.v !== istDay(now))
 }
 
 const WEEKLY = `\n\nTODAY IS MONDAY: ALSO WRITE THIS WEEK'S PLAN. Order the week's work by goal (what ships first, what waits on what, what "done" looks like on Friday), using the board above. Pick and assign as usual for today; the daily runs follow your plan.
@@ -303,15 +326,15 @@ export function buildLeadGraph(db: DB, c = claude) {
     const text = leadReport(s.project, s.picks, s.applied, s.dry)
     if (!s.dry && s.weekly && s.picks.week) {
       db.prepare("INSERT OR REPLACE INTO kv VALUES (?, ?)").run(`em:week:${s.project}`, s.picks.week)
-      await team({ kind: "lead", project: s.project }, `🗓 This week · ${s.project}\n${s.picks.week}`)
+      await (await platform()).team({ kind: "lead", project: s.project }, `🗓 This week · ${s.project}\n${s.picks.week}`)
     }
     if (!s.dry) {
       // Discord only: the report in the project channel, and each newly ready ticket's thread starts with the Lead's pick
       // the report posts only when something is left for the owner; promotions show in each ticket's thread below
-      if (s.applied.needsOwner.length) await team({ kind: "lead", project: s.project }, text)
+      if (s.applied.needsOwner.length) await (await platform()).team({ kind: "lead", project: s.project }, text)
       for (const label of [...s.applied.promoted, ...s.applied.created.filter((c) => c.includes("(ready"))]) {
         const t = getTicket(db, Number(label.match(/· #(\d+)/)?.[1]))
-        if (t) await team({ kind: "ticket", project: t.project, ticket: t.id, title: t.title, step: "picked" }, `📌 Picked: ${t.title} · #${t.id}${t.engineer ? `\nAssigned to the ${t.engineer} Engineer` : ""}`)
+        if (t) await (await platform()).team({ kind: "ticket", project: t.project, ticket: t.id, title: t.title, step: "picked" }, `📌 Picked: ${t.title} · #${t.id}${t.engineer ? `\nAssigned to the ${t.engineer} Engineer` : ""}`)
       }
       const k = `lead:${s.project}:${today()}`
       const prev = (db.prepare("SELECT v FROM kv WHERE k=?").get(k) as { v: string } | undefined)?.v

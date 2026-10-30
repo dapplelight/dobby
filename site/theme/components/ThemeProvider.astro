@@ -1,0 +1,14 @@
+---
+// Starlight sets data-theme on <html>; Signet tokens switch on the .dark class. Keep them in step, before first paint.
+import Default from "@astrojs/starlight/components/ThemeProvider.astro"
+---
+
+<Default />
+<script is:inline>
+  (() => {
+    const r = document.documentElement
+    const sync = () => r.classList.toggle("dark", r.dataset.theme === "dark")
+    sync()
+    new MutationObserver(sync).observe(r, { attributes: true, attributeFilter: ["data-theme"] })
+  })()
+</script>

@@ -28,7 +28,7 @@ the defaults run instead. `dobby config show` prints what is in force; `@dobby c
 |---|---|---|
 | `auto` | `"off"` | `off`: only on request (`@dobby review`), so no usage is spent unasked. `drafts`: review every open PR automatically except drafts. `on`: drafts too. Dobby's own ticket PRs are reviewed by the ticket pipeline on push either way, and the scan still re-reviews them (non-drafts) unless `mentionOnly` is set. |
 | `includePaths` | `[]` | Globs. Not empty = only these files are reviewed. The model is told which changed files are out of scope. |
-| `excludePaths` | `[]` | Globs never reviewed. A PR that changes only excluded files is skipped. Gating reviews (strict, a Dobby `foreman/` PR or a Scout `scout/` PR: they merge on their review) ignore both filters. |
+| `excludePaths` | `[]` | Globs never reviewed. A PR that changes only excluded files is skipped. Gating reviews (strict, a Dobby `dobby/` PR or a Scout `scout/` PR: they merge on their review) ignore both filters. |
 | `branches` | `[]` | Base-branch globs that get automatic reviews. Empty = every base branch. |
 | `skipLabel` | `"no-review"` | A PR with this label gets no automatic review. `""` = none. |
 | `mentionOnly` | `false` | No automatic reviews; only `@dobby review` (turns commands on). |
@@ -67,11 +67,11 @@ reacts 👀 and replies.
 | Command | What happens |
 |---|---|
 | `@dobby review` | Reviews the commits since the last review (a draft too). Already reviewed this head = a reply, no re-run. |
-| `@dobby full review` | Reviews the whole PR again, even this head. Capped by `fullReviewsPerDay`. Refused (fixed reply) when the owner accepted this head's review, and on a PR that merges on its review (`foreman/`, `scout/`) whose head already failed: push a fix instead. |
+| `@dobby full review` | Reviews the whole PR again, even this head. Capped by `fullReviewsPerDay`. Refused (fixed reply) when the owner accepted this head's review, and on a PR that merges on its review (`dobby/`, `scout/`) whose head already failed: push a fix instead. |
 | `@dobby summary` | Rewrites the walkthrough's summary and risk line only. |
 | `@dobby describe` | Suggests a title and description (see `describe`). The title is never changed. |
-| `@dobby ask <question>` | A read-only answer about the PR or the line the thread is on. A plain reply in a reviewer thread works too ("thanks", "done" and the like get no answer). Never offers or queues a ticket: only the owner's `@foreman` chat can. |
-| `@dobby <question>` (owner) | A comment that starts with `@dobby` and no command word is the owner's chat: a read-only answer that may offer a ticket ("yes" queues it). `@foreman` anywhere in a comment still works the same way. |
+| `@dobby ask <question>` | A read-only answer about the PR or the line the thread is on. A plain reply in a reviewer thread works too ("thanks", "done" and the like get no answer). Never offers or queues a ticket: only the owner's `@dobby` chat can. |
+| `@dobby <question>` (owner) | A comment that starts with `@dobby` and no command word is the owner's chat: a read-only answer that may offer a ticket ("yes" queues it). The old `@foreman` handle still works the same way. |
 | `@dobby learn` (in a reviewer thread) | Marks that finding as intentional for later reviews of the repo. |
 | `@dobby resolve` | Resolves the reviewer's open threads. |
 | `@dobby fix` | Queues a builder ticket for the open high/medium findings (only after a failed review recorded them). |

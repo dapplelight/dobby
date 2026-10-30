@@ -1,7 +1,7 @@
 // One SQLite file for Dobby's own records: agent runs, health checks, tickets. LangGraph keeps its checkpoints in graph.db.
 import Database from "better-sqlite3"
 import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite"
-import { chmodSync, existsSync, mkdirSync } from "node:fs"
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readSync, statSync, ftruncateSync, writeSync } from "node:fs"
 import { config, expand } from "./config.ts"
 
 export type DB = Database.Database
@@ -56,6 +56,13 @@ export function open(path = `${DATA}/dobby.db`): DB {
       repo TEXT NOT NULL, pr INTEGER NOT NULL, sha TEXT NOT NULL, choice TEXT, by TEXT, verdict TEXT NOT NULL, cost REAL, at TEXT NOT NULL,
       PRIMARY KEY (repo, pr, sha)
     );
+    -- one row per finding of a reviewed PR head (src/findings.ts): state open | fixed | queued | dismissed | ruled
+    CREATE TABLE IF NOT EXISTS findings (
+      id INTEGER PRIMARY KEY, repo TEXT NOT NULL, pr INTEGER NOT NULL, sha TEXT NOT NULL, path TEXT NOT NULL, line INTEGER NOT NULL,
+      severity TEXT NOT NULL, kind TEXT NOT NULL, problem TEXT NOT NULL, fix TEXT NOT NULL DEFAULT '', suggestion TEXT, round INTEGER NOT NULL DEFAULT 1,
+      state TEXT NOT NULL DEFAULT 'open', at TEXT NOT NULL, UNIQUE (repo, pr, sha, path, line)
+    );
+    CREATE INDEX IF NOT EXISTS findings_pr ON findings (pr);
     -- owner-set goals per project, mirrored from the "## Goals" list in projects/<app>.md (rank 1 = most important)
     CREATE TABLE IF NOT EXISTS goals (
       id INTEGER PRIMARY KEY, project TEXT NOT NULL, title TEXT NOT NULL, rank INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'active', -- active | dropped
@@ -84,6 +91,7 @@ export function open(path = `${DATA}/dobby.db`): DB {
   for (const sql of ["ALTER TABLE runs ADD COLUMN ticket INTEGER", "ALTER TABLE tickets ADD COLUMN risk TEXT NOT NULL DEFAULT 'high'", "ALTER TABLE tickets ADD COLUMN dup_of TEXT", "ALTER TABLE ideas ADD COLUMN dup_of TEXT", "ALTER TABLE tickets ADD COLUMN onto TEXT", "ALTER TABLE tickets ADD COLUMN goal INTEGER", "ALTER TABLE goals ADD COLUMN milestone INTEGER", "ALTER TABLE ideas ADD COLUMN goal INTEGER", "ALTER TABLE tickets ADD COLUMN engineer TEXT", "ALTER TABLE tickets ADD COLUMN prd TEXT", "ALTER TABLE tickets ADD COLUMN design TEXT", "ALTER TABLE tickets ADD COLUMN depends_on INTEGER"]) {
     addColumn(db, sql)
   }
+  addColumn(db, "ALTER TABLE reviews ADD COLUMN took_ms INTEGER") // claim to verdict, for the median review time
   addColumn(db, "ALTER TABLE reviews ADD COLUMN pid INTEGER") // the review claim's holder: a dead pid frees it (review.ts claim)
   return db
 }
@@ -187,25 +195,99 @@ export function pruneKv(db: DB, now = Date.now(), days = 30): number {
     }
     const old = db.prepare("SELECT id FROM tickets WHERE (status='shipped' AND updated_at < ?) OR (status='declined' AND updated_at < ?)").all(new Date(cut).toISOString(), new Date(now - 90 * DAY).toISOString()) as { id: number }[]
     for (const { id } of db.prepare("SELECT id FROM tickets WHERE status='failed' AND updated_at < ?").all(new Date(cut).toISOString()) as { id: number }[]) n += del.run(`prcheck:${id}`).changes
-    for (const { id } of old) for (const k of [`gh:issue:${id}`, `gh:stage:${id}`, `gh:item:${id}`, `discord:thread:${id}`, `discord:status:${id}`, `discord:msg:ticket:${id}`, `prcheck:${id}`]) n += del.run(k).changes
+    for (const { id } of old) for (const k of [`gh:issue:${id}`, `gh:stage:${id}`, `gh:item:${id}`, `discord:thread:${id}`, `discord:status:${id}`, `discord:msg:ticket:${id}`, `slack:thread:${id}`, `slack:status:${id}`, `slack:msg:ticket:${id}`, `prcheck:${id}`]) n += del.run(k).changes
+    for (const k of ["health:lasttick", "health:last-tick"]) n += del.run(k).changes // old copies of tick:last
     n += db.prepare("DELETE FROM checks WHERE at < ?").run(new Date(cut).toISOString()).changes
   })()
   return n
 }
 
-/** Once a day (kv prune:day): pruneCheckpoints on graph.db and pruneKv. Called by the hourly health job. */
-export function dailyPrune(db: DB, now = Date.now(), graphPath = `${DATA}/graph.db`): string | null {
+/**
+ * Tables that only grow, and how long their rows are kept. 30 days covers every reader: usage report/perPercent/autonomy/processShare
+ * look back 1-7 days (`dobby usage N` is typed by hand), the dashboard and the limits gauge at most a week, telemetry already had 30.
+ * `at` is epoch ms (ms) or ISO text; `keep` = never delete the newest row (usage reads the latest tick/reading to resume).
+ */
+const GROWING: { t: string; ms: boolean; keep?: boolean }[] = [
+  { t: "usage_calls", ms: true }, // one row per Claude call
+  { t: "usage_ticks", ms: true, keep: true }, // limit readings; the newest one is the baseline for the next step
+  { t: "usage_steps", ms: true }, // $ per +1% measurements
+  { t: "usage_readings", ms: true, keep: true }, // last_row marks how far usage_calls was read
+  { t: "usage_log", ms: true }, // per-model token and $ log
+  { t: "telemetry", ms: false }, // Claude Code OTel events (also pruned by its own writer)
+]
+const RUNS_DAYS = 180 // cost per PR and the review scoreboard read recent runs only
+
+/** Old rows out of the growing tables; runs go only when their ticket ended (shipped/declined/failed) that long ago, or they have no ticket. */
+export function pruneTables(db: DB, now = Date.now()): number {
+  let n = 0
+  db.transaction(() => {
+    for (const { t, ms, keep } of GROWING) {
+      const cut = ms ? now - 30 * DAY : new Date(now - 30 * DAY).toISOString()
+      try { n += db.prepare(`DELETE FROM ${t} WHERE at < ?${keep ? ` AND at < (SELECT MAX(at) FROM ${t})` : ""}`).run(cut).changes } catch (e) { if (!/no such table/.test((e as Error).message)) throw e } // usage_* exist once usage ran
+    }
+    const cut = new Date(now - RUNS_DAYS * DAY).toISOString()
+    n += db.prepare(`DELETE FROM runs WHERE at < ? AND (ticket IS NULL OR ticket IN (SELECT id FROM tickets WHERE status IN ('shipped','declined','failed') AND updated_at < ?))`).run(cut, cut).changes
+  })()
+  return n
+}
+
+const mb = (b: number) => `${(b / 1048576).toFixed(1)} MB`
+/** Log files over 5 MB are cut in place to their last 1 MB from a line start, under a marker line (launchd keeps its append handle). Returns "name 6.1 MB → 1 MB". */
+export function trimLogs(dirs: string[] = [`${DATA}/logs`, DATA], now = Date.now()): string[] {
+  const out: string[] = []
+  for (const dir of dirs) {
+    let names: string[] = []
+    try { names = readdirSync(dir).filter((f) => f.endsWith(".log")) } catch { continue }
+    for (const f of names) {
+      const path = `${dir}/${f}`
+      try {
+        const size = statSync(path).size
+        if (size <= 5 * 1048576) continue
+        const fd = openSync(path, "r+")
+        try {
+          const buf = Buffer.alloc(1048576)
+          readSync(fd, buf, 0, buf.length, size - buf.length)
+          const nl = buf.indexOf(10)
+          const keep = Buffer.concat([Buffer.from(`… older lines removed ${new Date(now).toISOString().slice(0, 10)}\n`), buf.subarray(nl + 1)])
+          ftruncateSync(fd, 0)
+          writeSync(fd, keep, 0, keep.length, 0)
+          out.push(`${f} ${mb(size)} → ${mb(keep.length)}`)
+        } finally { closeSync(fd) }
+      } catch (e) { console.log(`log trim ${f}: ${(e as Error).message}`) }
+    }
+  }
+  return out
+}
+
+/** Runs one cleanup step; a failure logs a line and the rest still run. */
+const step = <T>(name: string, f: () => T, dflt: T): T => { try { return f() } catch (e) { console.log(`prune ${name}: ${(e as Error).message}`); return dflt } }
+
+/**
+ * Once a day (kv prune:day): pruneCheckpoints on graph.db, pruneKv, pruneTables, trimLogs, and `extra` (worktree and branch sweeps, in
+ * lib.ts, which imports this file). Called by the hourly health job. Returns one report line.
+ */
+export function dailyPrune(db: DB, now = Date.now(), graphPath = `${DATA}/graph.db`, extra: () => { worktrees: number; branches: number } = () => ({ worktrees: 0, branches: 0 })): string | null {
   const day = new Date(now).toISOString().slice(0, 10)
   if ((db.prepare("SELECT v FROM kv WHERE k='prune:day'").get() as { v: string } | undefined)?.v === day) return null
   db.prepare("INSERT OR REPLACE INTO kv VALUES ('prune:day', ?)").run(day)
-  const g = existsSync(graphPath) ? graphSaver(graphPath).db : null
-  const cps = g ? pruneCheckpoints(db, g, now) : 0
-  // Deleted rows leave free pages: once a month, while no tick holds the lock (heartbeat older than 15 min), VACUUM gives them back.
-  const month = day.slice(0, 7), lock = Number((db.prepare("SELECT v FROM kv WHERE k='lock'").get() as { v: string } | undefined)?.v ?? 0)
+  const g = step("graph.db", () => existsSync(graphPath) ? graphSaver(graphPath).db : null, null)
+  const cps = g ? step("checkpoints", () => pruneCheckpoints(db, g, now), 0) : 0
+  const rows = cps + step("kv", () => pruneKv(db, now), 0) + step("tables", () => pruneTables(db, now), 0)
+  const { worktrees, branches } = step("worktrees", extra, { worktrees: 0, branches: 0 })
+  const logs = step("logs", () => trimLogs(undefined, now), [] as string[])
+  // Deleted rows leave free pages: once a month graph.db, once a week dobby.db (only while no ticket is building), VACUUM gives them back. Not while a tick holds the lock (heartbeat under 15 min old).
+  const month = day.slice(0, 7), lock = Number(((db.prepare("SELECT v FROM kv WHERE k='lock'").get() as { v: string } | undefined)?.v ?? "0").split(":")[0])
+  const idle = now - lock > 15 * 60_000
   let vac = ""
-  if (g && (db.prepare("SELECT v FROM kv WHERE k='vacuum:month'").get() as { v: string } | undefined)?.v !== month && now - lock > 15 * 60_000) {
+  if (g && (db.prepare("SELECT v FROM kv WHERE k='vacuum:month'").get() as { v: string } | undefined)?.v !== month && idle) {
     db.prepare("INSERT OR REPLACE INTO kv VALUES ('vacuum:month', ?)").run(month)
     try { g.exec("VACUUM"); vac = ", graph.db vacuumed" } catch (e) { vac = `, vacuum skipped: ${(e as Error).message}` }
   }
-  return `pruned ${cps} checkpoint row(s), ${pruneKv(db, now)} kv/checks row(s)${vac}`
+  const last = (db.prepare("SELECT v FROM kv WHERE k='vacuum:day'").get() as { v: string } | undefined)?.v
+  if ((!last || now - Date.parse(last) >= 7 * DAY) && idle && !db.prepare("SELECT 1 FROM tickets WHERE status IN ('running','fixing')").get()) {
+    const size = () => { try { return statSync(db.name).size } catch { return 0 } }
+    const before = size()
+    try { db.exec("VACUUM"); db.prepare("INSERT OR REPLACE INTO kv VALUES ('vacuum:day', ?)").run(day); vac += `, dobby.db vacuumed${before ? ` (${mb(before)} → ${mb(size())})` : ""}` } catch (e) { vac += `, dobby.db vacuum skipped: ${(e as Error).message}` }
+  }
+  return `pruned: ${rows.toLocaleString("en-US")} rows, ${worktrees} worktrees, ${branches} branches, ${logs.length} log${logs.length === 1 ? "" : "s"}${logs.length ? ` (${logs.join(", ")})` : ""}${vac}`
 }

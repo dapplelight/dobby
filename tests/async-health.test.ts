@@ -66,11 +66,19 @@ test("waitChecks with an async sleep lets other work run while checks are pendin
   const iv = setInterval(() => beats++, 5)
   const r = await waitChecks(async () => ({ ok: true, out: JSON.stringify([{ name: "t", bucket: n++ < 2 ? "pending" : "pass" }]) }), "r/r", 1, () => new Promise((res) => setTimeout(res, 30)))
   clearInterval(iv)
-  assert.deepEqual(r, { ok: true, out: "checks passed (1)" })
+  assert.deepEqual(r, { ok: true, out: "required checks passed (1)" })
   assert.ok(beats >= 5)
 })
 
-test("stampLogs: every line of every console.log/error gets the ISO time", () => {
+test("stamp: local time with the zone offset, not UTC", async () => {
+  const { logStamp: stamp } = await import("../src/config.ts")
+  const t = Date.parse("2026-10-27T15:34:07Z")
+  const s = stamp(t)
+  assert.match(s, /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d [+-]\d\d:\d\d$/)
+  assert.equal(Date.parse(s.replace(" ", "T").replace(/ ([+-]\d\d:\d\d)$/, "$1")), t) // same instant, written in the configured zone
+})
+
+test("stampLogs: every line of every console.log/error gets the time", () => {
   const lines: string[] = []
   const c = { log: (s: string) => lines.push(s), error: (s: string) => lines.push(`E ${s}`) } as unknown as Console
   stampLogs(c, () => "2026-10-20T10:00:00.000Z")
@@ -161,7 +169,7 @@ test("kv/checks prune: dated keys and ended tickets' board/thread keys over 30 d
   const keys = (db.prepare("SELECT k FROM kv ORDER BY k").all() as { k: string }[]).map((r) => r.k)
   assert.deepEqual(keys, [...kept].sort())
   assert.equal((db.prepare("SELECT COUNT(*) n FROM checks").get() as { n: number }).n, 1)
-  assert.match(dailyPrune(db, T, `${dir}/no-graph.db`)!, /^pruned 0 checkpoint row\(s\), \d+ kv\/checks row\(s\)$/)
+  assert.match(dailyPrune(db, T, `${dir}/no-graph.db`)!, /^pruned: \d+ rows, 0 worktrees, 0 branches, 0 logs/)
   assert.equal(dailyPrune(db, T + 3600_000, `${dir}/no-graph.db`), null) // once a day
 })
 

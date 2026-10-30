@@ -1,0 +1,104 @@
+/*
+ * Dobby color overlay for @dapplelight/signet-docs and the landing pages.
+ * Color variables only (light on :root, dark on .dark); layout, type and spacing come from the theme.
+ * Values are the dashboard's Instrument theme (dashboard/src/theme/instrument.css): signal green is the only accent.
+ */
+:root {
+  --bg-base: #f6f5f1;
+  --bg-surface: #ffffff;
+  --bg-elevated: #efeee9;
+  --bg-overlay: rgba(23, 22, 18, 0.5);
+  --border-default: #e2e0d8;
+  --border-subtle: #ebe9e2;
+  --border-strong: #b3b0a4;
+
+  --accent-green: #0d7b43;
+  --accent-blue: #5d5b53;
+  --accent-amber: #ad5118;
+  --accent-red: #ad5118;
+  --accent-green-subtle: color-mix(in srgb, #0d7b43 10%, transparent);
+  --accent-blue-subtle: color-mix(in srgb, #5d5b53 10%, transparent);
+  --accent-amber-subtle: color-mix(in srgb, #ad5118 10%, transparent);
+  --accent-red-subtle: color-mix(in srgb, #ad5118 10%, transparent);
+
+  --text-primary: #171612;
+  --text-secondary: #5d5b53;
+  --text-muted: #5d5b53;
+  --text-hint: #6b695f;
+  --text-disabled: #b3b0a4;
+  --text-inverse: #f6f5f1;
+
+  --background: #f6f5f1;
+  --foreground: #171612;
+  --card: #ffffff;
+  --card-fg: #171612;
+  --popover: #ffffff;
+  --popover-fg: #171612;
+  --primary: #0d7b43;
+  --primary-fg: #ffffff;
+  --secondary: #efeee9;
+  --secondary-fg: #171612;
+  --muted: #efeee9;
+  --muted-fg: #5d5b53;
+  --accent: #efeee9;
+  --accent-fg: #171612;
+  --destructive: #ad5118;
+  --border: #e2e0d8;
+  --input: #e2e0d8;
+  --ring: #0d7b43;
+  --focus-ring: #0d7b43;
+  --focus-ring-offset: #f6f5f1;
+  --accent-primary: #0d7b43;
+  --accent-primary-fg: #ffffff;
+  --accent-primary-subtle: color-mix(in srgb, #0d7b43 10%, transparent);
+}
+
+.dark {
+  --bg-base: #0d0d0c;
+  --bg-surface: #161614;
+  --bg-elevated: #1c1c19;
+  --bg-overlay: rgba(0, 0, 0, 0.6);
+  --border-default: #262521;
+  --border-subtle: #1d1d1a;
+  --border-strong: #3a3934;
+
+  --accent-green: #3fe08a;
+  --accent-blue: #a19f95;
+  --accent-amber: #f0a35e;
+  --accent-red: #f0a35e;
+  --accent-green-subtle: color-mix(in srgb, #3fe08a 12%, transparent);
+  --accent-blue-subtle: color-mix(in srgb, #a19f95 12%, transparent);
+  --accent-amber-subtle: color-mix(in srgb, #f0a35e 12%, transparent);
+  --accent-red-subtle: color-mix(in srgb, #f0a35e 12%, transparent);
+
+  --text-primary: #edece6;
+  --text-secondary: #a19f95;
+  --text-muted: #a19f95;
+  --text-hint: #807e75;
+  --text-disabled: #55534c;
+  --text-inverse: #0d0d0c;
+
+  --background: #0d0d0c;
+  --foreground: #edece6;
+  --card: #161614;
+  --card-fg: #edece6;
+  --popover: #161614;
+  --popover-fg: #edece6;
+  --primary: #3fe08a;
+  --primary-fg: #04200f;
+  --secondary: #1c1c19;
+  --secondary-fg: #edece6;
+  --muted: #1c1c19;
+  --muted-fg: #a19f95;
+  --accent: #1c1c19;
+  --accent-fg: #edece6;
+  --destructive: #f0a35e;
+  --border: #262521;
+  --input: #262521;
+  --ring: #3fe08a;
+  --focus-ring: #3fe08a;
+  --focus-ring-offset: #0d0d0c;
+  --accent-primary: #3fe08a;
+  --accent-primary-fg: #04200f;
+  --accent-primary-subtle: color-mix(in srgb, #3fe08a 12%, transparent);
+}

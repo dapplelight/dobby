@@ -9,7 +9,7 @@
 import type { DB } from "./db.ts"
 import { config, type Config } from "./config.ts"
 import { labelOf } from "./lib.ts"
-import { clip } from "./telegram.ts"
+import { clip } from "./notify.ts"
 import { fixReview, getWait, leaveFixing, type Deps, type Run } from "./graphs/review.ts"
 
 export type Preset = "coderabbit" | "greptile" | "copilot"

@@ -6,14 +6,15 @@ import { homedir } from "node:os"
 import { DATA, dailyPrune, logCheck, open, type DB } from "./db.ts"
 import { config, zoned, zonedDay } from "./config.ts"
 import { paused } from "./pause.ts"
-import { loadProjects, signedOut, unblocked } from "./lib.ts"
+import { loadProjects, signedOut, sweepTicketBranches, sweepTicketWorktrees, unblocked } from "./lib.ts"
 import { loginShell } from "./shell.ts"
+import { JOBS, jobState, loadedProbe, unitFor } from "./jobs.ts"
+import { MIN_FREE_GB } from "./checks.ts"
 
 // Dobby's own launchd jobs, plus any the owner asks it to watch (config watchJobs)
 const prefixes = () => ["com.dobby.", ...(config().watchJobs?.prefixes ?? [])]
-const MIN_FREE_GB = 15
 // Long-running servers: exit status 0 with no pid means they died.
-const daemons = () => new Set(["com.dobby.telegram", ...(config().watchJobs?.daemons ?? [])])
+const daemons = () => new Set(["com.dobby.listener", ...(config().watchJobs?.daemons ?? [])])
 
 export type Job = { label: string; pid: number | null; status: number }
 
@@ -44,12 +45,20 @@ export function healthCheck() {
     logCheck(db, name, ok, detail)
     if (!ok) bad.push(`${name}: ${detail}`)
   }
-  const jobs = parseLaunchctl(run("launchctl", ["list"]).out).filter((j) => prefixes().some((p) => j.label.startsWith(p)))
+  // only jobs whose plist is under this HOME: launchctl lists every job of this user, including a second install's
+  const jobs = parseLaunchctl(run("launchctl", ["list"]).out).filter((j) => prefixes().some((p) => j.label.startsWith(p)) && existsSync(`${homedir()}/Library/LaunchAgents/${j.label}.plist`))
   for (const j of jobs) check(`job ${j.label}`, !jobProblem(j), jobProblem(j) ?? "")
   const agents = `${homedir()}/Library/LaunchAgents`
-  for (const f of readdirSync(agents).filter((f) => prefixes().some((p) => f.startsWith(p)))) {
+  // macOS: lint each plist. No such folder (Linux, or a Mac that never had Dobby jobs) is not an error: Linux checks its systemd user units the way jobs.ts does.
+  if (existsSync(agents)) for (const f of readdirSync(agents).filter((f) => prefixes().some((p) => f.startsWith(p)))) {
     const lint = run("plutil", ["-lint", `${agents}/${f}`])
     check(`config ${f}`, lint.ok, lint.ok ? "" : lint.out.trim().split("\n").pop() ?? "")
+  }
+  if (process.platform === "linux") for (const j of JOBS.filter((j) => existsSync(`${homedir()}/.config/systemd/user/${unitFor(j)}`))) {
+    const [cmd, args] = loadedProbe(j, "linux", process.getuid?.() ?? 0)
+    const r = run(cmd, args)
+    const st = jobState("linux", r) // systemctl show exits 0 for stopped and unknown units: read ActiveState
+    check(`job ${unitFor(j)}`, st.loaded && !st.failing, st.failing ?? "not active")
   }
   const freeGb = Number(run("df", ["-k", "/"]).out.split("\n")[1]?.split(/\s+/)[3] ?? 0) / 1024 / 1024
   check("disk", freeGb >= MIN_FREE_GB, `${freeGb.toFixed(1)} GB free`)
@@ -81,10 +90,10 @@ export async function briefWatch(db: DB, send: (text: string) => Promise<unknown
   return true
 }
 
-/** For the status board: when Dobby last did any work (latest agent run). */
-export function lastTick(db: DB) {
-  const at = (db.prepare("SELECT MAX(at) AS at FROM runs").get() as { at: string | null }).at
-  return `Last tick: ${at ? istTime(Date.parse(at)) + ` ${config().timezoneLabel}` : "never"}`
+/** When the tick last ran (ms), or null before its first run. tick:last is written at the end of every tick (updateBoard). */
+export function lastTick(db: DB): number | null {
+  const v = (db.prepare("SELECT v FROM kv WHERE k='tick:last'").get() as { v: string } | undefined)?.v
+  return v && /^\d+$/.test(v) ? Number(v) : null
 }
 
 /** What a problem is about, without its reading: "disk: 11.9 GB free" -> "disk". A new number is the same problem. */
@@ -119,8 +128,11 @@ export function pipelineChecks(db: DB, o: PipelineEnv = {}): Health[] {
 
   const kv = (k: string) => (db.prepare("SELECT v FROM kv WHERE k=?").get(k) as { v: string } | undefined)?.v
   const ms = (k: string) => { const v = kv(k); return v && /^\d+$/.test(v) ? Number(v) : 0 }
-  const lockAt = ms("lock") // the tick's heartbeat: refreshed every 5 minutes while its workers run
+  const lockAt = Number((kv("lock") ?? "").split(":")[0]) || 0 // the tick's heartbeat: refreshed every 5 minutes while its workers run
   const tickAlive = now - lockAt <= 15 * M
+  // a job that failed at the last health run (kv health:raw, written by the health job before this runs): a looping job must not read as a healthy board
+  const jobsBad = (JSON.parse(kv("health:raw") ?? "[]") as string[]).filter((b) => b.startsWith("job "))
+  add("jobs", !jobsBad.length, `background job failing: ${jobsBad.join("; ")}. Run dobby jobs status`)
   const fixing = all<{ title: string }>("SELECT title FROM tickets WHERE status='fixing' AND updated_at < ? ORDER BY updated_at", iso(24 * H))
   add("fixing", !fixing.length, `${fixing.length} ticket(s) waiting on a review fix for over 24 hours: ${titles(fixing)}`)
   const stuck = all<{ title: string }>("SELECT title FROM tickets WHERE status IN ('running','approval') AND updated_at < ? ORDER BY updated_at", iso(24 * H))
@@ -145,10 +157,10 @@ export function pipelineChecks(db: DB, o: PipelineEnv = {}): Health[] {
   const idle = ready > 0 && now - last > 2 * H && !budgetPaused && !paused(db, { kind: "builders" }, now)
   add("idle", !idle, `${ready} ticket(s) ready but no agent has run for ${last ? `${Math.round((now - last) / H)} hours` : "ever"} (and nothing is paused)`)
   // the tick: its lock heartbeat (every 5 min while it works) or tick:last (end of every run); neither yet = not set up, fine
-  const tickAt = Math.max(lockAt, ms("tick:last"))
+  const tickAt = Math.max(lockAt, lastTick(db) ?? 0)
   add("tick log", !tickAt || now - tickAt <= 30 * M, `the tick has not run for ${Math.round((now - tickAt) / M)} minutes (is the job running?)`)
-  const at = fileMs(`${dir}/logs/telegram.log`) // the listener logs a review-scan line every 15 minutes
-  add("listener log", at === null || now - at <= 30 * M, `telegram.log has not changed for ${Math.round((now - (at ?? 0)) / M)} minutes (is the listener running?)`)
+  const at = fileMs(`${dir}/logs/listener.log`) // the listener logs a review-scan line every 15 minutes
+  add("listener log", at === null || now - at <= 30 * M, `listener.log has not changed for ${Math.round((now - (at ?? 0)) / M)} minutes (is the listener running?)`)
   // claude: binary missing (as last seen by the health job) or every run since the last good one signed out, for over 30 minutes
   if (o.claudeFound && o.persist !== false) {
     if (o.claudeFound()) db.prepare("DELETE FROM kv WHERE k='health:claude-missing'").run()
@@ -168,7 +180,7 @@ export function pipelineChecks(db: DB, o: PipelineEnv = {}): Health[] {
 
 /** Hourly: run the checks, keep them for the board and dashboard (kv health:pipeline), and post each problem to #needs-you once a day. */
 export async function pipelineWatch(db: DB, send: (text: string) => Promise<unknown>, o: PipelineEnv = {}) {
-  const now = o.now ?? Date.now(), day = new Date(now + 19_800_000).toISOString().slice(0, 10)
+  const now = o.now ?? Date.now(), day = zonedDay(now)
   const hs = pipelineChecks(db, o)
   db.prepare("INSERT OR REPLACE INTO kv VALUES ('health:pipeline', ?)").run(JSON.stringify({ at: now, checks: hs }))
   const sent: string[] = []
@@ -192,17 +204,22 @@ if (import.meta.main || process.argv[2] === "health") {
   // A problem counts only when two checks in a row see it: a Wi-Fi blip (17 Oct: four jobs "failed" at once, all fine an hour later) is not an alert.
   const prevRaw = JSON.parse((db.prepare("SELECT v FROM kv WHERE k='health:raw'").get() as { v: string } | undefined)?.v ?? "[]") as string[]
   db.prepare("INSERT OR REPLACE INTO kv VALUES ('health:raw', ?)").run(JSON.stringify(bad))
-  db.prepare("INSERT OR REPLACE INTO kv VALUES ('health:lasttick', ?)").run(lastTick(db))
-  const { notify: tell, asIs } = await import("./telegram.ts")
+  const { notify: tell, asIs } = await import("./notify.ts")
   await briefWatch(db, (t) => tell(t, fetch, undefined, { kind: "approval" }, asIs)).catch((e) => console.log(`brief watch: ${e}`))
-  const { notify: say } = await import("./telegram.ts")
+  const { notify: say } = await import("./notify.ts")
   const claudeFound = () => spawnSync(...loginShell("command -v claude"), { encoding: "utf8" }).status === 0
   await pipelineWatch(db, (t) => say(t, fetch, undefined, { kind: "approval" }), { claudeFound }).catch((e) => console.log(`pipeline checks: ${e}`))
-  try { const p = dailyPrune(db); if (p) console.log(p) } catch (e) { console.log(`prune: ${(e as Error).message}`) }
+  try {
+    const p = dailyPrune(db, Date.now(), undefined, () => {
+      const repos = Object.fromEntries(Object.values(loadProjects()).map((x) => [x.name, x.repo]))
+      return { worktrees: sweepTicketWorktrees(db, `${DATA}/wt`, repos).length, branches: sweepTicketBranches(db, repos) }
+    })
+    if (p) console.log(p)
+  } catch (e) { console.log(`prune: ${(e as Error).message}`) }
   const sure = confirmed(bad, prevRaw)
   const c = changed((db.prepare("SELECT v FROM kv WHERE k='health'").get() as { v: string } | undefined)?.v, sure)
   if (c.send) {
-    const { notify } = await import("./telegram.ts")
+    const { notify } = await import("./notify.ts")
     await notify(sure.length ? `⚠️ Something needs a look\n${sure.map((b) => `• ${plain(b)}`).join("\n")}` : "✅ All background jobs healthy again", fetch, undefined, { kind: "health" })
     db.prepare("INSERT OR REPLACE INTO kv VALUES ('health', ?)").run(c.now)
   }

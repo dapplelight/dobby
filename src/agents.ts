@@ -30,7 +30,7 @@ import { HARNESSES } from "./providers/presets.ts"
 import { resolve, type Health, type ModelCall, type RosterEntry, type RoutingTable } from "./providers/router.ts"
 import { DOBBY_ROLES, routingState, runner } from "./providers/wire.ts"
 import { builderEnv, CLAUDE_AUTH, sandboxMode } from "./sandbox.ts"
-import { readSecrets } from "./telegram.ts"
+import { readSecrets } from "./notify.ts"
 
 export type RunOpts = Parameters<typeof claude>[1]
 /** agents = how many agents this run used when more than one (claude() skips its stall retry at 2). */
@@ -355,7 +355,7 @@ export function permit(toolCall: unknown, ctx: { cwd: string; bash: string[]; wt
     const c = isObj(toolCall.rawInput) ? toolCall.rawInput.command : undefined
     const cmd = typeof c === "string" ? c : Array.isArray(c) && c.every((x) => typeof x === "string") ? c.join(" ") : undefined
     if (!cmd) return false
-    const g = guardDecide(cmd, { cwd: ctx.cwd, wtRoot: ctx.wtRoot ?? ctx.cwd, home: homedir(), foremanRoot: ROOT.replace(/\/$/, ""), dataDir: process.env.DOBBY_DIR || `${homedir()}/.local/share/dobby`, branch: ctx.branch ?? (() => ""), allow: ctx.bash })
+    const g = guardDecide(cmd, { cwd: ctx.cwd, wtRoot: ctx.wtRoot ?? ctx.cwd, home: homedir(), dobbyRoot: ROOT.replace(/\/$/, ""), dataDir: process.env.DOBBY_DIR || `${homedir()}/.local/share/dobby`, branch: ctx.branch ?? (() => ""), allow: ctx.bash })
     return !!g.allow && policyDecide("command", cmd).action === "allow"
   }
   return false

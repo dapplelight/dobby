@@ -43,7 +43,7 @@ test("config accepts the new keys and rejects bad ones", () => {
   assert.deepEqual(l.warnings, [])
   assert.equal(l.config.retryLimit, 2)
   writeFileSync(f, JSON.stringify({ retryLimit: 0 }))
-  assert.match(loadConfig({ private: f, repo: `${dir}/none.json` }).warnings[0], /ignored/)
+  assert.match(loadConfig({ private: f, repo: `${dir}/none.json` }).warnings[0], /retryLimit: got 0; allowed: at least 1/)
 })
 
 test("ticket budget: cap by size in week points, counted from the last hand re-queue", () => {

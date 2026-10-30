@@ -4,7 +4,7 @@
 import { spawn, spawnSync } from "node:child_process"
 import type { DB } from "./db.ts"
 import { claude, label, NO_SECRETS, ROOT } from "./lib.ts"
-import { redact } from "./telegram.ts"
+import { redact } from "./notify.ts"
 import { config } from "./config.ts"
 
 const CAL = "mcp__claude_ai_Google_Calendar__", GMAIL = "mcp__claude_ai_Gmail__", DRIVE = "mcp__claude_ai_Google_Drive__"
@@ -28,7 +28,7 @@ export const WRITE_TOOLS = [
 // plus add/idea (low risk) itself; every other dobby action is a proposal the owner taps (propose-then-tap, owner 20 Oct).
 export const DESK_COMMANDS = ["list", "show", "status", "ideas", "idea", "add"]
 // Denied outright as well, in case a hook answers "allow" (deny rules win whatever a hook returns).
-const DESK_DENY = ["do", "queue", "approve", "decline", "run", "pause", "resume", "tick", "company", "scout", "lead", "cos", "pm", "strategize", "dedupe", "init", "onboard",
+const DESK_DENY = ["do", "queue", "approve", "decline", "cancel", "run", "pause", "resume", "tick", "company", "scout", "lead", "cos", "pm", "strategize", "dedupe", "init", "onboard",
   "review", "review-scan", "touch", "api", "discord", "listen", "dashboard", "graphify", "health", "ask", "usage-sample", "usage-log", "telemetry-serve"]
 export const FRONT_DESK_ARGS = ["--setting-sources", "project", "--allowedTools", ["Read", "Grep", "Glob", ...DESK_COMMANDS.map((c) => `Bash(bin/dobby ${c}:*)`), ...READ_TOOLS].join(","),
   "--disallowedTools", ["Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", ...NO_SECRETS, ...DESK_DENY.map((c) => `Bash(bin/dobby ${c}:*)`), ...WRITE_TOOLS].join(",")]
@@ -38,7 +38,7 @@ export const FRONT_DESK_ARGS = ["--setting-sources", "project", "--allowedTools"
  * `top` = a CLI command of its own (`dobby run <id>`, `dobby company`), started in the background.
  */
 const ACTIONS: { re: RegExp; via: "do" | "top" }[] = [
-  { re: /^(queue|approve|decline) \d+$/i, via: "do" },
+  { re: /^(queue|approve|decline|cancel) \d+$/i, via: "do" },
   { re: /^deploynow [\w-]+( migrate)?$/i, via: "do" },
   { re: /^((pause|resume)( everything| all| (builders|reviews|merges|deploys|planning|scout|notify)| project [\w-]+| ticket #?\d+)?|pause status)( for \d{1,3}[mhd])?$/i, via: "do" },
   { re: /^(reviewfix|reviewaccept) [\w.-]+\/[\w.-]+ \d+$/i, via: "do" },
@@ -143,7 +143,7 @@ export function actionTarget(command: string, db?: DB) {
 }
 
 export function preview(id: string, p: Proposal, db?: DB) {
-  if (p.kind === "command") return `⚙️ Dobby action · ${id}\n${actionTarget(p.body, db)}\nIt runs: dobby ${p.body}\nNothing happens unless you tap Do it.`
+  if (p.kind === "command") return `⚙️ Dobby action\n${actionTarget(p.body, db)}\nIt runs: dobby ${p.body}\nNothing happens unless you tap Do it.`
   const head = { email: "✉️ Email", reply: "↩️ Reply", event: "📅 Invite" }[p.kind]
   const body = p.body.length > 1400 ? `${p.body.slice(0, 1400)}… (${p.body.length} chars in full)` : p.body
   return `${head} draft · ${id}\n${p.to.length ? `To: ${p.to.join(", ")}\n` : ""}${p.subject ? `Subject: ${p.subject}\n` : ""}${p.event ? `When: ${p.event.startTime} → ${p.event.endTime}${p.event.location ? ` at ${p.event.location}` : ""}\n` : ""}${p.kind === "reply" ? `Replying to message ${p.replyToMessageId}\n` : ""}\n${body}`
@@ -173,7 +173,7 @@ export async function sendProposal(db: DB, id: string, exec: Exec = runForeman):
     const a = actionArgs(p.body) // checked again: only the stored, validated action runs
     const r = a ? exec(a.args, a.background) : { ok: false, out: "not an action the front desk may propose" }
     save(db, id, { ...p, status: r.ok ? "sent" : "failed" })
-    return `${r.ok ? "✅ Done" : "🔴 Didn't run"} · ${id} (dobby ${p.body}): ${r.out.slice(0, 600)}`
+    return `${r.ok ? "✅ Done" : "🔴 Didn't run"} (dobby ${p.body}): ${r.out.slice(0, 600)}`
   }
   const { tool } = sendArgs(p)
   const r = await claude(db, {
