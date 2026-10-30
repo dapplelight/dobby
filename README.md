@@ -120,6 +120,8 @@ npm run typecheck
 npm run docs          # regenerate the generated manual pages and llms.txt
 ```
 
+The dashboard and these docs are built on [Signet](https://github.com/dapplelight/signet), our open-source design system and backend kit.
+
 ## Contributing
 
 Dobby is not taking pull requests yet. Bug reports and ideas are welcome as [issues](https://github.com/dapplelight/dobby/issues).
