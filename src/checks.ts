@@ -73,10 +73,10 @@ export async function basics(o: { probe?: Probe; node?: string; platform?: NodeJ
   const probe = o.probe ?? realProbe, node = o.node ?? process.versions.node, platform = o.platform ?? process.platform
   const secrets = o.secrets ?? readSecrets(), env = o.env ?? process.env, cfg = o.configPath ?? privatePath()
   const lin = platform === "linux"
-  const [git, gh, ghAuth, ghUser, claude, claudeAuth, graphify, gitEmail, bwrap, socat, bwrapRun, ...jobs] = await Promise.all([
+  const [git, gh, ghAuth, ghUser, claude, claudeAuth, graphify, gitEmail, gitHelper, bwrap, socat, bwrapRun, ...jobs] = await Promise.all([
     probe("git", ["--version"]), probe("gh", ["--version"]), probe("gh", ["auth", "status"]), probe("gh", ["api", "user", "--jq", ".login"]),
     probe("claude", ["--version"]), probe("claude", ["auth", "status"]), probe("graphify", ["--help"]),
-    probe("git", ["config", "user.email"]),
+    probe("git", ["config", "user.email"]), probe("git", ["config", "--get-urlmatch", "credential.helper", "https://github.com"]),
     ...(lin ? [probe("bwrap", ["--version"]), probe("socat", ["-V"]), probe("bwrap", ["--ro-bind", "/", "/", "true"])] : [{ ok: true, out: "" }, { ok: true, out: "" }, { ok: true, out: "" }]),
     // a job with no file under this HOME is another install's: never probed
     ...(o.jobs && (platform === "darwin" || platform === "linux") ? [...JOBS, OLD_LISTENER].map((j) => ownedHere(j, platform, o.home ?? homedir(), o.exists) ? probe(...loadedProbe(j, platform, o.uid ?? process.getuid?.() ?? 0)) : { ok: false, out: "" }) : []),
@@ -93,6 +93,8 @@ export async function basics(o: { probe?: Probe; node?: string; platform?: NodeJ
     { name: "git identity", ok: !git.ok || !!gitEmail.out.trim(), detail: !git.ok ? "needs git first" : gitEmail.out.trim() ? `commits as ${first(gitEmail.out)}` : "no user.email: builders cannot commit", fix: 'git config --global user.email "<your GitHub email>"', required: true },
     { name: "GitHub CLI", ok: gh.ok, detail: gh.ok ? ver(gh.out) : "not installed", fix: fix.gh, required: true },
     ghSignIn(gh.ok, ghAuth, ghUser),
+    // gh auth login run without a terminal skips the git question: gh is signed in but git cannot push over HTTPS (newcomer test, 30 Oct)
+    { name: "git push over HTTPS", ok: !git.ok || gitHelper.ok, detail: !git.ok ? "needs git first" : gitHelper.ok ? "git has a GitHub sign-in" : "git has no GitHub sign-in: pushes to https:// remotes fail (fine if your remotes use SSH)", fix: "gh auth setup-git", required: false },
     { name: "Claude Code", ok: claude.ok, detail: claude.ok ? ver(claude.out) : "not installed", fix: "npm install -g @anthropic-ai/claude-code", required: true },
     o.apiKeyMode // API-key mode (billing.mode): the key pays for every run, no plan sign-in needed
       ? { name: "API key", ok: !!key && (!keyProblem || offline), detail: !key ? "API-key mode but no DOBBY_API_KEY" : keyProblem && !offline ? keyProblem : `DOBBY_API_KEY set; runs pay by the token${offline ? ` (not checked: ${keyProblem})` : ""}`, fix: !key ? "add DOBBY_API_KEY=<key from console.anthropic.com> to the secrets file" : /workspace/.test(keyProblem) ? "dobby config set billing.workspaceId <wrkspc_...>" : "check the key and its balance in console.anthropic.com", required: true }

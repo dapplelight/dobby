@@ -18,11 +18,13 @@ test("checks: every tool, sign-in and add-on gets a row and a fix; optional add-
   assert.deepEqual([by["Node"].ok, by["git"].detail, by["GitHub sign-in"].detail], [true, "2.47.1", "signed in as alice"])
   assert.deepEqual([by["Claude Code"].ok, by["Claude sign-in"].ok, by["config"].ok], [false, false, false])
   assert.equal(by["Claude Code"].fix, "npm install -g @anthropic-ai/claude-code")
-  assert.deepEqual(rows.filter((r) => !r.required).map((r) => r.name), ["shell", "sandbox runner", "sandbox", "config warnings", "graphify", "disk", "Discord", "Jev"])
+  assert.deepEqual(rows.filter((r) => !r.required).map((r) => r.name), ["shell", "sandbox runner", "git push over HTTPS", "sandbox", "config warnings", "graphify", "disk", "Discord", "Jev"])
   assert.equal(by["git identity"].detail, "commits as git version 2.47.1") // the fake probe echoes the same line for every command
   assert.equal(by["sandbox"].ok, true)
   const noEmail = await basics({ probe: async (c, a) => ({ ok: !(c === "git" && a[0] === "config"), out: "" }), node: "24.18.0", platform: "linux", secrets: {}, env: {}, configPath: `${dir}/none.json` })
   assert.deepEqual([noEmail.find((r) => r.name === "git identity")!.ok, noEmail.find((r) => r.name === "git identity")!.required, noEmail.find((r) => r.name === "sandbox")!.ok], [false, true, true])
+  const push = noEmail.find((r) => r.name === "git push over HTTPS")! // gh signed in, no git credential helper: the newcomer-test failure
+  assert.deepEqual([by["git push over HTTPS"].ok, push.ok, push.required, push.fix], [true, false, false, "gh auth setup-git"])
   assert.equal(rows.some((r) => r.name === "background jobs"), false) // only with jobs: true
   const text = formatChecks(rows)
   assert.match(text, /✗ Claude Code: not installed\n    fix: npm install -g @anthropic-ai\/claude-code/)

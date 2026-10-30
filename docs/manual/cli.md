@@ -11,7 +11,7 @@ Run `dobby help` for the short list and `dobby help --all` for everything below.
 
 | Command | What it does |
 | --- | --- |
-| `init [--ui] [--projects a,b]` | set up Dobby on this machine, with no name: checks, sign-ins, your repos, settings, background jobs (asks first); --ui does it in your browser |
+| `init [--ui] [--projects a,b] [--no-jobs] [--yes]` | set up Dobby on this machine, with no name: checks, sign-ins, your repos, settings, background jobs (asks first); --ui does it in your browser; --no-jobs skips the jobs (keep `dobby start` open instead); --yes takes every recommended answer |
 | `add <project> "<title>" ["<done when>"] [S\|M\|L] [priority]` | write a ticket |
 | `status` | the plan limits line, then what is building, shipped today and stuck |
 | `limits` | how much of the 5-hour and weekly plan is used, and when paused work resumes |

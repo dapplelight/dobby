@@ -16,6 +16,7 @@ sidebar: { group: Reference, order: 5 }
 | git identity | git has no `user.email`, so builders cannot commit. | `git config --global user.email "<your GitHub email>"` |
 | GitHub CLI | `gh` is missing. | `brew install gh` on macOS, the steps at cli.github.com on Linux. |
 | GitHub sign-in | `gh` is not signed in. When GitHub cannot be reached, the row says so instead. | `gh auth login --web`, or check your connection. |
+| git push over HTTPS | git has no GitHub sign-in, so pushes to `https://` remotes fail. Happens when `gh auth login` ran without a terminal. Fine if your remotes use SSH. Optional. | `gh auth setup-git` |
 | GitHub token scopes | The token lacks `workflow` (pushes that touch workflow files) or `project` (the board). Optional. Not shown for fine-grained tokens. | `gh auth refresh -s workflow,project` |
 | Claude Code | `claude` is missing. | `npm install -g @anthropic-ai/claude-code` |
 | Claude sign-in | Claude Code is not signed in (plan mode), or too old to have `claude auth status`. | Run `claude`, then `/login`, or `claude update`. |
