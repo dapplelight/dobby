@@ -102,12 +102,19 @@ const groups: { head: string; soon?: boolean; items: [string, string, string?][]
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Dobby</title>
-  <meta name="description" content="An AI dev team on your own computer. Dobby plans, builds, tests and reviews changes, then opens pull requests on GitHub, on the AI plan you already pay for." />
+  <meta name="description" content="An AI team on your own computer. Dobby plans, builds, tests and reviews changes, then opens pull requests on GitHub, on the AI plan you already pay for." />
   <meta name="color-scheme" content="dark light" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <link rel="canonical" href={site.url + "/"} />
   <meta property="og:title" content="Dobby" />
-  <meta property="og:description" content="An AI dev team on your own computer." />
+  <meta property="og:description" content="An AI team on your own computer." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content={site.url + "/"} />
+  <meta property="og:image" content={site.url + "/og.png"} />
+  <meta property="og:image:width" content="1280" />
+  <meta property="og:image:height" content="640" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:site" content="@trydobby" />
   <link rel="alternate" type="text/plain" title="llms.txt" href="/docs/llms.txt" />
   <script is:inline>
     try { const t = localStorage.getItem("starlight-theme"); if (t) document.documentElement.dataset.theme = t } catch {}
@@ -137,7 +144,7 @@ const groups: { head: string; soon?: boolean; items: [string, string, string?][]
     <!-- Hero: the dashboard's Home screen, working through tickets -->
     <section class="hero">
       <div class="wrap hero-copy">
-        <h1 class="rv">An AI dev team on your own computer.</h1>
+        <h1 class="rv">An AI team on your own computer.</h1>
         <p class="lede rv" style="--d:80ms">Give it a ticket. It plans, builds, tests and reviews the change, then opens a pull request.</p>
         <div class="cta rv" style="--d:160ms">
           <button class="cmd" type="button" data-copy={install.command}><span class="pr">$</span><span>{install.command}</span><span class="cp" aria-live="polite">Copy</span></button>

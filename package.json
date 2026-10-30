@@ -1,7 +1,7 @@
 {
   "name": "dobby-ai",
   "version": "0.1.0-beta.2",
-  "description": "An AI dev team on your own machine: builds, reviews and ships your tickets as pull requests, with Claude Code.",
+  "description": "An AI team on your own machine: builds, reviews and ships your tickets as pull requests, with Claude Code.",
   "license": "MIT",
   "repository": {
     "type": "git",

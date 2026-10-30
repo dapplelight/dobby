@@ -7,7 +7,7 @@
 
 # Dobby
 
-**An AI dev team on your own computer.**<br>
+**An AI team on your own computer.**<br>
 Give it a ticket. It plans, builds, tests and reviews the change, then opens a pull request.
 
 [![npm](https://img.shields.io/npm/v/dobby-ai?label=npm&labelColor=171612&color=0d7b43)](https://www.npmjs.com/package/dobby-ai) [![License: MIT](https://img.shields.io/badge/license-MIT-0d7b43?labelColor=171612)](LICENSE) [![Status: public beta](https://img.shields.io/badge/status-public%20beta-ad5118?labelColor=171612)](docs/manual/install.md)
