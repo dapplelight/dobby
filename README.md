@@ -1,17 +1,53 @@
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/readme/mark-dark.svg">
+  <img src="docs/readme/mark-light.svg" width="72" height="72" alt="">
+</picture>
+
 # Dobby
 
-Dobby runs Claude Code on your tickets and opens reviewed pull requests on your GitHub repos. It runs on your own machine and on your own Claude plan.
+**An AI dev team on your own computer.**<br>
+Give it a ticket. It plans, builds, tests and reviews the change, then opens a pull request.
 
-Dobby is in public beta.
+[![npm](https://img.shields.io/npm/v/dobby-ai?label=npm&labelColor=171612&color=0d7b43)](https://www.npmjs.com/package/dobby-ai) [![License: MIT](https://img.shields.io/badge/license-MIT-0d7b43?labelColor=171612)](LICENSE) [![Status: public beta](https://img.shields.io/badge/status-public%20beta-ad5118?labelColor=171612)](docs/manual/install.md)
+
+[Website](https://dobby.dapplelight.in) · [Docs](https://dobby.dapplelight.in/docs) · [Your first hour](docs/manual/first-hour.md) · [Security](docs/manual/security.md)
+
+</div>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/readme/dashboard-dark.jpg">
+  <img src="docs/readme/dashboard-light.jpg" alt="The Dobby dashboard: two pull requests ready to merge, a failed deploy, a question from a builder, and three tickets being built and tested">
+</picture>
+
+<p align="center"><sub>The dashboard, on made-up projects.</sub></p>
+
+## How it works
+
+```mermaid
+flowchart LR
+  T[Your ticket] --> P[Plan]
+  P --> B[Build<br>in a sandbox]
+  B --> Q[Test]
+  Q --> R[Review]
+  R -- sent back --> B
+  R --> Y{{You merge}}
+```
+
+- **Runs on your machine.** Builders work in an OS sandbox. Their commands get no network and no credentials. Only Dobby pushes, after the checks pass.
+- **Runs on your own plan.** It uses the AI plan you already pay for, or an API key, and paces itself so part of your weekly limit is left for you.
+- **Your code stays with you.** It goes only to your model provider. Usage stats are off unless you turn them on.
 
 ## Quick start
 
-You need macOS or Linux (WSL2 on Windows), Node 24, git and 15 GB of free disk. Dobby runs on Claude Code only today. Support for other agent harnesses is coming.
+You need macOS or Linux (WSL2 on Windows), Node 24, git with `user.email` set, and 15 GB of free disk. Dobby runs on Claude Code only today. Support for other agent harnesses is coming.
 
-Sign in to the GitHub CLI, then to Claude Code (a Pro or Max plan, or an Anthropic API key):
+Sign in to the GitHub CLI, let git push with that sign-in, then sign in to Claude Code (a Pro or Max plan, or an Anthropic API key):
 
 ```sh
 gh auth login
+gh auth setup-git
 claude
 ```
 
@@ -42,12 +78,27 @@ dobby status
 
 [Your first hour](docs/manual/first-hour.md) follows that ticket to a merged pull request.
 
+## The team
+
+Each role is a separate agent run with its own instructions.
+
+| Role | Its job |
+| --- | --- |
+| Product Manager | Ranks problems and writes specs. |
+| Engineering Manager | Plans the work and queues tickets. |
+| Designer | Specs screens before a UI build. |
+| Builder | Writes the change, in the sandbox. |
+| Tester | Tries to break it before review. |
+| Code Reviewer | Reviews every pull request. |
+| Chief of Staff | Sends a morning and evening brief. |
+| Talent Scout | Improves one role a day. |
+
 ## What waits for you
 
 - A fresh install opens pull requests but does not merge them until you run `dobby resume merges`.
 - Deploys wait for your tap by default, and a migration that changes existing data always waits.
 - The safety preset (Balanced, Strict or Autonomous) decides which other changes wait for you.
-- Builders run in an OS sandbox with no credentials and no network.
+- You can approve from the terminal, the dashboard, Discord, or any MCP client.
 
 ## Docs
 
@@ -68,6 +119,10 @@ npm run coverage      # everything above, with a line-coverage gate on src/
 npm run typecheck
 npm run docs          # regenerate the generated manual pages and llms.txt
 ```
+
+## Contributing
+
+Dobby is not taking pull requests yet. Bug reports and ideas are welcome as [issues](https://github.com/dapplelight/dobby/issues).
 
 ## License
 

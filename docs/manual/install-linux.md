@@ -64,7 +64,10 @@ The database driver compiles during install. Install python3 and a C++ toolchain
 
    ```bash title="Terminal"
    gh auth login --web
+   gh auth setup-git
    ```
+
+   The second line lets git push with that sign-in.
 
 2. Sign in to Claude Code. Type `/login` and open the link on another device.
 

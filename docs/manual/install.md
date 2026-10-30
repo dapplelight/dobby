@@ -12,26 +12,34 @@ Dobby is in public beta.
 
 - macOS or Linux
 - Node 24 or newer
-- GitHub CLI
+- git, with `user.email` set
+- GitHub CLI, signed in
 - Claude Code on a Pro or Max plan, or an Anthropic API key
 
 On Windows or a Linux server, start with [Install on Linux or WSL2](install-linux.md).
 
 ## Install
 
-1. Run the setup and answer its questions. Enter takes the recommended choice.
+1. Sign in to GitHub, and let git push with that sign-in. Skip the second line if `git push` already works without a password prompt.
+
+   ```bash title="Terminal"
+   gh auth login
+   gh auth setup-git
+   ```
+
+2. Run the setup and answer its questions. Enter takes the recommended choice.
 
    ```bash title="Terminal"
    npx dobby-ai init
    ```
 
-2. Say yes when it offers a copy that stays. The background jobs need it.
+3. Say yes when it offers a copy that stays. The background jobs need it.
 
    ```bash title="Terminal"
    npm i -g dobby-ai
    ```
 
-3. Check the install. A failed row prints its fix.
+4. Check the install. A failed row prints its fix.
 
    ```bash title="Terminal"
    dobby doctor
