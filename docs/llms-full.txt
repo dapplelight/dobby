@@ -406,16 +406,16 @@ The brief says what needs you, what shipped and what is building.
 
 ## Supporting roles
 
-| Role | Does |
-|---|---|
-| Designer | Writes the screen spec for a UI ticket. |
-| Onboarder | Reads a new project and writes its rules, tickets and ideas. |
-| Front Desk | Answers your chat messages and proposes actions. |
-| Program Manager | Checks a finished program of tickets against its plan. |
-| Product Manager (one area) | Digs into one product area. |
-| Brainstorm | Talks an idea through with you. It never builds. |
-| Company | Turns your notes into work rules for every agent. |
-| Engineer (web, mobile, backend) | The builder's specialties. |
+| Role | Does | Rules file |
+|---|---|---|
+| Designer | Writes the screen spec for a UI ticket. | `designer` |
+| Onboarder | Reads a new project and writes its rules, tickets and ideas. | `onboarder` |
+| Front Desk | Answers your chat messages and proposes actions. | `front-desk` |
+| Program Manager | Checks a finished program of tickets against its plan. | `program-manager` |
+| Product Manager (one area) | Digs into one product area. | `area-pm` |
+| Brainstorm | Talks an idea through with you. It never builds. | `brainstorm` |
+| Company | Turns your notes into work rules for every agent. | `company` |
+| Engineer (web, mobile, backend) | The builder's specialties. | `engineer-web`, `engineer-mobile`, `engineer-backend` |
 
 ### Talent Scout
 

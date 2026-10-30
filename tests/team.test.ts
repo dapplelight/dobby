@@ -268,13 +268,13 @@ test("near-duplicate tickets: word overlap picks candidates, Jev says which is t
   process.env["JEV_API_KEY"] = prev
 })
 
-test("roles: every file in roles/ is loaded by code or listed under Supporting roles in docs/team.md", async () => {
+test("roles: every file in roles/ is loaded by code or listed under Supporting roles in docs/manual/roles.md", async () => {
   const { readdirSync, readFileSync } = await import("node:fs")
   const { ROOT } = await import("../src/lib.ts")
   const code = readdirSync(`${ROOT}src`, { recursive: true }).filter((f) => String(f).endsWith(".ts")).map((f) => readFileSync(`${ROOT}src/${f}`, "utf8")).join("\n")
-  const team = readFileSync(`${ROOT}docs/team.md`, "utf8").split("## Supporting roles")[1]?.split("\n## ")[0] ?? ""
+  const team = readFileSync(`${ROOT}docs/manual/roles.md`, "utf8").split("## Supporting roles")[1]?.split("\n## ")[0] ?? ""
   for (const f of readdirSync(`${ROOT}roles`)) {
     const role = f.replace(/\.md$/, "")
-    assert.ok(code.includes(`"${role}"`) || team.includes(`\`${role}\``), `roles/${f} is not loaded by any code and not listed in docs/team.md`)
+    assert.ok(code.includes(`"${role}"`) || team.includes(`\`${role}\``), `roles/${f} is not loaded by any code and not listed in docs/manual/roles.md`)
   }
 })
