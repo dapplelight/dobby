@@ -3,6 +3,7 @@
 // `deploy_copy:` the gitignored files besides .env* the deploy needs, comma-separated, copied from `repo:`).
 // Schema-only migrations run automatically; migrations that change existing data go to the owner first.
 // One deploy per project at a time; a merge during a deploy queues exactly one more run.
+import { smallest } from "./sizes.ts"
 import { spawn } from "node:child_process"
 import { readFileSync } from "node:fs"
 import { config } from "./config.ts"
@@ -18,7 +19,8 @@ import { sqlChangesData } from "./safety.ts"
 export const changesData = sqlChangesData // same reading as the safety check: strings, block comments and ON DELETE CASCADE are not data changes
 
 /** Removes gitignored files from the release checkout, except node_modules and .env*. */
-export const DEPLOY_CLEAN = "git clean -fdXq -e '!node_modules' -e '!.env*'"
+// '!**/node_modules/**' too: '!node_modules' alone makes git walk into node_modules and delete ignored names inside it, like a package's dist/.
+export const DEPLOY_CLEAN = "git clean -fdXq -e '!node_modules' -e '!**/node_modules/**' -e '!.env*'"
 
 const kvGet =(db: DB, k: string) => (db.prepare("SELECT v FROM kv WHERE k=?").get(k) as { v: string } | undefined)?.v
 const kvSet = (db: DB, k: string, v: string) => db.prepare("INSERT OR REPLACE INTO kv VALUES (?, ?)").run(k, v)
@@ -179,7 +181,7 @@ async function failed(db: DB, say: NonNullable<DeployOpts["notify"]>, name: stri
     const open = prev && db.prepare("SELECT 1 FROM tickets WHERE id=? AND status NOT IN ('shipped','declined','failed','split')").get(prev) ? prev : 0
     if (open && mode === "fix") return `${out} (fix #${open} is on it)`
     // No "deploy"/"production" in the title: the ship rule would hold the ticket for the owner (src/policy.ts, src/safety.ts).
-    const id = open || addTicket(db, { project: name, title: `Fix ${p.base}: the ship step fails`, done_when: `\`${p.install} && ${p.deploy}\` passes on a clean checkout of ${p.base}. It failed with: ${why}`, size: "S", priority: 100 }).id
+    const id = open || addTicket(db, { project: name, title: `Fix ${p.base}: the ship step fails`, done_when: `\`${p.install} && ${p.deploy}\` passes on a clean checkout of ${p.base}. It failed with: ${why}`, size: smallest(), priority: 100 }).id
     if (!open) {
       setTicket(db, id, { status: "ready" })
       kvSet(db, `deploy:fix:${name}`, String(id))

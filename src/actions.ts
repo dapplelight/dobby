@@ -20,12 +20,12 @@ import { riskFromWords, triage } from "./jev.ts"
 import { capHold, costText, NOTHING_OPEN, limitsNow, limitsText, listView, receipt, receiptLine, receiptSvg, scoreboard, scoreboardText, statusText } from "./view.ts"
 import { PR_RE, repoSlug } from "./savings.ts"
 import { ConfigError, configSetText } from "./config-edit.ts"
-import { BUILD_CAP, buildsUsed, statusWord } from "./lib.ts"
+import { buildsUsed, statusWord, ticketCap } from "./lib.ts"
 import { noteUse, reportText } from "./stats.ts"
 
 export type Cls = "read" | "write" | "destructive"
 /** One call's inputs. `agent` is set by the MCP server only (never by a client): an agent's add is filed to the backlog and its queue of an agent-filed ticket waits for the owner. */
-export type Args = { id?: number; project?: string; title?: string; done_when?: string; size?: string; priority?: number; days?: number; before?: number; detail?: "short" | "full"; cursor?: string; topic?: string; query?: string; target?: string; for?: string; text?: string; key?: string; value?: string; unset?: boolean; agent?: boolean }
+export type Args = { id?: number; project?: string; title?: string; done_when?: string; size?: string; priority?: number; days?: number; before?: number; goal?: number; detail?: "short" | "full"; cursor?: string; topic?: string; query?: string; target?: string; for?: string; text?: string; key?: string; value?: string; unset?: boolean; agent?: boolean }
 export type Out = { text: string; nextCursor?: string; pending?: boolean }
 export type Action = { name: string; cli: string; mcp: { tool: string; op: string }; cls: Cls; run: (db: DB, a: Args, d: Deps) => Out | Promise<Out> }
 
@@ -179,6 +179,16 @@ export function reorderText(db: DB, id: number, before?: number): string {
   return `#${id} is now ${at + 1} of ${rest.length} in the queue.`
 }
 
+/** `dobby goal <goal id> <id>...`: move tickets to another of their project's active goals (`dobby goals <app>` lists the ids). The board sync then moves each issue to that goal's milestone. */
+export function goalText(db: DB, goal: number, ids: number[]): string {
+  const g = db.prepare("SELECT id, project, title FROM goals WHERE id=? AND status='active'").get(goal) as { id: number; project: string; title: string } | undefined
+  if (!g) return `goal ${goal} is not an active goal (dobby goals <app> lists them)`
+  const set = db.prepare("UPDATE tickets SET goal=?, updated_at=? WHERE id=? AND project=?")
+  const moved = ids.filter((id) => set.run(g.id, new Date().toISOString(), id, g.project).changes)
+  const missed = ids.filter((id) => !moved.includes(id))
+  return `${moved.length} ticket(s) moved to goal ${g.id}: ${short(g.title)}${missed.length ? `. Not ${g.project} tickets, left as they were: ${missed.map((i) => `#${i}`).join(", ")}` : ""}`
+}
+
 /** Every step the ticket's graph took, with tokens and cost. `short` = the header, the last steps and the run totals. */
 export async function showText(db: DB, id: number, detail: "short" | "full" = "full"): Promise<string> {
   const t = getTicket(db, id)
@@ -203,7 +213,7 @@ export async function jobText(db: DB, id: number): Promise<string> {
   if (t.status !== "running") return `#${id} is not running (it is ${t.status}).`
   const snap = await compileTicketGraph(db).getState(thread(id))
   const last = ((snap.values.log as string[] | undefined) ?? []).slice(-1)[0] ?? "no steps yet"
-  return `#${id} running. Stage: ${snap.next[0] ?? "building"}. Last update: ${(db.prepare("SELECT updated_at u FROM tickets WHERE id=?").get(id) as { u: string }).u}. Last step: ${short(last)}. Builds used: ${Math.min(100, Math.round((100 * buildsUsed(db, id)) / BUILD_CAP))}% of ${BUILD_CAP}.`
+  return `#${id} running. Stage: ${snap.next[0] ?? "building"}. Last update: ${(db.prepare("SELECT updated_at u FROM tickets WHERE id=?").get(id) as { u: string }).u}. Last step: ${short(last)}. Builds used: ${Math.min(100, Math.round((100 * buildsUsed(db, id)) / ticketCap(db, id)))}% of ${ticketCap(db, id)}.`
 }
 
 /** `dobby receipt [days]`: the shipped-vs-spent line; `card` also writes the 1200x630 card at <data>/receipt.svg (the CLI does, a read tool does not). */
@@ -440,6 +450,7 @@ export const actions: Action[] = [
   A("rule-from-finding", "findingrule", "dobby_ticket", "rule-from-finding", "write", (db, a) => text(ruleFromFinding(db, need(a.id), a.text))),
   A("unqueue", "unqueue", "dobby_ticket", "unqueue", "write", (db, a) => text(unqueueText(db, need(a.id)))),
   A("reorder", "reorder", "dobby_ticket", "reorder", "write", (db, a) => text(reorderText(db, need(a.id), a.before))),
+  A("goal", "goal", "dobby_ticket", "goal", "write", (db, a) => text(goalText(db, a.goal ?? 0, [need(a.id)]))),
   // An idea becomes a ticket only on the owner's word: over MCP it goes to the owner's inbox, like queueing an agent-filed ticket.
   A("idea-ticket", "ideaticket", "dobby_ticket", "make-ticket", "write", async (db, a, d) => {
     const id = need(a.id)

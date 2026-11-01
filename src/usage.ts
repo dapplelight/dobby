@@ -175,8 +175,10 @@ export function readLimits(run: typeof spawnSync = spawnSync, cli = resolveUsage
   try {
     const j = JSON.parse(p.stdout)
     const u = j.utilization, at = Number(j.snapshotFetchedAt ?? j.now)
-    if (!u?.five_hour || !u?.seven_day) return null
-    return { at, five: Math.round(u.five_hour.utilization), week: Math.round(u.seven_day.utilization), fiveReset: Date.parse(u.five_hour.resets_at), weekReset: Date.parse(u.seven_day.resets_at) }
+    if (!u?.seven_day) return null
+    // A verified Ultra plan has no 5-hour window: five stays 0 so the weekly ticks still log.
+    const five = u.five_hour
+    return { at, five: five ? Math.round(five.utilization) : 0, week: Math.round(u.seven_day.utilization), fiveReset: five ? Date.parse(five.resets_at) : 0, weekReset: Date.parse(u.seven_day.resets_at) }
   } catch {
     return null
   }

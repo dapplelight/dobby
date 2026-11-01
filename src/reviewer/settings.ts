@@ -37,6 +37,11 @@ const fields = {
   // Send replies in our threads to Jev (redacted) to tell a "won't fix" from a question. Off: no Jev call; every reply that is
   // not a plain "thanks" is answered as a question and never becomes a learning (comment text stays on the Mac).
   jevReplies: z.boolean(),
+  // Who reviews a PR. auto = Jev picks per PR (Haiku picks when Jev is off, unsure or offline; Sonnet if both fail). A model = always
+  // that model (sensitive tickets follow strictReviewer instead).
+  reviewer: z.enum(["auto", "haiku", "sonnet", "opus"]),
+  // A sensitive ticket's reviewer. opus = always Opus. auto = Jev (or Haiku) picks, never below Sonnet; Opus on riskPaths or with no answer.
+  strictReviewer: z.enum(["opus", "auto"]),
 }
 const Base = z.object(fields)
 export type Settings = z.infer<typeof Base>
@@ -53,7 +58,7 @@ const RISK = ["auth", "oauth", "oauth2", "auth0", "authn", "authz", "authenticat
 export const DEFAULTS: Settings = {
   auto: "off", includePaths: [], excludePaths: [], branches: [], skipLabel: "no-review", mentionOnly: false, handle: "dobby", commands: true,
   fullReviewsPerDay: 3, maxPerScan: 4, maxChats: 3, maxCommandsPerScan: 5, ask: true, describe: true, maxFindings: 0, strictness: "default",
-  riskBump: false, riskPaths: RISK, contextPack: true, contextFiles: 10, learn: true, maxLearnings: 30, fix: true, botLogin: "", fixesPerDay: 1, jevReplies: false,
+  riskBump: false, riskPaths: RISK, contextPack: true, contextFiles: 10, learn: true, maxLearnings: 30, fix: true, botLogin: "", fixesPerDay: 1, jevReplies: false, reviewer: "auto", strictReviewer: "opus",
 }
 
 const Partial = Base.partial().strip()

@@ -1,5 +1,6 @@
 // The web dashboard's numbers. Every function is pure over a (read-only) DB handle and a clock; nothing here writes or calls out.
 // Days are IST days (the owner's), titles come first, ids only as a small suffix.
+import { actionOf, defaultSize, estimateOf, sizeNames } from "./sizes.ts"
 import { paused, pausedState, pauseList } from "./pause.ts"
 import type { DB } from "./db.ts"
 import { config, zonedDay } from "./config.ts"
@@ -309,7 +310,7 @@ export function queue(db: DB, now: number, limits?: unknown) {
       const rankOf = (g: number | null) => (g == null ? undefined : rank.get(g))
       const { pickable, owner } = splitBacklog(db, app, rankOf)
       ownerOnly += owner.length
-      rows.push(...pickable.filter((p) => p.size !== "L").map((p) => ({ id: p.id, rank: rankOf(p.goal) ?? 999, priority: p.priority })))
+      rows.push(...pickable.filter((p) => actionOf(p.size) === "build").map((p) => ({ id: p.id, rank: rankOf(p.goal) ?? 999, priority: p.priority })))
     } catch {} // a database without these tables reads as empty
   }
   const next = rows.sort((a, b) => a.rank - b.rank || b.priority - a.priority || a.id - b.id).slice(0, 10).map(({ id }) => ts.find((t) => t.id === id)!)
@@ -318,30 +319,28 @@ export function queue(db: DB, now: number, limits?: unknown) {
 }
 
 // ── 6b. The order of work: estimates, the stop line, backlog and ideas ──────
-/** What a size costs when there is no history to go on, in % of the week. */
-const SIZE_PCT: Record<string, number> = { S: 2, M: 5, L: 11 }
 const MIN_SAMPLES = 3
 /** Per size: the median week-% of shipped tickets of that size (their runs' cost over the plan's $ per point), else the default. */
-export function estimates(db: DB): Record<"S" | "M" | "L", number> {
+export function estimates(db: DB): Record<string, number> {
   const spent = q<{ size: string; usd: number }>(db, "SELECT t.size, SUM(r.cost_usd) usd FROM tickets t JOIN runs r ON r.ticket=t.id WHERE t.status='shipped' AND t.onto IS NULL GROUP BY t.id HAVING usd > 0")
   const est = (size: string) => {
     const xs = spent.filter((r) => r.size === size).map((r) => weekPoints(r.usd))
-    return Math.max(1, Math.round(xs.length >= MIN_SAMPLES ? median(xs)! : SIZE_PCT[size]))
+    return Math.max(1, Math.round(xs.length >= MIN_SAMPLES ? median(xs)! : estimateOf(size)))
   }
-  return { S: est("S"), M: est("M"), L: est("L") }
+  return Object.fromEntries(sizeNames().map((n) => [n, est(n)]))
 }
 
-type QRow = { id: number; project: string; title: string; done_when: string; size: string; priority: number; status: string; depends_on: number | null; created_at: string }
+type QRow = { id: number; project: string; title: string; done_when: string; size: string; priority: number; status: string; depends_on: number | null; goal: number | null; created_at: string }
 /** Queued tickets in the order builders take them (running first, then priority, then id), each with its estimate, whether it fits the week's room, and what it waits on. */
 export function queueView(db: DB, now: number, limits?: unknown) {
   const est = estimates(db)
   const w = (limits as { week?: { used: number; cap: number; resetsAt: number } } | null | undefined)?.week
   const room = w ? Math.max(0, w.cap - w.used) : null
-  const rows = q<QRow>(db, "SELECT id, project, title, done_when, size, priority, status, depends_on, created_at FROM tickets WHERE status IN ('running','ready') AND dup_of IS NULL ORDER BY status='running' DESC, priority DESC, id")
+  const rows = q<QRow>(db, "SELECT id, project, title, done_when, size, priority, status, depends_on, goal, created_at FROM tickets WHERE status IN ('running','ready') AND dup_of IS NULL ORDER BY status='running' DESC, priority DESC, id")
   const open = new Set(q<{ id: number }>(db, "SELECT id FROM tickets WHERE status NOT IN ('shipped')").map((r) => r.id))
   let next = true
   const rest = rows.map((t) => {
-    const estPct = est[t.size as "S" | "M" | "L"] ?? est.M
+    const estPct = est[t.size] ?? est[defaultSize()]
     // a running ticket has spent part of its estimate already: that part is in the week's used figure
     return { t, estPct, leftPct: t.status === "running" ? Math.max(0, estPct - weekPoints(ticketUsd(db, t.id))) : estPct }
   })
@@ -350,11 +349,11 @@ export function queueView(db: DB, now: number, limits?: unknown) {
     const blocked = t.status === "ready" ? (t.depends_on && open.has(t.depends_on) ? `#${t.depends_on}` : paused(db, { kind: "builders", project: t.project, ticket: t.id }) ? "paused" : null) : null
     const state = t.status === "running" ? "Building" : blocked ? (blocked === "paused" ? "Paused" : `After ${blocked}`) : next ? "Next" : "Ready"
     if (t.status === "ready" && !blocked) next = false
-    return { id: t.id, n: i + 1, ref: `${t.project} #${t.id}`, project: t.project, title: title(t.title), doneWhen: clip(t.done_when, 400), filed: ago(t.created_at, now), size: t.size, estPct, leftPct, fits: fits[i], waitsOn: blocked, state, running: t.status === "running" }
+    return { id: t.id, n: i + 1, ref: `${t.project} #${t.id}`, project: t.project, title: title(t.title), doneWhen: clip(t.done_when, 400), filed: ago(t.created_at, now), size: t.size, estPct, leftPct, fits: fits[i], waitsOn: blocked, state, running: t.status === "running", goal: t.goal ?? null }
   })
   const total = rest.reduce((a, r) => a + r.leftPct, 0)
   const parked = q<{ id: number; project: string; title: string; size: string; created_at: string }>(db, "SELECT id, project, title, size, created_at FROM tickets WHERE status='backlog' AND dup_of IS NULL ORDER BY priority DESC, id LIMIT 50")
-    .map((t) => ({ id: t.id, ref: `${t.project} #${t.id}`, project: t.project, title: title(t.title), size: t.size, estPct: est[t.size as "S" | "M" | "L"] ?? est.M, age: ago(t.created_at, now) }))
+    .map((t) => ({ id: t.id, ref: `${t.project} #${t.id}`, project: t.project, title: title(t.title), size: t.size, estPct: est[t.size] ?? est[defaultSize()], age: ago(t.created_at, now) }))
   const ideas = q<{ id: number; project: string; title: string; source: string; lens: string | null; why: string | null; size: string | null; score: number | null }>(db, "SELECT id, project, title, source, lens, why, size, score FROM ideas WHERE status IN ('new','proposed') AND dup_of IS NULL ORDER BY score DESC NULLS LAST, id LIMIT 50")
     .map((i) => ({ ...i, title: title(i.title), why: i.why ? clip(i.why, 240) : null }))
   return { order, parked, ideas, estimates: est, room, queuedPct: total, stopPct: w?.cap ?? null, resetsAt: w?.resetsAt ?? null }

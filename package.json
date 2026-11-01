@@ -94,6 +94,7 @@
     "dist",
     "dashboard/dist",
     "roles",
+    "sizes.defaults.json",
     "skills",
     "agent-kit",
     "templates",

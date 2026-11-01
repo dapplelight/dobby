@@ -191,3 +191,18 @@ test("guard: rtk rewrites after the guard, and a denied command stays denied beh
     assert.ok(denied(`echo hi && rtk ${c}`, ["*"]), c)
   }
 })
+
+test("builder read habits (audit 31 Oct): sed -n line prints and uniq pass; sed edits, sed outside the worktree and real variables stay refused; \"fail$\" is no variable", async () => {
+  const { readHelper } = await import("../bin/guard-hook.mjs")
+  assert.ok(readHelper(["sed", "-n", "240,320p", "apps/x.ts"]) && readHelper(["sed", "-n", "12p", "a.ts", "b.ts"]) && readHelper(["sed", "-n", "-e", "5,$p", "a.ts"]) && readHelper(["uniq", "-c"]))
+  assert.ok(!readHelper(["sed", "-i", "s/a/b/", "a.ts"]) && !readHelper(["sed", "-n", "-i", "1p", "a.ts"]) && !readHelper(["sed", "-n", "s/a/b/w out", "a.ts"]) && !readHelper(["sed", "-n", "-e", "1p", "-e", "w x", "a.ts"]) && !readHelper(["sed", "1p", "a.ts"]) && !readHelper(["uniq", "a", "b"]))
+})
+
+test("builder read habits end to end: allowed in the worktree, refused outside it and for roles without cat", () => {
+  assert.ok(allowed("sed -n 240,320p apps/mobile/src/lib/db/apply.ts"))
+  assert.ok(allowed('bun run test 2>&1 | grep -E "Tasks:| fail$| pass$" | sort | uniq -c'))
+  assert.ok(allowed("git rev-parse HEAD") && allowed("git ls-files apps") && allowed("git branch --show-current"))
+  assert.ok(denied("sed -n 1,5p /etc/hosts") && denied("sed -i s/a/b/ a.ts") && denied("git branch -D main"))
+  assert.match(denied('grep -c x "$TMPDIR/a"') ?? "", /variable/)
+  assert.ok(denied("sed -n 1,5p a.ts", ["Bash(graphify:*)"]))
+})

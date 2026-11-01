@@ -2,6 +2,7 @@
 // resources, two prompts. Nothing merges, deploys, cancels, declines or approves without a confirmed elicitation or the owner's own tap:
 // dobby_decide asks first (confirm); a client that cannot be asked gets an inbox card with the existing buttons instead, never the action.
 // stdout is the protocol: console.log goes to stderr while this runs.
+import { isSize } from "./sizes.ts"
 import { noteUse } from "./stats.ts"
 import { randomBytes } from "node:crypto"
 import { readFileSync } from "node:fs"
@@ -91,20 +92,21 @@ export function tools(db: DB, deps: Deps): McpTool[] {
     }),
     tool({
       name: "dobby_ticket", title: "File or queue a ticket",
-      description: "File a ticket (add), ask to start one (queue), or steer one: answer a question it asked (answer), add a hint for the next build (hint), take it over (take-over: pauses it, the branch is yours) or give its PR one more fix round (allow-round), act on a review finding (apply-finding, dismiss-finding, rule-from-finding), or arrange the queue: unqueue (back to the backlog), reorder (id above before, or last), make-ticket and dismiss-idea (id is the idea's). Use for \"add a ticket\", \"file this for Dobby\", \"queue ticket 12\", \"tell ticket 12 to keep the old cookie\". A ticket added here is agent-filed: it waits in the backlog for the owner's tap and never starts on its own. Queueing one you filed goes to the owner's inbox. Not destructive.",
+      description: "File a ticket (add), ask to start one (queue), or steer one: answer a question it asked (answer), add a hint for the next build (hint), take it over (take-over: pauses it, the branch is yours) or give its PR one more fix round (allow-round), act on a review finding (apply-finding, dismiss-finding, rule-from-finding), or arrange the queue: unqueue (back to the backlog), reorder (id above before, or last), goal (move ticket id to goal number goal of its app), make-ticket and dismiss-idea (id is the idea's). Use for \"add a ticket\", \"file this for Dobby\", \"queue ticket 12\", \"tell ticket 12 to keep the old cookie\". A ticket added here is agent-filed: it waits in the backlog for the owner's tap and never starts on its own. Queueing one you filed goes to the owner's inbox. Not destructive.",
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       input: z.object({
         op: oneOf(opsOf("dobby_ticket")),
         project: z.string().max(60).optional().describe("Project name, for add."),
         title: z.string().max(300).optional().describe("One line: what to build. For add."),
         done_when: z.string().max(2000).optional().describe("How we know it is done. For add."),
-        size: z.enum(["S", "M", "L"]).optional(),
+        size: z.string().refine(isSize, { message: "not a configured size (dobby sizes lists them)" }).optional(),
         priority: z.number().int().min(0).max(100).optional(),
         id: z.number().int().positive().optional().describe("Ticket id, for queue, unqueue, reorder, answer, hint, take-over and allow-round; the idea id for make-ticket and dismiss-idea; the finding id for apply-finding, dismiss-finding and rule-from-finding."),
         text: z.string().max(2000).optional().describe("The owner's words, for answer and hint, or the rule text for rule-from-finding. They go into the ticket's done rule."),
         before: z.number().int().positive().optional().describe("For reorder: the queued ticket id to go above. Leave out to go last."),
+        goal: z.number().int().positive().optional().describe("For goal: the goal id (dobby goals <app> lists them)."),
       }),
-      handler: async (i) => { const o = await run(find("dobby_ticket", i.op), { project: i.project, title: i.title, done_when: i.done_when, size: i.size, priority: i.priority, id: i.id, text: i.text, before: i.before }); return ok(o.text, { outcome: o.pending ? "sent_to_inbox" : undefined }) },
+      handler: async (i) => { const o = await run(find("dobby_ticket", i.op), { project: i.project, title: i.title, done_when: i.done_when, size: i.size, priority: i.priority, id: i.id, text: i.text, before: i.before, goal: i.goal }); return ok(o.text, { outcome: o.pending ? "sent_to_inbox" : undefined }) },
     }),
     tool({
       name: "dobby_pause", title: "Pause, resume or pace Dobby",

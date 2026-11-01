@@ -1,5 +1,6 @@
 // Watchman: hourly health check, no AI. Are the background jobs alive, are their configs valid, is there disk left?
 // Prints a summary, logs to the checks table, exits 1 if anything is wrong.
+import { sqlList, withAction } from "./sizes.ts"
 import { spawnSync } from "node:child_process"
 import { existsSync, readdirSync, statfsSync, statSync } from "node:fs"
 import { homedir } from "node:os"
@@ -150,7 +151,7 @@ export function pipelineChecks(db: DB, o: PipelineEnv = {}): Health[] {
   // only work a builder would take (nextTicket): not L, project not paused (dobby.md or pause), ticket not paused; none while the
   // budget paused this 5-hour window (windows.paused) or builders are paused
   const projects = o.projects ?? (() => { try { return loadProjects() } catch { return {} } })()
-  const ready = all<{ id: number; project: string }>(`SELECT id, project FROM tickets WHERE status='ready' AND size!='L' AND dup_of IS NULL AND ${unblocked()}`)
+  const ready = all<{ id: number; project: string }>(`SELECT id, project FROM tickets WHERE status='ready' AND size IN (${sqlList(withAction("build"))}) AND dup_of IS NULL AND ${unblocked()}`)
     .filter((t) => !projects[t.project]?.paused && !paused(db, { kind: "builders", project: t.project, ticket: t.id }, now)).length
   const budgetPaused = !!db.prepare("SELECT 1 FROM windows WHERE paused=1 AND reset_at > ?").get(now)
   const last = Date.parse((db.prepare("SELECT MAX(at) at FROM runs").get() as { at: string | null }).at ?? "") || 0

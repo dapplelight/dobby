@@ -19,6 +19,7 @@ import { reviewsPage, snapshot, ticketDetail } from "./dashboard.ts"
 import { findingById } from "./findings.ts"
 import { diffReader, diffTextReader } from "./diffstat.ts"
 import { NewTicket, type Held } from "./api-schema.ts"
+import { isSize } from "./sizes.ts"
 import { doTimeoutMs, loadProjects, readUsage, timeoutMs } from "./lib.ts"
 import { limitsNow } from "./view.ts"
 import { ensureToken, readSecrets, redact } from "./notify.ts"
@@ -163,7 +164,7 @@ const PROJECT = /^\w[\w-]*(\.\w[\w-]*)*$/
 const VERBS = { merge: "merge", decline: "decline", retry: "retry", answer: "answer", hint: "hint", takeOver: "takeover", allowRound: "allowround" } as const
 
 /** The names POST /api/action takes (plus "undo"). A test keeps this list, the switch below and the dashboard's key registry in step. */
-export const DASHBOARD_ACTIONS = ["pause", "resume", "pauseTeam", "queue", "reviewfix", "reviewaccept", "merge", "decline", "retry", "answer", "hint", "takeOver", "allowRound", "deploy", "add", "unqueue", "reorder", "makeTicket", "dismissIdea", "applyFinding", "dismissFinding", "ruleFromFinding", "configSet", "saveRole", "resetRole"] as const
+export const DASHBOARD_ACTIONS = ["pause", "resume", "pauseTeam", "queue", "reviewfix", "reviewaccept", "merge", "decline", "retry", "answer", "hint", "takeOver", "allowRound", "deploy", "add", "unqueue", "reorder", "goal", "makeTicket", "dismissIdea", "applyFinding", "dismissFinding", "ruleFromFinding", "configSet", "saveRole", "resetRole"] as const
 
 /** The allowlist: an action name and its arguments to the one `dobby` command it means, or an error. Nothing else is ever run. */
 export function actionArgs(db: DB, b: Record<string, unknown>, so: SettingsOpts = {}): Plan | { error: string; code?: number } {
@@ -216,6 +217,12 @@ export function actionArgs(db: DB, b: Record<string, unknown>, so: SettingsOpts 
       if (b.before !== undefined && b.before !== null && !before) return { error: "before must be a ticket id" }
       return { args: ["reorder", String(id), ...(before ? [String(before)] : [])], direct: true }
     }
+    case "goal": {
+      const id = INT(b.id), goal = INT(b.goal)
+      if (!id || !goal) return { error: "goal needs a ticket id and a goal id" }
+      if (!ticket(id)) return { error: `no ticket #${id}`, code: 404 }
+      return { args: ["goal", String(goal), String(id)], direct: true }
+    }
     case "makeTicket": case "dismissIdea": { // the idea's id travels as `idea`; dismissing is held 8 s so it can be undone
       const id = INT(b.idea), idea = id ? db.prepare("SELECT project, title FROM ideas WHERE id=?").get(id) as { project: string; title: string } | undefined : undefined
       if (!id) return { error: `${b.action} needs an idea id` }
@@ -237,6 +244,7 @@ export function actionArgs(db: DB, b: Record<string, unknown>, so: SettingsOpts 
     case "add": {
       const t = NewTicket.safeParse({ project: b.project, title: b.title, done_when: b.done_when || undefined, size: b.size || undefined })
       if (!t.success) return { error: t.error.issues[0]?.message ?? "That ticket is not valid." }
+      if (t.data.size && !isSize(t.data.size)) return { error: "not a configured size (dobby sizes lists them)" }
       return { args: ["add", t.data.project, t.data.title, t.data.done_when ?? "", ...(t.data.size ? [t.data.size] : [])], direct: true }
     }
     case "configSet": { // one setting in the private config; runs at once, and `undo` puts the old value back

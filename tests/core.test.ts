@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 import { logRun, open } from "../src/db.ts"
 import { changed, jobProblem, parseLaunchctl, plain } from "../src/health.ts"
-import { addTicket, budgetAllows, nextTicket, orphanPids, orphanedParents, prDone, parentFor, parseDoc, parseVerdict, setTicket, sh, windowIdle } from "../src/lib.ts"
+import { addTicket, budgetAllows, nextTicket, parseUsage, orphanPids, orphanedParents, prDone, parentFor, parseDoc, parseVerdict, setTicket, sh, windowIdle } from "../src/lib.ts"
 import { parseResult } from "../src/run.ts"
 
 test("parseResult reads usage and cost from claude json", () => {
@@ -396,8 +396,8 @@ test("verify: worktree runs set DOBBY_WORKTREE for the whole command; known-brok
   ticketBrokenOnBase(db, "tally", p, ["parseHdfcSavingsPdf live file"]) // a later run: no second ticket
   ticketBrokenOnBase(db, "shopfront", p, ["other"]) // another project gets its own
   const rows = db.prepare("SELECT project, title FROM tickets ORDER BY id").all() as { project: string; title: string }[]
-  assert.equal(rows.length, 3)
-  assert.equal(rows[0].title, "Fix test failing on main: parseHdfcSavingsPdf live file")
+  assert.equal(rows.length, 2, "one ticket per project, however many tests (#909)")
+  assert.equal(rows[0].title, "Fix tests failing on main")
   assert.equal(sh(inWorktree('true && echo "w=$DOBBY_WORKTREE"'), ".").out.trim(), "w=1") // a && chain keeps the variable
   assert.equal(knownBroken({}), "")
   assert.match(knownBroken({ baseNote: "1 failing test(s) also fail on origin/main" }), /^\nKnown-broken on base/)
@@ -619,4 +619,14 @@ test("prDone: a merged or closed PR on the branch ends its fix ticket; open, non
   assert.equal(await prDone("/nowhere", "fix/x", at("OPEN\n")), null)
   assert.equal(await prDone("/nowhere", "fix/x", at("")), null)
   assert.equal(await prDone("/nowhere", "fix/x", at("MERGED", false)), null)
+})
+
+test("Ultra (no 5-hour window): parseUsage keeps the week and budgetAllows paces on it alone", () => {
+  const day = 24 * 3600_000
+  const u = parseUsage(JSON.stringify({ windows: [{ key: "seven_day", percentUsed: 30, msToReset: 4 * day }] }))
+  assert.deepEqual(u, { fiveUsed: 0, weekUsed: 30, weekMsToReset: 4 * day, noFive: true })
+  // 3 of 7 days gone with weekCap 70: even pace 30%, one day ahead 40%
+  assert.equal(budgetAllows(u!, 14, undefined, undefined, 70, 0).ok, true)
+  assert.equal(budgetAllows({ ...u!, weekUsed: 41 }, 14, undefined, undefined, 70, 0).ok, false)
+  assert.equal(parseUsage(JSON.stringify({ windows: [] })), null)
 })

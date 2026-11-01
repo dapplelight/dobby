@@ -2,7 +2,7 @@
 //
 // Getting started
 //   init [--ui] [--projects a,b] [--no-jobs] [--yes]   set up Dobby on this machine, with no name: checks, sign-ins, your repos, settings, background jobs (asks first); --ui does it in your browser; --no-jobs skips the jobs (keep `dobby start` open instead); --yes takes every recommended answer
-//   add <project> "<title>" ["<done when>"] [S|M|L] [priority]   write a ticket
+//   add <project> "<title>" ["<done when>"] [size] [priority]   write a ticket (sizes from config: dobby sizes)
 //   status                    the plan limits line, then what is building, shipped today and stuck
 //   limits                    how much of the 5-hour and weekly plan is used, and when paused work resumes
 //   list [--all]              open tickets by stage (Building, Ready, Waiting, Failed), 10 per stage; --all = every open ticket (adds backlog), old format; shipped and declined are left out
@@ -14,7 +14,8 @@
 // Everyday
 //   cancel <id>               stop the ticket: kill its build, remove its worktree, close its own PR and branch, mark it declined
 //   pause | resume            stop / allow builders claiming new tickets (running ones finish their step, nothing is killed)
-//   queue <id>                move a backlog ticket to ready
+//   queue <id>                move a backlog ticket to ready (says so when its size is not built on its own)
+//   size <id> <size>          change a ticket's size; sizes lists the configured sizes
 //   run <id>                  build this ticket now, in this process (no worker cap, budget gate or tick lock; a new project is onboarded first; exit 1 if nothing was built)
 //   show <id>                 every step the ticket's graph took, with tokens and cost
 //   cost <id>                 what the ticket's PR cost, by stage (the same table Dobby posts on the PR)
@@ -30,6 +31,7 @@
 //   allowround <id>           one more automatic fix round on the ticket's PR
 //   unqueue <id>              a queued ticket goes back to the backlog
 //   reorder <id> [before]     move a queued ticket above another (or last)
+//   goal <goal id> <id>...    move tickets to another goal of their app (ids from dobby goals <app>)
 //   applyfinding <id>         a fix ticket on the PR's branch for one review finding
 //   dismissfinding <id>       a review finding is intentional (later reviews leave it out)
 //   findingrule <id> [words]  a review finding becomes a rule for the repo
@@ -90,10 +92,11 @@
 //   dashboard link [--host <name>] [--port 4710]   print the sign-in link for another device (a tunnel or Tailscale name with --host); no QR code
 //   dashboard --tunnel [--port 4710]   for a phone behind an HTTPS tunnel: every request needs the token. Port 4710 is the job's, so use --port 4711 beside it
 //   dashboard open [--port 4710]   open the running dashboard in your browser, signed in (the token goes in an HttpOnly cookie; this command does not print it)
+import { actionOf, heldWhy, isSize, sizeNames, sizes, smallest } from "./sizes.ts"
 import { docsCommand } from "./docs.ts"
 import { capacityFromDb, DATA, noteWindow, open } from "./db.ts"
 import { syncBoard } from "./board.ts"
-import { runEndText, installCmd, companyPath, doctor, plainReason, fixed, prDone, addTicket, dropIdea, undoIdea, syncGoals, milestonesOf, apiKeyMode, keepGoingCaps, spendAllows, budgetAllows, reviewBudget, claude, company, getTicket, setTicket, home, ideaToTicket, isDuplicate, loadProjects, loadRole, memoryDir, nextTicket, orphanedParents, parseGroups, queueTicket, readUsage, fallbackAllows, fallbackStarted, capOverride, ROOT, runAsync, semaphore, stampLogs, sweepOrphanProcesses, sweepRebaseWorktrees, timeoutMs, doTimeoutMs, windowIdle, setBuildClaim, clearBuildClaim, reserveBuild, resetOrphans, ticketScope, lockHeld, lockValue, reapDead, LOCK_MS } from "./lib.ts"
+import { runEndText, setSize, sizesText, installCmd, companyPath, doctor, plainReason, fixed, prDone, addTicket, dropIdea, undoIdea, syncGoals, milestonesOf, apiKeyMode, keepGoingCaps, spendAllows, budgetAllows, reviewBudget, claude, company, getTicket, setTicket, home, ideaToTicket, isDuplicate, loadProjects, loadRole, memoryDir, nextTicket, orphanedParents, parseGroups, queueTicket, readUsage, fallbackAllows, fallbackStarted, capOverride, ROOT, runAsync, semaphore, stampLogs, sweepOrphanProcesses, sweepRebaseWorktrees, timeoutMs, doTimeoutMs, windowIdle, setBuildClaim, clearBuildClaim, reserveBuild, resetOrphans, ticketScope, lockHeld, lockValue, reapDead, LOCK_MS } from "./lib.ts"
 import { actionArgs, discardProposal, FRONT_DESK_ARGS, parseProposal, preview, runForeman, sendProposal, storeProposal, typedNeedsTap, type Proposal } from "./frontdesk.ts"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { spawn, spawnSync } from "node:child_process"
@@ -109,6 +112,8 @@ import { runPrograms } from "./graphs/program.ts"
 import { autonomyLine, processAllowed, tagFor, TAGS, touch, weekPerFive } from "./usage.ts"
 import { runCos } from "./graphs/cos.ts"
 import { cancelTicket, stuckScan, stuckTap } from "./stuck.ts"
+import { builderCap, memoryHold } from "./builders.ts"
+import { updateCheck } from "./update.ts"
 import { acceptReview, automergeStrict, fixReview, manualReview, reviewOnce, scan } from "./graphs/review.ts"
 import type { DB } from "./db.ts"
 import { chatOn as discordOn } from "./chat/platform.ts"
@@ -121,7 +126,7 @@ import { config, configDir, privatePath, projectsDir, strayDrafts, zoned } from 
 import { age, commandHelp, helpText, isStatusAsk, liftHint, limitsNow, statusText, tickRuns, updateBoard } from "./view.ts"
 import { configSetText } from "./config-edit.ts"
 import { flushUsage, noteUse, reportCrash } from "./stats.ts"
-import { UserError, applyAgentWords, refuse, addTicketText, answerTicket, doneText, listText, pauseAct, queueText, receiptText, runAction, showText } from "./actions.ts"
+import { UserError, applyAgentWords, refuse, addTicketText, answerTicket, doneText, goalText, listText, pauseAct, queueText, receiptText, runAction, showText } from "./actions.ts"
 
 // the dashboard opens its own read-only handle; every other command gets the read-write one
 const [cmd, ...a] = process.argv.slice(2)
@@ -174,6 +179,7 @@ async function tick() {
   if (allPaused) return console.log(`${allPaused} (say "resume everything")`)
   void import("./deploy.ts").then((m) => m.runQueuedDeploys(db)).then((r) => r.forEach((l) => console.log(l))).catch((e) => console.log(`queued deploys: ${e}`)) // deploys held by a pause run once it ends (also on auto-resume)
   await eveningDigest().catch((e) => console.log(`digest: ${e}`))
+  try { const l = updateCheck(db, { auto: config().autoUpdate !== false }); if (l) console.log(l) } catch (e) { console.log(`update check: ${(e as Error).message}`) } // once a day; a git checkout never updates
   // No AI: runs even when the budget skips. At most every 10 min: the tick now runs every minute, GitHub limits issue creation.
   const boardAt = Number((db.prepare("SELECT v FROM kv WHERE k='board:at'").get() as { v: string } | undefined)?.v ?? 0)
   if (Date.now() - boardAt > 10 * 60_000) {
@@ -240,7 +246,7 @@ async function tick() {
     // Worker cap back on 20 Oct: 16 parallel builders on the 10-core / 16 GB Mac hit load 38 and 1.9 GB free while the usage
     // budget was fine (5h window 42%), so the machine, not the budget, is the limit. 4 by day, 6 at night.
     const hr = zoned().getUTCHours(), day = hr >= 8 && hr < 23
-    const workers = Math.min(day ? 4 : 6, Math.max(idle && day ? 3 : 1, (db.prepare("SELECT count(*) n FROM tickets WHERE status='ready'").get() as { n: number }).n))
+    const workers = Math.min(builderCap(config().builders, hr), Math.max(idle && day ? 3 : 1, (db.prepare("SELECT count(*) n FROM tickets WHERE status='ready'").get() as { n: number }).n))
     const seen = new Set<number>()
     const worker = async (w: number) => {
       for (let i = 0; ; i++) {
@@ -252,6 +258,8 @@ async function tick() {
         }
         const bp = paused(db, { kind: "builders" })
         if (bp) return console.log(`[w${w}] stops: builders ${bp} (resume from the dashboard or \`dobby resume\`)`)
+        const mem = memoryHold(db, config().builders?.minFreePct)
+        if (mem) return console.log(`[w${w}] stops: ${mem}`)
         const t = nextTicket(db)
         if (!t) return console.log(`[w${w}] done after ${i} ticket(s): nothing ready`)
         if (seen.has(t.id)) return console.log(`[w${w}] #${t.id} was already tried in this run and is back in the queue; not building it twice. Run again for another try.`)
@@ -326,7 +334,7 @@ async function buildClaimed(t: NonNullable<ReturnType<typeof nextTicket>>, w: st
     // Unknown case: Dobby files a ticket on itself (once per distinct error) and a builder fixes it like any other bug.
     const title = `Fix Dobby crash: ${why.split("\n")[0].slice(0, 120)}`
     if (!isDuplicate(db, "dobby", title)) {
-      const { id } = addTicket(db, { project: "dobby", title, size: "S", priority: 95, done_when: `The tick no longer crashes this way. Ticket #${t.id} (${t.project}) hit it.\nError:\n${clip((e as Error).stack ?? why, 1500)}\nAdd a test that reproduces it.` })
+      const { id } = addTicket(db, { project: "dobby", title, size: smallest(), priority: 95, done_when: `The tick no longer crashes this way. Ticket #${t.id} (${t.project}) hit it.\nError:\n${clip((e as Error).stack ?? why, 1500)}\nAdd a test that reproduces it.` })
       setTicket(db, id, { status: "ready" })
       await notify(`🩺 Dobby hit a crash and filed a fix for itself (#${id})\n${title}\nThe broken ticket #${t.id} was set aside; the rest keeps building.`, fetch, undefined, { kind: "health" })
     }
@@ -788,7 +796,7 @@ switch (cmd) {
     if (w[0] === "mcp" && !w[1]) { if (a.includes("--http")) await addMcpHttp(yes, (u >= 0 && a[u + 1]) || "http://127.0.0.1:4710"); else await addMcp(yes); break }
     const noIssue = a.includes("--no-issue")
     const [project, title, done_when, size, priority] = w
-    if (!project || !title) throw new Error('usage: add <project> "<title>" ["<done when>"] [S|M|L] [priority]')
+    if (!project || !title) throw new Error(`usage: add <project> "<title>" ["<done when>"] [${sizeNames().join("|")}] [priority]`)
     console.log(await addTicketText(db, { project, title, done_when, size, priority: priority ? Number(priority) : undefined, noIssue }, process.env.DOBBY_ROLE))
     break
   }
@@ -859,6 +867,9 @@ switch (cmd) {
     break
   case "unqueue": // dobby unqueue <id>: a queued ticket goes back to the backlog
     log((await runAction(db, "unqueue", { id: Number(a[0]) })).text)
+    break
+  case "goal": // dobby goal <goal id> <id>...: move tickets to another goal of their app
+    for (const id of a.slice(1).map(Number).filter((n) => n > 0)) log((await runAction(db, "goal", { id, goal: Number(a[0]) })).text)
     break
   case "reorder": // dobby reorder <id> [before]: move a queued ticket above another (or last)
     log((await runAction(db, "reorder", { id: Number(a[0]), before: Number(a[1]) || undefined })).text)
@@ -957,6 +968,15 @@ switch (cmd) {
     if (end?.status === "ready") process.exitCode = 1 // nothing was built: say so in the exit code too
     break
   }
+  case "size": { // dobby size <id> <size>
+    const [id, size] = a
+    if (!Number(id) || !size) throw new Error(`usage: size <id> <${sizeNames().join("|")}>`)
+    console.log(setSize(db, Number(id), size))
+    break
+  }
+  case "sizes":
+    console.log(sizesText())
+    break
   case "queue": // backlog -> ready (Owner:/deploy-type tickets stay put; same rule the Lead follows). A re-queue by hand is an owner touch.
     console.log(refuse(queueText(db, Number(a[0]))))
     break

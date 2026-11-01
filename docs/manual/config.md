@@ -176,6 +176,8 @@ The PR reviewer (docs/manual/reviews.md): overrides of its DEFAULTS (everything 
 | `review.fix` | boolean | `true` | `@<handle> fix` queues the open high/medium findings as a builder ticket (never pushes itself) |
 | `review.fixesPerDay` | integer (0+) | `1` | `@<handle> fix` per PR per day (the 2 auto-fix rounds per PR still apply) |
 | `review.jevReplies` | boolean | `false` | Send replies in our threads to Jev (redacted) to tell a "won't fix" from a question. Off: no Jev call; every reply that is not a plain "thanks" is answered as a question and never becomes a learning (comment text stays on the Mac). |
+| `review.reviewer` | `auto` \| `haiku` \| `sonnet` \| `opus` | `auto` | Who reviews a PR. auto = Jev picks per PR (Haiku picks when Jev is off, unsure or offline; Sonnet if both fail). A model = always that model (sensitive tickets follow strictReviewer instead). |
+| `review.strictReviewer` | `opus` \| `auto` | `opus` | A sensitive ticket's reviewer. opus = always Opus. auto = Jev (or Haiku) picks, never below Sonnet; Opus on riskPaths or with no answer. |
 | `review.repos` | map of `owner/name` to review settings | unset | the same keys as `review`, for one repo |
 | `review.provider` | `local` \| `external` \| `both` | unset |  |
 | `review.external` | `coderabbit` \| `greptile` \| `copilot` | unset |  |
@@ -187,14 +189,15 @@ The PR reviewer (docs/manual/reviews.md): overrides of its DEFAULTS (everything 
 
 ## ticketBudget
 
-Token savings. Every key is absent by default = Dobby behaves as before; the private config turns each on. ticketBudget: most one ticket may spend, by size, in percent-of-the-week points (usdPerWeekPoint dollars = 1 point; default 26, measured). Over it, the ticket goes to the owner.
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `ticketBudget` | map of string to number > 0 | unset | Token savings. Every key is absent by default = Dobby behaves as before; the private config turns each on. most one ticket may spend, by size, in percent-of-the-week points (usdPerWeekPoint dollars = 1 point; default 26, measured). Over it, the ticket goes to the owner. Per-size budgets now live on each size (`sizes[].budget`); a ticketBudget entry keyed by size name is still read as a fallback. usdPerWeekPoint, plus <size name>: week-% (old form of sizes[].budget) |
+
+## sizes
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `ticketBudget.S` | number > 0 | unset |  |
-| `ticketBudget.M` | number > 0 | unset |  |
-| `ticketBudget.L` | number > 0 | unset |  |
-| `ticketBudget.usdPerWeekPoint` | number > 0 | unset |  |
+| `sizes` | list of object | 4 entries | every ticket size and what it does, smallest first. Starting list: sizes.defaults.json. Replaced as a whole when set. |
 
 ## pacing
 
@@ -237,6 +240,22 @@ stats: opt-in crash reports and usage stats (docs/manual/stats.md). Both are off
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `retryLimit` | integer (1+) | unset | builds one ticket may use before it goes to the owner instead of being rebuilt. |
+
+## builders
+
+builders: how many build at once. max (default 4), maxQuietHours in quiet hours (default 6); minFreePct: no new builder while free memory is under it (default 25).
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `builders.max` | integer (1–32) | unset |  |
+| `builders.maxQuietHours` | integer (1–32) | unset |  |
+| `builders.minFreePct` | number (0–90) | unset |  |
+
+## autoUpdate
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `autoUpdate` | boolean | unset | on by default: once a day the tick installs a newer dobby-ai from npm while no builder runs. false = only announce it in status. |
 
 ## builderContextCeiling
 

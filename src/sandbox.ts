@@ -5,10 +5,11 @@
 // run in Dobby's shell, outside the agent, with network and credentials as before.
 // Docs: https://code.claude.com/docs/en/sandboxing (Seatbelt on macOS, bubblewrap + socat on Linux/WSL2, none on native Windows).
 import { spawnSync } from "node:child_process"
-import { existsSync } from "node:fs"
+import { existsSync, rmSync } from "node:fs"
+import Database from "better-sqlite3"
 import { homedir, tmpdir } from "node:os"
 import { config, configDir } from "./config.ts"
-import { basename, delimiter, join } from "node:path"
+import { basename, delimiter, dirname, join } from "node:path"
 
 export type SandboxMode = "on" | "env-only" | "off"
 
@@ -40,6 +41,9 @@ export function builderEnv(baseEnv: NodeJS.ProcessEnv, worktree: string, scratch
   const git: [string, string][] = [["credential.helper", ""], ["credential.https://github.com.helper", ""], ["core.sshCommand", "false"], ["core.askPass", "false"], ...NO_SIGNING, ...SAFE_GIT]
   return {
     ...out,
+    // rtk logs its savings in its own data folder, which the sandbox can't write (audit 31 Oct: builder savings never showed in
+    // `rtk gain`): log in scratch instead; mergeRtk copies the rows to the owner's rtk history after the run.
+    RTK_DB_PATH: join(scratch, "rtk.db"), RTK_TEE_DIR: join(scratch, "rtk-tee"),
     GH_CONFIG_DIR: join(scratch, "gh"), XDG_CONFIG_HOME: join(scratch, "config"), GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1",
     GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "false", SSH_ASKPASS: "false", GIT_SSH_COMMAND: "false", GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_COUNT: String(git.length), ...Object.fromEntries(git.flatMap(([k, v], i) => [[`GIT_CONFIG_KEY_${i}`, k], [`GIT_CONFIG_VALUE_${i}`, v]])),
@@ -88,7 +92,9 @@ export function sandboxSettings(worktree: string, scratch = scratchDir(worktree)
       // Writes: the worktree (cwd; git's shared .git of a linked worktree is allowed by Claude Code itself) + the per-user temp dir + scratch.
       allowWrite: [scratch],
       denyRead: ["~/.config/dobby", ...(process.env.DOBBY_CONFIG ? [configDir()] : []), "~/.config/gh", "~/.ssh", "~/.aws", "~/.netrc", "~/.npmrc", "~/.git-credentials", "~/.docker", "~/.wrangler", "~/Library/Preferences/.wrangler", config().paths.data],
-      allowRead: [worktree], // the own worktree under ~/.local/share/dobby/wt stays readable (narrower rule wins)
+      // The worktrees folder (~/.local/share/dobby/wt) stays readable, not just this worktree (narrower rule wins): bun install
+      // walks up from its cwd and stops with CouldntReadCurrentDirectory when the parent is denied. The db and secrets sit outside wt/.
+      allowRead: [dirname(worktree)],
     },
     network: {
       allowedDomains: [] as string[],
@@ -136,4 +142,25 @@ export function sandboxMode(kind: string, setting?: string, roles = "build", sup
   const s = (setting ?? "on").trim().toLowerCase()
   if (s === "off" || s === "env-only") return s
   return supported ? "on" : "env-only"
+}
+
+/** The owner's rtk history (rtk's own default path, or RTK_DB_PATH of Dobby's process). */
+export const rtkHistory = (env = process.env, home = homedir(), platform = process.platform) =>
+  env.RTK_DB_PATH || (platform === "darwin" ? join(home, "Library/Application Support/rtk/history.db") : join(env.XDG_DATA_HOME || join(home, ".local/share"), "rtk/history.db"))
+
+/** Move a sandboxed run's rtk rows (scratch/rtk.db) into the owner's rtk history, so `rtk gain` counts builders too. Never throws. */
+export function mergeRtk(scratch: string, to = rtkHistory()) {
+  const from = join(scratch, "rtk.db")
+  if (!existsSync(from) || !existsSync(to) || from === to) return 0
+  try {
+    const db = new Database(to, { timeout: 5000 })
+    try {
+      db.prepare("ATTACH DATABASE ? AS run").run(from)
+      const cols = "timestamp, original_cmd, rtk_cmd, input_tokens, output_tokens, saved_tokens, savings_pct, exec_time_ms, project_path"
+      const n = db.prepare(`INSERT INTO commands (${cols}) SELECT ${cols} FROM run.commands`).run().changes
+      db.prepare("DETACH DATABASE run").run()
+      rmSync(from, { force: true })
+      return n
+    } finally { db.close() }
+  } catch { return 0 } // a schema change in rtk or a locked db only loses the stats, never the run
 }

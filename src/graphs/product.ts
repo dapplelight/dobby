@@ -8,6 +8,7 @@
 // apply files problems (fixes, UX, features) straight into the backlog for the Engineering Manager, posts only genuinely
 // new ideas to #<app>-ideas (👍 = ticket; owner, 17 Oct: ideas are new bets, not fixes), writes PRDs into L tickets,
 // and keeps the run's note in kv for the Engineering Manager and the Chief of Staff.
+import { defaultSize, isSize, largeSizes, sqlList } from "../sizes.ts"
 import { paused } from "../pause.ts"
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph"
 import type { DB } from "../db.ts"
@@ -46,14 +47,14 @@ export async function applyCards(db: DB, project: string, mode: Mode, cards: Car
   const now = new Date().toISOString()
   const ins = db.prepare("INSERT INTO ideas (project,title,source,lens,why,evidence,size,experiment,score,goal,status,created_at) VALUES (?,?,?,'problem',?,?,?,?,?,?,'proposed',?) RETURNING id")
   const problems = cards.filter((c): c is Problem => c.type === "problem").sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0))
-  const sizeOf = (x: unknown) => (["S", "M", "L"].includes(String(x)) ? String(x) : null)
+  const known = (x: unknown) => (isSize(x) ? x : null)
   let stored = 0
   for (const p of problems) {
     const title = p.title.trim().slice(0, 200)
     if (isDuplicate(db, project, title) || (await twin(title))) continue
     const score = Math.max(0, Math.min(100, Number(p.score) || 0))
-    const { id } = ins.get(project, title, mode, p.why ?? null, p.evidence ?? null, sizeOf(p.size), p.experiment ?? null, score, goalFor(db, project, p.goal), now) as { id: number }
-    const t = addTicket(db, { project, title, done_when: p.experiment ?? "", size: sizeOf(p.size) ?? "M", priority: score, goal: goalFor(db, project, p.goal) })
+    const { id } = ins.get(project, title, mode, p.why ?? null, p.evidence ?? null, known(p.size), p.experiment ?? null, score, goalFor(db, project, p.goal), now) as { id: number }
+    const t = addTicket(db, { project, title, done_when: p.experiment ?? "", size: known(p.size) ?? defaultSize(), priority: score, goal: goalFor(db, project, p.goal) })
     setTicket(db, t.id, { status: "backlog", note: `from the Product Manager (idea #${id})` })
     db.prepare("UPDATE ideas SET status='approved' WHERE id=?").run(id)
     stored++
@@ -63,14 +64,14 @@ export async function applyCards(db: DB, project: string, mode: Mode, cards: Car
   for (const i of cards.filter((c): c is Idea => c.type === "idea").slice(0, POSTS[mode])) {
     const title = i.title.trim().slice(0, 120)
     if (isDuplicate(db, project, title)) continue
-    const { id } = insIdea.get(project, title, mode, [i.pitch, i.why].filter(Boolean).join(" ") || null, i.how ?? null, sizeOf(i.size), i.experiment ?? null, goalFor(db, project, i.goal), now) as { id: number }
-    await post({ id, project, title, pitch: i.pitch, why: i.why, how: i.how, experiment: i.experiment, size: sizeOf(i.size) })
+    const { id } = insIdea.get(project, title, mode, [i.pitch, i.why].filter(Boolean).join(" ") || null, i.how ?? null, known(i.size), i.experiment ?? null, goalFor(db, project, i.goal), now) as { id: number }
+    await post({ id, project, title, pitch: i.pitch, why: i.why, how: i.how, experiment: i.experiment, size: known(i.size) })
     posted++
   }
   const prds: number[] = []
   for (const c of cards) {
     if (c.type !== "prd" || prds.length >= MAX_PRDS) continue
-    const t = db.prepare("SELECT id FROM tickets WHERE id=? AND project=? AND size='L' AND prd IS NULL").get(c.ticket, project) as { id: number } | undefined
+    const t = db.prepare(`SELECT id FROM tickets WHERE id=? AND project=? AND size IN (${sqlList(largeSizes())}) AND prd IS NULL`).get(c.ticket, project) as { id: number } | undefined
     if (t) setTicket(db, t.id, { prd: c.prd.trim().slice(0, 12_000) }), prds.push(t.id)
   }
   const note = cards.find((c): c is { type: "note"; text: string } => c.type === "note")?.text ?? ""
@@ -124,7 +125,7 @@ export function buildProductGraph(db: DB, post: typeof postIdea = postIdea) {
       ...(s.mode === "pm" ? [
         `AREA PM NOTES (latest first):\n${notes.join("\n") || "(none yet)"}`,
         `FOUNDER SEED IDEAS (develop each honestly):\n${seeds.map((x) => `- ${x.title}`).join("\n") || "(none)"}`,
-        `L TICKETS WITHOUT A PRD:\n${list(q("size='L' AND prd IS NULL AND status IN ('backlog','ready') ORDER BY priority DESC LIMIT 5"))}`,
+        `LARGE TICKETS (${largeSizes().join(", ") || "none"}) WITHOUT A PRD:\n${list(q(`size IN (${sqlList(largeSizes())}) AND prd IS NULL AND status IN ('backlog','ready') ORDER BY priority DESC LIMIT 5`))}`,
       ] : []),
       `OPEN TICKETS (top 40):\n${list(q("status IN ('backlog','ready','running','fixing') ORDER BY priority DESC LIMIT 40"))}`,
       `SHIPPED OR FAILED, LAST 7 DAYS:\n${list(q("status IN ('shipped','failed') AND updated_at>=?", week))}`,

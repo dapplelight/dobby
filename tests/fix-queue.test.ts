@@ -320,7 +320,7 @@ test("build cap: 4 builds per ticket across retries; a hand re-queue starts a fr
   let spawned = 0
   const once = (async () => (spawned++, { ok: true, text: "done" })) as any
   const build = () => L.claude(db, { project: "tally", kind: "build", ticket: id, model: "sonnet", prompt: "p" }, once)
-  for (let i = 0; i < L.BUILD_CAP; i++) {
+  for (let i = 0; i < L.ticketCap(db, id); i++) {
     assert.equal((await build()).ok, true)
     logRun(db, { project: "tally", kind: "build", ticket: id, ok: false }) // what the real claudeOnce logs
   }

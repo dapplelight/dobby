@@ -10,7 +10,7 @@ process.env.DOBBY_DIR = `${dir}/data`
 process.env.DOBBY_SECRETS = `${dir}/none`
 const { open, logRun } = await import("../src/db.ts")
 const { addTicket, buildEstimate, runEndText, getTicket, installCmd, setTicket, spendAllows } = await import("../src/lib.ts")
-const { baseConflicts } = await import("../src/graphs/ticket.ts")
+const { baseConflicts, catchUpBase, lockChanged } = await import("../src/graphs/ticket.ts")
 const { run } = await import("../src/graphs/review.ts")
 const { retryText, showText, listText } = await import("../src/actions.ts")
 
@@ -110,4 +110,27 @@ test("show and list --all say needs you, not failed, for a ticket handed to the 
   const l = listText(db, true)
   assert.match(l, /\[needs you\] tally.*owner one/)
   assert.match(l, /\[failed\] tally.*broken one/)
+})
+
+test("catchUpBase (#907): a branch behind base with no conflict is merged and builds; a conflict returns its files untouched", () => {
+  const g = (cwd: string, ...a: string[]) => spawnSync("git", a, { cwd, encoding: "utf8" })
+  const repo = mkdtempSync(`${tmpdir()}/dobby-cu-`)
+  g(repo, "init", "-q", "-b", "main"); g(repo, "config", "user.name", "t"); g(repo, "config", "user.email", "t@t")
+  const commit = (f: string, text: string) => { writeFileSync(`${repo}/${f}`, text); g(repo, "add", "."); g(repo, "commit", "-qm", text) }
+  const toOrigin = () => g(repo, "update-ref", "refs/remotes/origin/main", "main")
+  commit("a.txt", "base\n"); toOrigin()
+  g(repo, "checkout", "-qb", "work"); commit("a.txt", "mine\n")
+  assert.deepEqual(catchUpBase(run, repo, "main"), [], "up to date: nothing to do")
+  g(repo, "checkout", "-q", "main"); commit("b.txt", "new on main\n"); commit("bun.lock", "lock\n"); toOrigin(); g(repo, "checkout", "-q", "work")
+  const before = g(repo, "rev-parse", "HEAD").stdout.trim()
+  assert.deepEqual(catchUpBase(run, repo, "main"), [])
+  assert.equal(g(repo, "merge-base", "--is-ancestor", "origin/main", "HEAD").status, 0, "base is merged into the branch")
+  assert.equal(g(repo, "status", "--porcelain").stdout, "", "the merge is committed")
+  assert.equal(lockChanged(run, repo, before), true, "the merge brought a lockfile change: install again")
+  assert.equal(lockChanged(run, repo, g(repo, "rev-parse", "HEAD").stdout.trim()), false)
+  g(repo, "checkout", "-q", "main"); commit("a.txt", "theirs\n"); toOrigin(); g(repo, "checkout", "-q", "work")
+  const head = g(repo, "rev-parse", "HEAD").stdout.trim()
+  assert.deepEqual(catchUpBase(run, repo, "main"), ["a.txt"])
+  assert.equal(g(repo, "rev-parse", "HEAD").stdout.trim(), head, "a conflict changes nothing")
+  assert.notEqual(g(repo, "rev-parse", "-q", "--verify", "MERGE_HEAD").status, 0, "no merge left open")
 })

@@ -236,8 +236,10 @@ const usage = { fiveUsed: 31, weekUsed: 58, weekMsToReset: 2 * DAY }
 test("morning summary: before it is sent it is the Chief of Staff's own template over the same facts; after, it is the exact text sent, with where it went", async () => {
   const db = week()
   const now = Date.now() // sendBrief files its text under today's date
-  const o = { now, since: now - 12 * HOUR, projects, limits: LIMITS as never }
-  const facts = cos.gather(db, projects, { ...usage, weekMsToReset: RESET - now }, now)
+  // The reset is relative to the real clock: a fixed date (RESET) went into the past on 29 Oct and asUsage clamps it to 0.
+  const limits = { ...LIMITS, week: { ...LIMITS.week, resetsAt: now + 2 * DAY } }
+  const o = { now, since: now - 12 * HOUR, projects, limits: limits as never }
+  const facts = cos.gather(db, projects, { ...usage, weekMsToReset: 2 * DAY }, now)
   const preview = A.morningSummary(db, o)
   assert.equal(preview.preview, true)
   assert.equal(preview.text, briefMarkdown(buildBrief(db, facts, now)))

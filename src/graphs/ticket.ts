@@ -26,6 +26,7 @@
 // big merges and failures-after-retries go to #needs-you with buttons.
 // Every node is a plain function over the state. The SqliteSaver checkpoints after each node,
 // thread_id = "ticket-<id>", so a crash resumes mid-graph and the gate can wait for days.
+import { isSmall, sizeOf } from "../sizes.ts"
 import { paused } from "../pause.ts"
 import { mkdirSync } from "node:fs"
 import { basename, dirname } from "node:path"
@@ -89,7 +90,7 @@ export async function handoffText(wt: string, base: string): Promise<string> {
 
 // Builder may edit files and run the toolchain and local git; never push, deploy, or fetch the web.
 // These lists are what claude enforces; src/policy.ts (kind command) mirrors the Bash denies, kept in step by tests/policy.test.ts.
-export const BUILDER_TOOLS = ["Bash(graphify:*)", "Read", "Edit", "Write", "Glob", "Grep", "Bash(bun:*)", "Bash(bunx:*)", "Bash(npx:*)", "Bash(npm run:*)", "Bash(npm test:*)", "Bash(cd:*)", "Bash(node:*)", "Bash(git status:*)", "Bash(git rebase:*)", "Bash(git diff:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git rm:*)", "Bash(git mv:*)", "Bash(rm:*)", "Bash(mv:*)", "Bash(ls:*)", "Bash(graphify:*)",
+export const BUILDER_TOOLS = ["Bash(graphify:*)", "Read", "Edit", "Write", "Glob", "Grep", "Bash(bun:*)", "Bash(bunx:*)", "Bash(npx:*)", "Bash(npm run:*)", "Bash(npm test:*)", "Bash(cd:*)", "Bash(node:*)", "Bash(git status:*)", "Bash(git rebase:*)", "Bash(git diff:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git ls-files:*)", "Bash(git rev-parse:*)", "Bash(git branch --show-current)", "Bash(git rm:*)", "Bash(git mv:*)", "Bash(rm:*)", "Bash(mv:*)", "Bash(ls:*)", "Bash(graphify:*)",
   // read-only filters builders pipe into (Claude Code allowed these itself; Dobby's guard hook now allows only the role list)
   "Bash(echo:*)", "Bash(cat:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(wc:*)", "Bash(grep:*)", "Bash(sort:*)", "Bash(pwd:*)", "Bash(which:*)"]
 /**
@@ -202,11 +203,14 @@ export function buildTicketGraph(db: DB) {
       await say(t, "failed", `⏸ Not started: ${why}`, { status: "Stuck: could not set up the workspace" })
       return { outcome: `failed: prepare: ${why}`, log: [`prepare: ${why}`] }
     }
-    // A branch that cannot merge with base never builds (UAT 27 Oct: 6 builds, $1.4, for one conflict a Builder could not resolve): the owner decides first.
+    // Every build starts on today's base: a clean merge is committed (#907). A branch that cannot merge never builds (UAT 27 Oct: 6 builds, $1.4, for one conflict a Builder could not resolve): the owner decides first.
     if (!isConflictFix(t)) {
       await netRun("git", ["fetch", "-q", "origin", p.base], wt) // best effort: the local origin/<base> may be old
-      const clash = baseConflicts(run, wt, p.base)
+      const head = run("git", ["rev-parse", "HEAD"], wt).out.trim()
+      const clash = catchUpBase(run, wt, p.base)
       if (clash.length) return conflictStop(t, p, wt, clash)
+      // caught up with base: its lockfile may have changed since setupWorktree installed
+      if (head && lockChanged(run, wt, head) && !(await install(p.install, wt)).ok) await install(p.install, wt)
     }
     if (config().shipPreflight !== false) {
       const blocked = await shipPreflight(netRun, { wt, branch, verify: p.verify, onto: t.onto })
@@ -253,9 +257,11 @@ export function buildTicketGraph(db: DB) {
     const specialty = t.engineer && existsSync(`${ROOT}roles/engineer-${t.engineer}.md`) ? `\n\n${loadRole(`engineer-${t.engineer}`).body}` : ""
     const path = riskPath(t)
     const work = (await lsh(`git log --oneline origin/${p.base}..HEAD && git diff --stat origin/${p.base}...HEAD | tail -25`, s.wt)).out.trim()
-    if (s.builds > 0 && !isConflictFix(t)) { // before each retry: base may have moved, and a Builder cannot fix that
-      const clash = baseConflicts(run, s.wt, p.base)
+    if (s.builds > 0 && !isConflictFix(t)) { // before each retry: base may have moved (merged in when clean), and a Builder cannot fix a conflict
+      const head = run("git", ["rev-parse", "HEAD"], s.wt).out.trim()
+      const clash = catchUpBase(run, s.wt, p.base)
       if (clash.length) return conflictStop(t, p, s.wt, clash)
+      if (head && lockChanged(run, s.wt, head) && !(await install(p.install, s.wt)).ok) await install(p.install, s.wt)
     }
     const over = overBudget(db, t)
     if (over) {
@@ -271,8 +277,8 @@ export function buildTicketGraph(db: DB) {
     if (freshSession(work, s.builds, config().freshRetries)) db.prepare("DELETE FROM kv WHERE k=?").run(`sess:${t.id}:build`)
     const ceiling = config().builderContextCeiling
     const go = (extra: string) => claude(db, {
-      // L or sensitive work gets the strongest Engineer (risk-scaled path)
-      project: t.project, kind: "build", ticket: t.id, session: `${t.id}:build`, model: (path.strong ? role.meta.model_large : role.meta.model) ?? "sonnet", effort: role.meta.effort, prompt: prompt + extra, cwd: s.wt, ceiling,
+      // large-tier sizes get the strongest Engineer, unless the size names its own model (risk-scaled path)
+      project: t.project, kind: "build", ticket: t.id, session: `${t.id}:build`, model: sizeOf(t.size)?.model ?? (path.strong ? role.meta.model_large : role.meta.model) ?? "sonnet", effort: role.meta.effort, prompt: prompt + extra, cwd: s.wt, ceiling,
       args: ["--setting-sources", "project", "--allowedTools", builderTools(t).join(","), "--disallowedTools", BUILDER_DENY.join(",")],
     })
     let r = await go("")
@@ -290,7 +296,7 @@ export function buildTicketGraph(db: DB) {
 
   // Main itself can be broken (17 Oct: the axis and kotak statement tests failed on main, so #255 and #257 failed testing on code that never
   // touched them). When verify fails, run the same command on a clean origin/<base> once per base commit and remember which tests fail there.
-  const baseFailures = async (project: string, p: Project, wt: string, ticket: number): Promise<{ names: string[]; rest: string[] | null }> => {
+  const baseFailures = async (project: string, p: Project, wt: string, ticket: number): Promise<{ names: string[]; flaky?: string[]; byFile?: Record<string, string[]>; rest: string[] | null }> => {
     const sha = (await lsh(`git rev-parse origin/${p.base}`, wt)).out.trim()
     const key = `baseline:${project}:${sha}`
     const hit = db.prepare("SELECT v FROM kv WHERE k=?").get(key) as { v: string } | undefined
@@ -299,10 +305,18 @@ export function buildTicketGraph(db: DB) {
     await lsh(`git worktree remove --force ${bw} 2>/dev/null; git worktree add --detach ${bw} ${sha}`, p.repo)
     await install(p.install, bw)
     const out = (await verifyCmd(p.verify, bw)).out
-    const names = failedTests(out)
+    const first = failedTests(out)
+    // #908: a test that fails once on clean base and passes on a second run is a flake (load, timing): logged, no fix ticket.
+    // ponytail: re-runs the whole verify, not the one test file; per-file reruns when verify is slow enough to matter.
+    const again = first.length ? failedTests((await verifyCmd(p.verify, bw)).out) : []
+    const { broken: names, flaky } = splitFlaky(first, again)
+    if (flaky.length) logFlakes(db, project, flaky)
     await lsh(`git worktree remove --force ${bw}`, p.repo)
-    db.prepare("INSERT OR REPLACE INTO kv VALUES (?, ?)").run(key, JSON.stringify({ names, rest: otherFailure(out) }))
-    return { names, rest: otherFailure(out) }
+    const files = failedByFile(out)
+    const byFile = Object.fromEntries(Object.entries(files).map(([f, ns]) => [f, ns.filter((n) => names.includes(n))]).filter(([, ns]) => ns.length))
+    const v = { names, flaky, byFile, rest: otherFailure(out) }
+    db.prepare("INSERT OR REPLACE INTO kv VALUES (?, ?)").run(key, JSON.stringify(v))
+    return v
   }
 
   // The verify command, with failures that also fail on base excused. `key` names the failure for the stuck detector.
@@ -313,10 +327,10 @@ export function buildTicketGraph(db: DB) {
     const v = await verifyCmd(p.verify, s.wt)
     const mine = v.ok ? [] : failedTests(v.out)
     // ponytail: only bun-test "(fail)" lines are read; a failure with none (typecheck, a crash) still fails the ticket. Other runners: extend failedTests.
-    const base: { names: string[]; rest: string[] | null } = mine.length ? await baseFailures(t.project, p, s.wt, t.id) : { names: [], rest: null }
-    ticketBrokenOnBase(db, t.project, p, base.names)
+    const base: { names: string[]; flaky?: string[]; byFile?: Record<string, string[]>; rest: string[] | null } = mine.length ? await baseFailures(t.project, p, s.wt, t.id) : { names: [], rest: null }
+    ticketBrokenOnBase(db, t.project, p, base.names, base.byFile)
     // a typecheck error beside an already-broken test is not excused: the rest of the output must match base's
-    const excused = !v.ok && mine.length > 0 && mine.every((n) => base.names.includes(n)) && Array.isArray(base.rest) && otherFailure(v.out).every((l) => base.rest!.includes(l))
+    const excused = !v.ok && mine.length > 0 && mine.every((n) => base.names.includes(n) || !!base.flaky?.includes(n)) && Array.isArray(base.rest) && otherFailure(v.out).every((l) => base.rest!.includes(l))
     return {
       ok: v.ok || excused, out: v.out,
       baseNote: excused ? `${mine.length} failing test(s) also fail on origin/${p.base} without this change: ${clip(mine.join("; "), 300)}` : "",
@@ -334,6 +348,8 @@ export function buildTicketGraph(db: DB) {
       await install(p.install, s.wt)
       await lsh(`git add -A && git diff --cached --quiet || git commit -qm "dobby #${s.ticketId}: install after dependency change"`, s.wt)
     }
+    const want = neededMerge(s.summary ?? ""), merged = want ? hostMerge(run, s.wt, want) : ""
+    if (merged) return { verifyOk: false, stuck: false, feedback: merged, log: [`verify: skipped, merged ${want} on the host for the Builder`] }
     await say(t, "verify", "", { status: stepLine(3, "tests are running", s.builds) })
     const v = await runVerify(s)
     // a pass is the status line only; a failure also posts the output
@@ -373,7 +389,7 @@ export function buildTicketGraph(db: DB) {
     if (!s.verifyOk) return { verdict: { pass: false, reason: "verify failed" }, log: ["check: skipped, verify failed"] }
     const role = loadRole("checker")
     // Haiku only for small, low-risk work (risk comes from Jev triage, else from the ticket words)
-    const model = t.size === "S" && t.risk === "low" ? (role.meta.model ?? "haiku") : (role.meta.model_large ?? "sonnet")
+    const model = isSmall(t.size) && t.risk === "low" ? (role.meta.model ?? "haiku") : (role.meta.model_large ?? "sonnet")
     const judge = async (d: string, baseNote: string) => {
       const r = await claude(db, {
         // Read-only tools in the worktree: most bugs sit in the callers around the diff, not in it.
@@ -516,7 +532,7 @@ export function buildTicketGraph(db: DB) {
       sh: lsh, repo: p.repo, wt: s.wt, branch: s.branch, base: p.base,
       verify: async (changed) => { if (p.install.trim() !== "true" && touchesManifest(changed)) await install(p.install, s.wt); return runVerify(s) },
       // same cwd as the build: Claude Code keeps sessions per project directory, so --resume only finds it there
-      resume: (prompt, cwd) => claude(db, { project: t.project, kind: "build", ticket: t.id, session: `${t.id}:build`, model: (riskPath(t).strong ? role.meta.model_large : role.meta.model) ?? "sonnet", effort: role.meta.effort, prompt, cwd,
+      resume: (prompt, cwd) => claude(db, { project: t.project, kind: "build", ticket: t.id, session: `${t.id}:build`, model: sizeOf(t.size)?.model ?? (riskPath(t).strong ? role.meta.model_large : role.meta.model) ?? "sonnet", effort: role.meta.effort, prompt, cwd,
         args: ["--setting-sources", "project", "--allowedTools", BUILDER_TOOLS.join(","), "--disallowedTools", BUILDER_DENY.join(",")] }),
     })
     // a rebase rewrote a branch that may already be on origin (an earlier try): lease on what origin has, never a plain push that would be refused
@@ -716,12 +732,67 @@ export async function preflight(repo: string, base: string, ticketText: string):
   return hit.length ? `uncommitted changes in ${hit.join(", ")} (commit or stash them first)` : ""
 }
 
-/** One fix ticket per test broken on base, per project (not per run): a title already on the board is never added twice. */
-export function ticketBrokenOnBase(db: DB, project: string, p: Pick<Project, "base" | "verify">, names: string[]) {
-  for (const n of names) {
-    const title = `Fix test failing on ${p.base}: ${clip(n, 150)}`
-    if (!isDuplicate(db, project, title)) addTicket(db, { project, title, done_when: `"${n}" passes on ${p.base} (it failed there while another ticket was verified), or is skipped (process.env.DOBBY_WORKTREE is set in worktrees) when it needs files that are not in git. \`${p.verify}\` passes.`, priority: 70 })
+/** #908: tests that failed on both runs of clean base are broken (a fix ticket); failed only on the first = flaky (no ticket). */
+export const splitFlaky = (first: string[], again: string[]) => ({ broken: first.filter((n) => again.includes(n)), flaky: first.filter((n) => !again.includes(n)) })
+
+/** Count and remember flaky base tests per project (kv flakes:<project>: total and the last 50, newest first) for status and the dashboard. */
+export function logFlakes(db: DB, project: string, names: string[], now = Date.now()) {
+  const k = `flakes:${project}`
+  const row = db.prepare("SELECT v FROM kv WHERE k=?").get(k) as { v: string } | undefined
+  const old = row ? (JSON.parse(row.v) as { total: number; recent: { name: string; at: number }[] }) : { total: 0, recent: [] }
+  const v = { total: old.total + names.length, recent: [...names.map((name) => ({ name, at: now })), ...old.recent].slice(0, 50) }
+  db.prepare("INSERT OR REPLACE INTO kv VALUES (?, ?)").run(k, JSON.stringify(v))
+  console.log(`${project}: ${names.length} flaky test(s) on base, no fix ticket: ${clip(names.join("; "), 300)}`)
+}
+
+/**
+ * #909: tests broken on base go into ONE fix ticket per project, listing every failing test grouped by file. A later failure
+ * adds its tests to that open ticket instead of filing another. (13 tickets for one cause on 1 Nov.) `byFile` maps a test file
+ * to its failing names; names it leaves out are listed under "(file not known)".
+ */
+export function ticketBrokenOnBase(db: DB, project: string, p: Pick<Project, "base" | "verify">, names: string[], byFile: Record<string, string[]> = {}) {
+  if (!names.length) return
+  const title = `Fix tests failing on ${p.base}`
+  const open = db.prepare("SELECT id, done_when FROM tickets WHERE project=? AND title=? AND status NOT IN ('shipped','declined') ORDER BY id DESC LIMIT 1").get(project, title) as { id: number; done_when: string | null } | undefined
+  const groups = brokenGroups(open?.done_when ?? "")
+  const known = new Set([...groups.values()].flat())
+  const fileOf = new Map(Object.entries(byFile).flatMap(([f, ns]) => ns.map((n) => [n, f] as const)))
+  const fresh = [...new Set(names)].filter((n) => !known.has(n))
+  if (!fresh.length) return
+  for (const n of fresh) { const f = fileOf.get(n) ?? "(file not known)"; groups.set(f, [...(groups.get(f) ?? []), n]) }
+  const total = [...groups.values()].flat().length
+  const list = [...groups].map(([f, ns]) => `${f}:\n${ns.map((n) => `  - ${n}`).join("\n")}`).join("\n")
+  const doneWhen = `These ${total} test(s) fail on ${p.base} (found while other tickets were verified) and pass on ${p.base} again, or are skipped (process.env.DOBBY_WORKTREE is set in worktrees) when they need files that are not in git. They may share one cause: look for it first. \`${p.verify}\` passes.\n${BROKEN_LIST}\n${list}`
+  if (open) db.prepare("UPDATE tickets SET done_when=? WHERE id=?").run(doneWhen, open.id)
+  else addTicket(db, { project, title, done_when: doneWhen, priority: 70 })
+}
+const BROKEN_LIST = "Failing tests by file:"
+/** The file -> tests list a broken-on-base ticket holds (after "Failing tests by file:"). */
+export function brokenGroups(doneWhen: string): Map<string, string[]> {
+  const groups = new Map<string, string[]>()
+  const at = doneWhen.indexOf(BROKEN_LIST)
+  if (at < 0) return groups
+  let file = ""
+  for (const l of doneWhen.slice(at + BROKEN_LIST.length).split("\n")) {
+    const t = l.match(/^\s+- (.+)$/)
+    if (t && file) groups.set(file, [...(groups.get(file) ?? []), t[1]])
+    else if (/\S:$/.test(l)) file = l.slice(0, -1)
   }
+  return groups
+}
+
+/** Failing test names per test file in `bun test` output: the "path/x.test.ts:" header before each "(fail)" line (turbo prefix dropped). */
+export function failedByFile(out: string): Record<string, string[]> {
+  const files: Record<string, string[]> = {}
+  let file = ""
+  for (const raw of out.split("\n")) {
+    const l = raw.replace(/^\S+:test:\s*/, "")
+    const h = l.match(/^(\S+\.(?:test|spec)\.[cm]?[jt]sx?):\s*$/)
+    if (h) { file = h[1]; continue }
+    const m = l.match(/\(fail\) (.+?)(?: \[[\d.]+ms\])?\s*$/)
+    if (m && file) files[file] = [...new Set([...(files[file] ?? []), m[1]])]
+  }
+  return files
 }
 
 /** Ticket note line for a ticket that passed verify only because its failing tests also fail on base. */
@@ -880,6 +951,17 @@ export function startMerge(r: Run, wt: string, base: string, fetched = false): s
   if (m.ok || conflicted(r, wt).length) return ""
   return `git merge origin/${base} failed: ${clip(m.out, 200)}`
 }
+/** "NEEDS MERGE: dobby/12" in the Builder's answer (the sandbox refuses git merge): the local branch Dobby merges for it on the host. */
+export const neededMerge = (summary: string) => summary.match(/^\W*NEEDS MERGE:\s*(dobby\/\d+)\b/im)?.[1]
+
+/** Merge a branch the Builder asked for into its worktree, once (skipped when it is already in HEAD). A conflicted merge is left for the Builder. Returns the feedback, or "" when nothing was done. */
+export function hostMerge(r: Run, wt: string, branch: string): string {
+  if (r("git", ["merge-base", "--is-ancestor", branch, "HEAD"], wt).ok) return ""
+  const m = r("git", ["merge", "--no-edit", branch], wt), open = conflicted(r, wt)
+  if (!m.ok && !open.length) return `Dobby could not merge ${branch}: ${clip(m.out, 200)}. Say BLOCKED: if you cannot do the ticket without it.`
+  return `Dobby merged ${branch} into your branch on the host${open.length ? `; resolve the conflicts in ${open.join(", ")}, then git add and git commit` : ""}. Continue the ticket from there.`
+}
+
 /** Conflict markers in added lines, per file (test files may hold them on purpose). ======= alone counts only beside <<<<<<< or >>>>>>>. */
 export function markerFiles(diff: string): string[] {
   const hits = new Map<string, Set<string>>()
@@ -900,6 +982,27 @@ export function conflictLeft(r: Run, wt: string, base: string): string {
   return files.length ? `Conflict markers (<<<<<<< / >>>>>>>) are still in ${files.join(", ")}: resolve them and commit.` : ""
 }
 const conflicted = (r: Run, wt: string) => r("git", ["diff", "--name-only", "--diff-filter=U"], wt).out.split("\n").filter(Boolean)
+
+/**
+ * Bring the ticket branch up to origin/<base> before a build: a clean merge is committed (no hooks: the build verifies) and
+ * the build goes on on today's base; only a real conflict returns its files, for the owner (#907). A merge git refuses for
+ * another reason (uncommitted work in the way) is undone and the build goes on as before.
+ */
+/** A dependency lockfile changed between `from` and HEAD (a base merge brought new packages: install again). */
+export const lockChanged = (r: Run, wt: string, from: string) =>
+  /(^|\/)(bun\.lockb?|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|package\.json)$/m.test(r("git", ["diff", "--name-only", from, "HEAD"], wt).out)
+
+export function catchUpBase(r: Run, wt: string, base: string): string[] {
+  const clash = baseConflicts(r, wt, base)
+  if (clash.length) return clash
+  if (r("git", ["merge-base", "--is-ancestor", `origin/${base}`, "HEAD"], wt).ok) return []
+  if (!r("git", ["merge", "--no-edit", "--no-verify", "-q", `origin/${base}`], wt).ok) {
+    const open = conflicted(r, wt)
+    r("git", ["merge", "--abort"], wt)
+    return open
+  }
+  return []
+}
 
 /**
  * Files where this branch and origin/<base> cannot merge ([] = merges cleanly, or git could not tell). An unfinished merge in the

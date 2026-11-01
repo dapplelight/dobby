@@ -7,3 +7,4 @@ export function asPath(word: string, cwd: string, home?: string): string
 export function guardSegment(words: string[], redirs: string[], ctx: Ctx): string | null
 export function decide(command: string, ctx: Ctx & { allow: string[] }): { deny?: string; allow?: boolean }
 export function patterns(env?: string): string[]
+export function readHelper(words: string[]): boolean

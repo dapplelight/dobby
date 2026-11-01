@@ -1,14 +1,82 @@
 {
   "timezone": "Asia/Kolkata",
   "timezoneLabel": "IST",
-  "github": { "owner": "ownerdev", "accounts": ["ownerdev", "acmeorg"] },
-  "clientNames": ["orion", "lyra", "vega", "rigel", "altair"],
-  "clientProjects": ["shopfront"],
-  "frontDeskDenyMcp": ["tally", "vitals"],
-  "watchJobs": { "prefixes": ["com.acme."], "daemons": ["com.acme.dm-server", "com.acme.dm-tunnel", "com.acme.agent"] },
-  "paths": { "dashboardDist": "~/projects/dashboard/dist" },
+  "github": {
+    "owner": "ownerdev",
+    "accounts": [
+      "ownerdev",
+      "acmeorg"
+    ]
+  },
+  "clientNames": [
+    "orion",
+    "lyra",
+    "vega",
+    "rigel",
+    "altair"
+  ],
+  "clientProjects": [
+    "shopfront"
+  ],
+  "frontDeskDenyMcp": [
+    "tally",
+    "vitals"
+  ],
+  "watchJobs": {
+    "prefixes": [
+      "com.acme."
+    ],
+    "daemons": [
+      "com.acme.dm-server",
+      "com.acme.dm-tunnel",
+      "com.acme.agent"
+    ]
+  },
+  "paths": {
+    "dashboardDist": "~/projects/dashboard/dist"
+  },
   "discord": {
-    "apps": { "tally": { "label": "💰 TALLY", "ideas": true }, "shopfront": { "label": "🎬 SHOPFRONT", "ideas": true }, "dobby": { "label": "⚙️ DOBBY", "ideas": true } },
-    "extraChannels": { "shopfront": ["shopfront-dms"] }
-  }
+    "apps": {
+      "tally": {
+        "label": "\ud83d\udcb0 TALLY",
+        "ideas": true
+      },
+      "shopfront": {
+        "label": "\ud83c\udfac SHOPFRONT",
+        "ideas": true
+      },
+      "dobby": {
+        "label": "\u2699\ufe0f DOBBY",
+        "ideas": true
+      }
+    },
+    "extraChannels": {
+      "shopfront": [
+        "shopfront-dms"
+      ]
+    }
+  },
+  "sizes": [
+    {
+      "name": "S",
+      "action": "build",
+      "tier": "small",
+      "estimatePct": 2,
+      "builds": 4
+    },
+    {
+      "name": "M",
+      "action": "build",
+      "tier": "medium",
+      "estimatePct": 5,
+      "builds": 4
+    },
+    {
+      "name": "L",
+      "action": "split",
+      "tier": "large",
+      "estimatePct": 11,
+      "builds": 4
+    }
+  ]
 }
