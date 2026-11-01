@@ -12,7 +12,7 @@ Run `dobby help` for the short list and `dobby help --all` for everything below.
 | Command | What it does |
 | --- | --- |
 | `init [--ui] [--projects a,b] [--no-jobs] [--yes]` | set up Dobby on this machine, with no name: checks, sign-ins, your repos, settings, background jobs (asks first); --ui does it in your browser; --no-jobs skips the jobs (keep `dobby start` open instead); --yes takes every recommended answer |
-| `add <project> "<title>" ["<done when>"] [S\|M\|L] [priority]` | write a ticket |
+| `add <project> "<title>" ["<done when>"] [size] [priority]` | write a ticket (sizes from config: dobby sizes) |
 | `status` | the plan limits line, then what is building, shipped today and stuck |
 | `limits` | how much of the 5-hour and weekly plan is used, and when paused work resumes |
 | `list [--all]` | open tickets by stage (Building, Ready, Waiting, Failed), 10 per stage; --all = every open ticket (adds backlog), old format; shipped and declined are left out |
@@ -27,7 +27,8 @@ Run `dobby help` for the short list and `dobby help --all` for everything below.
 | --- | --- |
 | `cancel <id>` | stop the ticket: kill its build, remove its worktree, close its own PR and branch, mark it declined |
 | `pause \| resume` | stop / allow builders claiming new tickets (running ones finish their step, nothing is killed) |
-| `queue <id>` | move a backlog ticket to ready |
+| `queue <id>` | move a backlog ticket to ready (says so when its size is not built on its own) |
+| `size <id> <size>` | change a ticket's size; sizes lists the configured sizes |
 | `run <id>` | build this ticket now, in this process (no worker cap, budget gate or tick lock; a new project is onboarded first; exit 1 if nothing was built) |
 | `show <id>` | every step the ticket's graph took, with tokens and cost |
 | `cost <id>` | what the ticket's PR cost, by stage (the same table Dobby posts on the PR) |
@@ -43,6 +44,7 @@ Run `dobby help` for the short list and `dobby help --all` for everything below.
 | `allowround <id>` | one more automatic fix round on the ticket's PR |
 | `unqueue <id>` | a queued ticket goes back to the backlog |
 | `reorder <id> [before]` | move a queued ticket above another (or last) |
+| `goal <goal id> <id>...` | move tickets to another goal of their app (ids from dobby goals <app>) |
 | `applyfinding <id>` | a fix ticket on the PR's branch for one review finding |
 | `dismissfinding <id>` | a review finding is intentional (later reviews leave it out) |
 | `findingrule <id> [words]` | a review finding becomes a rule for the repo |

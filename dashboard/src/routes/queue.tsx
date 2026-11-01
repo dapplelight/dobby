@@ -2,6 +2,7 @@ import { Button } from "@nimit9/signet-ui/components/button"
 import { EmptyState } from "@nimit9/signet-ui/components/empty-state"
 import { ErrorState } from "@nimit9/signet-ui/components/error-state"
 import { Kbd } from "@nimit9/signet-ui/components/kbd"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@nimit9/signet-ui/components/select"
 import { Skeleton } from "@nimit9/signet-ui/components/skeleton"
 import { useListNavigation } from "@nimit9/signet-ui/components/shortcuts"
 import { Tabs, TabsList, TabsTrigger } from "@nimit9/signet-ui/components/tabs"
@@ -88,7 +89,7 @@ function StopLine({ stop, resets, allFit }: { stop: number | null; resets: numbe
   )
 }
 
-function Aside({ row, nth, send }: { row: QueueRow; nth: number; send: (name: string) => void }) {
+function Aside({ row, nth, send, goals, setGoal }: { row: QueueRow; nth: number; send: (name: string) => void; goals: { id: number; title: string }[]; setGoal: (goal: number) => void }) {
   return (
     <aside aria-label={`Selected: ${row.ref}`} className="hidden flex-col gap-5.5 border-l border-line pl-7 text-sm md:flex">
       <div>
@@ -101,6 +102,17 @@ function Aside({ row, nth, send }: { row: QueueRow; nth: number; send: (name: st
         <div className="flex"><dt className="text-ink-2">Estimate</dt><dd className="ml-auto font-mono">{row.estPct}% of the week</dd></div>
         <div className="flex"><dt className="text-ink-2">Waits on</dt><dd className="ml-auto">{row.waitsOn === "paused" ? "a pause" : (row.waitsOn ?? "nothing")}</dd></div>
         <div className="flex"><dt className="text-ink-2">Filed</dt><dd className="ml-auto">{row.filed} ago</dd></div>
+        {goals.length > 1 && (
+          <div className="flex items-center gap-3">
+            <dt className="text-ink-2">Goal</dt>
+            <dd className="ml-auto min-w-0">
+              <Select value={row.goal ? String(row.goal) : ""} onValueChange={(v) => v && setGoal(Number(v))}>
+                <SelectTrigger aria-label="Goal" size="sm" className="max-w-56"><SelectValue placeholder="No goal" /></SelectTrigger>
+                <SelectContent>{goals.map((g) => <SelectItem key={g.id} value={String(g.id)}>{g.title}</SelectItem>)}</SelectContent>
+              </Select>
+            </dd>
+          </div>
+        )}
       </dl>
       {!row.running && (
         <div className="flex flex-wrap gap-x-4 gap-y-2 text-ink-2">
@@ -271,7 +283,7 @@ export function Queue() {
           {tab === "ideas" && <Ideas ideas={q.ideas} active={active} onSelect={(id) => nav.setActiveId(String(id))} send={send} phone={!desktop} />}
         </section>
       </div>
-      {tab !== "ideas" && selected && <Aside row={selected} nth={readyIds.indexOf(selected.id) + 1} send={(n) => (n === "up" ? move(selected.id, -1) : n === "down" ? move(selected.id, 1) : send(n, selected.id))} />}
+      {tab !== "ideas" && selected && <Aside row={selected} nth={readyIds.indexOf(selected.id) + 1} goals={data.goalRows.filter((g) => g.project === selected.project)} setGoal={(goal) => act.mutate({ action: "goal", id: selected.id, goal })} send={(n) => (n === "up" ? move(selected.id, -1) : n === "down" ? move(selected.id, 1) : send(n, selected.id))} />}
 
       <Key id="reorder-up" run={() => selected && move(selected.id, -1)} enabled={tab === "queue" && movable} />
       <Key id="reorder-down" run={() => selected && move(selected.id, 1)} enabled={tab === "queue" && movable} />

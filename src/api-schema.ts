@@ -33,13 +33,13 @@ export const Held = z.object({
 /** The order of work. `estPct` is the Lead's estimate in % of the week; `fits` is false from the stop line down. */
 export const QueueRow = z.object({
   id: z.number(), n: z.number(), ref: z.string(), project: z.string(), title: z.string(), size: z.string(), estPct: z.number(), leftPct: z.number(), doneWhen: z.string(), filed: z.string(), fits: z.boolean(),
-  waitsOn: z.string().nullable(), state: z.string(), running: z.boolean(),
+  waitsOn: z.string().nullable(), state: z.string(), running: z.boolean(), goal: z.number().nullable(),
 })
 export const ParkedRow = z.object({ id: z.number(), ref: z.string(), project: z.string(), title: z.string(), size: z.string(), estPct: z.number(), age: z.string() })
 export const IdeaCard = z.object({
   id: z.number(), project: z.string(), title: z.string(), source: z.string(), lens: z.string().nullable(), why: z.string().nullable(), size: z.string().nullable(), score: z.number().nullable(),
 })
-const Sizes = z.object({ S: z.number(), M: z.number(), L: z.number() })
+const Sizes = z.record(z.string(), z.number()) // configured size name -> week-% estimate, smallest first
 export const QueuePanel = z.looseObject({
   order: z.array(QueueRow), parked: z.array(ParkedRow), ideas: z.array(IdeaCard), estimates: Sizes,
   room: z.number().nullable(), queuedPct: z.number(), stopPct: z.number().nullable(), resetsAt: z.number().nullable(),
@@ -56,7 +56,8 @@ export const NewTicket = z.object({
   project: z.string().regex(/^\w[\w-]*(\.\w[\w-]*)*$/, "Pick a project"),
   title: z.string().trim().min(1, "Say what to build").max(300, "Keep it under 300 characters"),
   done_when: z.string().trim().max(2000, "Keep it under 2000 characters").optional(),
-  size: z.enum(["S", "M", "L"]).optional(),
+  // Shape only: this file is bundled into the dashboard, which cannot read config. The server checks the size is configured.
+  size: z.string().regex(/^[A-Za-z0-9_-]{1,12}$/, "not a configured size (dobby sizes lists them)").optional(),
 })
 
 const Severity = z.enum(["high", "medium", "low"])

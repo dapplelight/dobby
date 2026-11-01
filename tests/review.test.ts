@@ -491,7 +491,7 @@ test("scan: a signed-out review run pings the owner once, does not retry, and st
   const run = (cmd: string, args: string[], cwd?: string) =>
     cmd === "gh" && args[1] === "list" ? { ok: true, out: JSON.stringify([701, 702].map((number) => ({ number, headRefOid: "signedout1", isDraft: false }))) } : m.deps.run(cmd, args, cwd)
   const runs: string[] = [], pings: string[] = []
-  const once = (async (_db: unknown, o: { kind: string }) => (runs.push(o.kind), { ok: false, text: "", reason: "Failed to authenticate: OAuth session expired and could not be refreshed" })) as any
+  const once = (async (_db: unknown, o: { kind: string }) => (o.kind === "review-gate" || runs.push(o.kind), { ok: false, text: "", reason: "Failed to authenticate: OAuth session expired and could not be refreshed" })) as any
   const deps = { ...m.deps, run, claude: ((d: any, o: any) => claude(d, o, once, async (t: string) => { pings.push(t) })) as any }
   const out = await rv.scan(db, { deps, budget: () => ({ ok: true, why: "" }), now })
   assert.deepEqual(runs, ["review"]) // one run, no stall retry, and PR 702 never started

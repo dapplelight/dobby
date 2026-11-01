@@ -1,5 +1,6 @@
 // What the owner reads: the CLI help and ticket list, and the status board (one message that is edited, plus the instant "status" reply).
 // No AI anywhere in here.
+import { heldWhy, sqlList, withAction } from "./sizes.ts"
 import { lastTick } from "./health.ts"
 import { pauseLine, paused } from "./pause.ts"
 import type { DB } from "./db.ts"
@@ -12,6 +13,8 @@ import { config, tzOffset, zoned, zonedDay } from "./config.ts"
 import { clip, readSecrets, shortTitle } from "./notify.ts"
 import { homedir } from "node:os"
 import { JOBS, ownedHere } from "./jobs.ts"
+import { memHoldLine } from "./builders.ts"
+import { updateLine } from "./update.ts"
 
 /** A ticket marked running with no change for this long is stuck (status, list, the dashboard). */
 export const STUCK_MS = 2 * 3_600_000
@@ -79,6 +82,9 @@ export function statusText(db: DB, now = Date.now(), lim?: Limits) {
   const hhmm = tick ? zoned(tick).toISOString().slice(11, 16) : tickRuns(db, now) ? "unknown (no tick has run yet)" : "unknown: no tick job is installed. Run dobby start in a terminal, or dobby jobs install"
   return [
     ...(lim ? [lim.line, ...(liftHint(lim) ? [liftHint(lim)] : [])] : []),
+    ...heldLine(db),
+    ...memHoldLine(db, now),
+    ...updateLine(db),
     `🔨 Building now (${building.length})${building.length ? `: ${list(building.map((t) => `${short(t.title)}${now - Date.parse(t.updated_at) > STUCK_MS ? ` (Stuck: no change for ${age(t.updated_at, now)})` : ""}`))}` : ""}`,
     ...(fixing.length ? [`🔁 Waiting on a review fix (${fixing.length})`] : []),
     `✅ Shipped today (${shipped.length})`,
@@ -252,3 +258,9 @@ export function receiptSvg(r: Receipt) {
 
 /** `dobby cost <id>`: the same table the PR comment has, as plain text. */
 export const costText = (db: DB, id: number) => prCostText(prCost(db, id), config().billing?.mode === "apiKey").split("\n").slice(1).join("\n")
+
+/** "⏳ Queued but not built (size): ..." for ready tickets whose size builders don't take on their own; [] when none. */
+function heldLine(db: DB): string[] {
+  const rows = db.prepare(`SELECT id, project, size FROM tickets WHERE status='ready' AND dup_of IS NULL AND size NOT IN (${sqlList(withAction("build"))})`).all() as { id: number; project: string; size: string }[]
+  return rows.length ? [`⏳ Queued but not built (${rows.length}): ${rows.slice(0, 5).map((t) => `#${t.id} ${heldWhy(t.size, !!paused(db, { kind: "planning", project: t.project }))}`).join("; ")}`] : []
+}

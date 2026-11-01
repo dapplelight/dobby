@@ -142,7 +142,7 @@ test("program manager: EM splits an L ticket with a PRD, PgM runs it in order, u
   const big = addTicket(db, { project: "tally", title: "Household sharing v2", size: "L" }).id
   db.prepare("UPDATE tickets SET status='backlog' WHERE id=?").run(big)
   const split = { from: big, title: "Sharing v2", tickets: [{ title: "Invite link API", size: "S", engineer: "backend" }, { title: "Invite screen", size: "M", engineer: "mobile" }, { title: "Publish the Play Store release" }] }
-  assert.match(applyPlan(db, "tally", { promote: [], new: [], note: "", programs: [split] }).skipped.join(), /needs an L ticket with a PRD/)
+  assert.match(applyPlan(db, "tally", { promote: [], new: [], note: "", programs: [split] }).skipped.join(), /needs a ticket of a split size \(L\) with a PRD/)
   db.prepare("UPDATE tickets SET prd='first version: invite by link' WHERE id=?").run(big)
   const a = applyPlan(db, "tally", { promote: [], new: [], note: "", programs: [split] })
   assert.equal(a.programs!.length, 1)
@@ -268,13 +268,13 @@ test("near-duplicate tickets: word overlap picks candidates, Jev says which is t
   process.env["JEV_API_KEY"] = prev
 })
 
-test("roles: every file in roles/ is loaded by code or listed under Supporting roles in docs/manual/roles.md", async () => {
+test("roles: every file in roles/ is loaded by code or listed under Supporting roles in docs/team.md", async () => {
   const { readdirSync, readFileSync } = await import("node:fs")
   const { ROOT } = await import("../src/lib.ts")
   const code = readdirSync(`${ROOT}src`, { recursive: true }).filter((f) => String(f).endsWith(".ts")).map((f) => readFileSync(`${ROOT}src/${f}`, "utf8")).join("\n")
-  const team = readFileSync(`${ROOT}docs/manual/roles.md`, "utf8").split("## Supporting roles")[1]?.split("\n## ")[0] ?? ""
+  const team = readFileSync(`${ROOT}docs/team.md`, "utf8").split("## Supporting roles")[1]?.split("\n## ")[0] ?? ""
   for (const f of readdirSync(`${ROOT}roles`)) {
     const role = f.replace(/\.md$/, "")
-    assert.ok(code.includes(`"${role}"`) || team.includes(`\`${role}\``), `roles/${f} is not loaded by any code and not listed in docs/manual/roles.md`)
+    assert.ok(code.includes(`"${role}"`) || team.includes(`\`${role}\``), `roles/${f} is not loaded by any code and not listed in docs/team.md`)
   }
 })

@@ -1,0 +1,8 @@
+{
+  "sizes": [
+    {"name": "S", "action": "build", "tier": "small", "estimatePct": 2, "builds": 4, "describe": "under an hour, one or two files"},
+    {"name": "M", "action": "build", "tier": "medium", "estimatePct": 5, "builds": 4, "describe": "a few hours, several files"},
+    {"name": "L", "action": "build", "tier": "large", "estimatePct": 11, "builds": 4, "describe": "a day or more, needs a design first"},
+    {"name": "XL", "action": "split", "tier": "large", "estimatePct": 20, "builds": 4, "describe": "several days, split into smaller tickets first"}
+  ]
+}

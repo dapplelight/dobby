@@ -1,5 +1,6 @@
 // The steps of `dobby init` as plain functions: no prompts, no printing. The terminal (setup.ts) and the browser (dashboard-setup.ts) call the same ones.
 // Nothing here takes a command, flag or path from a person: commands come from detection (detect.ts), the fixed tool list (tools.ts) and installJobs.
+import { smallest } from "./sizes.ts"
 import { spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
@@ -220,7 +221,7 @@ export function firstTicketCandidates(repos: Detected[], issues: GhIssues = real
 /** Adds the candidate as a ticket and queues it. Returns the queue message. */
 export async function queueCandidate(db: DB, c: Candidate): Promise<string> {
   const { addTicket, queueTicket } = await import("./lib.ts")
-  const { id } = addTicket(db, { project: c.project, title: `${c.title} (#${c.number})`.slice(0, 200), done_when: c.body.slice(0, 2000), size: "S" })
+  const { id } = addTicket(db, { project: c.project, title: `${c.title} (#${c.number})`.slice(0, 200), done_when: c.body.slice(0, 2000), size: smallest() })
   return queueTicket(db, id)
 }
 export { configDir }

@@ -16,9 +16,10 @@ import type { Ctx } from "./policy.ts"
 import { ticketGate, unsureOwner } from "./safety.ts"
 import { pushRefusal } from "./privacy.ts"
 import { clip, outbound, readSecrets, redact, shortTitle } from "./notify.ts"
-import { builderEnv, INSTALL_DOMAINS, SAFE_GIT, sandboxMode, sandboxSettings, scratchDir, stepSettings, withGitConfig } from "./sandbox.ts"
+import { builderEnv, INSTALL_DOMAINS, mergeRtk, SAFE_GIT, sandboxMode, sandboxSettings, scratchDir, stepSettings, withGitConfig } from "./sandbox.ts"
 import { withTelemetry } from "./telemetry.ts"
 import { rules } from "./tools.ts"
+import { buildCap, heldWhy, isLarge, isSize, isSmall, sizeNames, sizeOr, sizes, smallest, sqlList, withAction } from "./sizes.ts"
 import { config, configDir, draftDirs, isProjectDraft, privateConfigPath, logStamp, zoned, zonedDay } from "./config.ts"
 import { CEILING, contextTokens, lastAssistantText, repoSlug, runUsage, transcriptDir } from "./savings.ts"
 export { repoSlug }
@@ -497,8 +498,10 @@ export const policyCtx = (project?: string): Ctx => ({ project, ownerWords: proj
 export const scoutMerge = () => loadProjects().dobby?.scoutMerge ?? "ask"
 
 // ---- budget ------------------------------------------------------------------
-export type Usage = { fiveUsed: number; weekUsed: number; weekMsToReset: number; fiveMsToReset?: number; ageMs?: number }
+/** noFive: the plan has no 5-hour limit (verified Ultra, Oct 2026); fiveUsed is then 0 and only the week paces. */
+export type Usage = { fiveUsed: number; weekUsed: number; weekMsToReset: number; fiveMsToReset?: number; ageMs?: number; noFive?: true }
 const FIVE_H = 5 * 3600_000
+const WEEK_MS = 7 * 24 * 3600_000
 /**
  * Pacing (owner, 17 Oct): spend the weekly remainder evenly over the 5-hour windows left, heavier at night (23-08, Dobby
  * alone: x1.6) and lighter by day (the owner's own sessions share the window: x0.64; 9 of 24 hours are night, so they
@@ -540,6 +543,12 @@ export function budgetAllows(u: Usage, hour: number, capOverride?: number, weekP
   const cap = capOverride ?? paceCap(u, night, weekPerFive, weekCap) // the owner can raise it for one window from the pause ping
   // the week first: over its cap the pace cap collapses, and blaming the 5-hour window offers buttons that cannot help
   if (u.weekUsed + running * WEEK_PER_BUILD >= weekCap) return { ok: false, why: `weekly at ${u.weekUsed}%${running ? ` with ${running} build(s) running` : ""} (your cap is ${weekCap}%)`, cap }
+  if (u.noFive) {
+    // No 5-hour window to pace by: keep the week at most one day ahead of an even spend toward weekCap.
+    const ahead = Math.round(weekCap * (1 - u.weekMsToReset / WEEK_MS) + weekCap / 7)
+    if (u.weekUsed + running * WEEK_PER_BUILD >= ahead) return { ok: false, why: `weekly at ${u.weekUsed}%, a day ahead of an even pace (${ahead}%)`, cap: 100 }
+    return { ok: true, why: `weekly ${u.weekUsed}%/${ahead} (no 5-hour limit)`, cap: 100 }
+  }
   if (u.fiveUsed >= cap) return { ok: false, why: `5-hour window at ${u.fiveUsed}% (pace cap ${cap}%)`, cap }
   return { ok: true, why: `5-hour ${u.fiveUsed}%/${cap}, weekly ${u.weekUsed}%`, cap }
 }
@@ -608,6 +617,7 @@ export function parseUsage(stdout: string): Usage | null {
     const j = JSON.parse(stdout)
     const w = j.windows as { key: string; percentUsed: number; msToReset: number }[]
     const five = w.find((x) => x.key === "five_hour"), week = w.find((x) => x.key === "seven_day")
+    if (week && !five) return { fiveUsed: 0, weekUsed: week.percentUsed, weekMsToReset: week.msToReset, noFive: true, ...(typeof j.snapshotAgeMs === "number" ? { ageMs: j.snapshotAgeMs } : {}) }
     return five && week ? { fiveUsed: five.percentUsed, weekUsed: week.percentUsed, weekMsToReset: week.msToReset, fiveMsToReset: five.msToReset, ...(typeof j.snapshotAgeMs === "number" ? { ageMs: j.snapshotAgeMs } : {}) } : null
   } catch {
     return null
@@ -731,13 +741,13 @@ export const goalFor = (db: DB, project: string, id: unknown) => goals(db, proje
 export const goalsText = (gs: Goal[]) => gs.map((g) => `G${g.id} (rank ${g.rank}): ${g.title}`).join("\n") || "(no goals set yet: rank by the project rules)"
 
 // ---- tickets -----------------------------------------------------------------
-// engineer: mobile | web | backend (the EM assigns it; null = plain Engineer). prd: the PM's PRD (L). design: the Designer's UI spec (M/L UI).
+// engineer: mobile | web | backend (the EM assigns it; null = plain Engineer). prd: the PM's PRD (large-tier sizes). design: the Designer's UI spec (UI work above the small tier).
 export type Ticket = { id: number; project: string; title: string; done_when: string; size: string; risk: string; priority: number; status: string; branch: string | null; note: string | null; onto: string | null; goal: number | null; engineer: string | null; prd: string | null; design: string | null; depends_on: number | null }
 const now = () => new Date().toISOString()
 /** onto = an open PR's head branch: the ticket builds on it and pushes back to it (no new PR, no merge). goal: default the project's top goal. depends_on = a parent ticket id: this one is not built until the parent is shipped. */
 export function addTicket(db: DB, t: { project: string; title: string; done_when?: string; size?: string; risk?: string; priority?: number; onto?: string; goal?: number | null; depends_on?: number | null }) {
   return db.prepare("INSERT INTO tickets (project,title,done_when,size,risk,priority,onto,goal,depends_on,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING id")
-    .get(t.project, t.title, t.done_when ?? "", t.size ?? "S", t.risk ?? "high", t.priority ?? 50, t.onto ?? null, t.goal ?? topGoal(db, t.project), t.depends_on ?? null, now(), now()) as { id: number }
+    .get(t.project, t.title, t.done_when ?? "", t.size ?? smallest(), t.risk ?? "high", t.priority ?? 50, t.onto ?? null, t.goal ?? topGoal(db, t.project), t.depends_on ?? null, now(), now()) as { id: number }
 }
 /** SQL: the ticket (table or alias a) is not waiting on a parent. A parent row that no longer exists is no dependency. */
 export const unblocked = (a = "tickets") => `(${a}.depends_on IS NULL OR NOT EXISTS (SELECT 1 FROM tickets d WHERE d.id=${a}.depends_on AND d.status!='shipped'))`
@@ -815,8 +825,9 @@ export const ENGINEERS = ["mobile", "web", "backend"]
 export function riskPath(t: Pick<Ticket, "title" | "done_when" | "size">) {
   const text = `${t.title} ${t.done_when}`
   const sensitive = SENSITIVE.test(text)
-  // strong = the Opus Builder. Only L (audit #8: sensitive words put $153 in 5 days on Opus builders); sensitive still means a strict Opus REVIEW and a big merge.
-  return { sensitive, design: t.size !== "S" && UI.test(text), prd: t.size === "L", launch: t.size === "L", strong: t.size === "L" }
+  // strong = the Opus Builder. Only large-tier sizes (audit #8: sensitive words put $153 in 5 days on Opus builders); sensitive still means a strict Opus REVIEW and a big merge.
+  const large = isLarge(t.size)
+  return { sensitive, design: !isSmall(t.size) && UI.test(text), prd: large, launch: large, strong: large }
 }
 
 /**
@@ -824,15 +835,17 @@ export function riskPath(t: Pick<Ticket, "title" | "done_when" | "size">) {
  * then the highest priority ready ticket there, oldest first. L tickets wait for the Engineering Manager to split them.
  */
 export function nextTicket(db: DB) {
-  // A ready ticket that already used its builds (BUILD_CAP, across retries) is parked, not claimed again
+  // A ready ticket that already used its builds (its size's cap, across retries) is parked, not claimed again
   // Builds before the cap shipped (20 Oct) don't count: every ticket without a baseline gets one at today's count, so nothing live is parked on rollout
   seedBuildBases(db)
-  for (const { id } of db.prepare(`SELECT id FROM tickets t WHERE status='ready' AND (SELECT COUNT(*) FROM runs r WHERE r.kind='build' AND r.ticket=t.id AND COALESCE(r.reason,'') NOT LIKE '${CEILING}%') - COALESCE((SELECT CAST(v AS INTEGER) FROM kv WHERE k='build-base:'||t.id), 0) >= ?`).all(BUILD_CAP) as { id: number }[])
-    setTicket(db, id, { status: "failed", note: `${BUILD_CAP} builds without shipping; a hand re-queue gives it ${BUILD_CAP} more` })
+  for (const { id, size } of db.prepare(`SELECT id, size FROM tickets t WHERE status='ready' AND (SELECT COUNT(*) FROM runs r WHERE r.kind='build' AND r.ticket=t.id AND COALESCE(r.reason,'') NOT LIKE '${CEILING}%') - COALESCE((SELECT CAST(v AS INTEGER) FROM kv WHERE k='build-base:'||t.id), 0) >= ?`).all(minBuildCap()) as { id: number; size: string }[]) {
+    if (buildsUsed(db, id) < buildCap(size)) continue
+    setTicket(db, id, { status: "failed", note: `${buildCap(size)} builds without shipping; a hand re-queue gives it ${buildCap(size)} more` })
+  }
   // a paused project (dobby.md `paused: true`, or src/pause.ts) or ticket is skipped, the next one is taken
   const projects = loadProjects()
   // a ticket with depends_on waits until its parent is shipped (a parent row that no longer exists is no dependency)
-  return (db.prepare(`SELECT * FROM tickets t WHERE status='ready' AND size!='L' AND ${unblocked("t")}
+  return (db.prepare(`SELECT * FROM tickets t WHERE status='ready' AND size IN (${sqlList(withAction("build"))}) AND ${unblocked("t")}
     ORDER BY (SELECT COUNT(*) FROM tickets r WHERE r.status='running' AND r.project=t.project), priority DESC, id ASC`).all() as Ticket[]).find((t) => !projects[t.project]?.paused && !paused(db, { kind: "builders", project: t.project, ticket: t.id }))
 }
 
@@ -845,8 +858,10 @@ export const buildsUsed = (db: DB, id: number) => buildRuns(db, id) - Number((db
 export function seedBuildBases(db: DB) {
   db.prepare(`INSERT OR IGNORE INTO kv (k, v) SELECT 'build-base:'||t.id, (SELECT COUNT(*) FROM runs r WHERE r.kind='build' AND r.ticket=t.id AND COALESCE(r.reason,'') NOT LIKE '${CEILING}%') FROM tickets t WHERE t.status NOT IN ('shipped','declined')`).run()
 }
-/** Most builds one ticket gets across retries and requeues (audit #8: up to 9 per ticket). A hand re-queue starts a fresh count. */
-export const BUILD_CAP = 4
+/** Most builds one ticket gets across retries and requeues (audit #8: up to 9 per ticket), per size (`sizes[].builds`). A hand re-queue starts a fresh count. */
+export const minBuildCap = () => Math.min(...sizes().map((s) => s.builds))
+/** The build cap of a ticket's size. */
+export const ticketCap = (db: DB, id: number) => buildCap((db.prepare("SELECT size FROM tickets WHERE id=?").get(id) as { size: string } | undefined)?.size)
 /** Builds in one run of a ticket's graph: the first, one verify fix, one checker retry. */
 export const MAX_BUILDS = 3
 /** A hand (re)queue starts afresh: builds and cost count from now, and the same-failure comparison begins again. */
@@ -872,15 +887,29 @@ export function queueTicket(db: DB, id: number): string {
   if (key !== undefined) db.prepare("INSERT OR REPLACE INTO kv VALUES (?, ?)").run(`fail-key:${t.id}`, key)
   resetCounts(db, t.id)
   db.prepare("DELETE FROM kv WHERE k=?").run(`promote-hold:${t.project}`) // the owner chose a ticket: the scheduled Lead may plan again (#369)
-  return `#${t.id} queued; a builder picks it up within about a minute`
+  const held = heldWhy(t.size, !!paused(db, { kind: "planning", project: t.project }))
+  return held ? `#${t.id} queued, but no builder takes it yet: ${held}. To build it as is: dobby size ${t.id} <${withAction("build").join("|") || "a build size"}>` : `#${t.id} queued; a builder picks it up within about a minute`
 }
+
+/** dobby size <id> <size>: change a ticket's size (any configured name). */
+export function setSize(db: DB, id: number, size: string): string {
+  const t = getTicket(db, id)
+  if (!t) return `no ticket #${id}`
+  if (!isSize(size)) return `${size} is not a size. Sizes: ${sizeNames().join(", ")} (set them in config: sizes)`
+  db.prepare("UPDATE tickets SET size=?, updated_at=? WHERE id=?").run(size, new Date().toISOString(), id)
+  const held = t.status === "ready" ? heldWhy(size, !!paused(db, { kind: "planning", project: t.project })) : null
+  return `#${id} is now size ${size}${held ? `; ${held}` : t.status === "ready" ? "; a builder picks it up within about a minute" : ""}`
+}
+
+/** dobby sizes: the configured sizes, smallest first. */
+export const sizesText = () => sizes().map((s) => `${s.name.padEnd(4)} ${s.action.padEnd(5)} ${s.tier.padEnd(6)} ~${s.estimatePct}% of a week, ${s.builds} builds${s.budget ? `, budget ${s.budget}%` : ""}${s.model ? `, model ${s.model}` : ""}${s.describe ? ` · ${s.describe}` : ""}`).join("\n") + "\nChange them with dobby config set sizes '<json list>' (smallest first); the starting list is sizes.defaults.json."
 
 /** Owner liked an idea: it becomes a backlog ticket, then goes through queueTicket. */
 export function ideaToTicket(db: DB, ideaId: number): string {
   const i = db.prepare("SELECT * FROM ideas WHERE id=?").get(ideaId) as { id: number; project: string; title: string; size: string | null; experiment: string | null; status: string; goal: number | null } | undefined
   if (!i) return `no idea #${ideaId}`
   if (i.status === "approved" || i.status === "rejected") return `idea #${i.id} is already ${i.status}`
-  const { id } = addTicket(db, { project: i.project, title: i.title, done_when: i.experiment ?? "", size: ["S", "M", "L"].includes(i.size ?? "") ? i.size! : "M", goal: i.goal })
+  const { id } = addTicket(db, { project: i.project, title: i.title, done_when: i.experiment ?? "", size: sizeOr(i.size), goal: i.goal })
   setTicket(db, id, { status: "backlog", note: `from idea #${i.id}` })
   db.prepare("UPDATE ideas SET status='approved' WHERE id=?").run(i.id)
   return `idea #${i.id} is ticket #${id}. ${queueTicket(db, id)}`
@@ -953,6 +982,7 @@ async function claudeOnce(db: DB, o: { project: string; kind: string; ticket?: n
     })
     p.on("close", (code) => {
       clearTimeout(timer); clearInterval(poll); released()
+      if (box.mode !== "off") mergeRtk(scratchDir(o.cwd ?? process.cwd()))
       if (capped) {
         const reason = `${CEILING}: ${capped} tokens`
         logRun(db, { project: o.project, kind: o.kind, ticket: o.ticket, model: o.model, ok: false, reason, duration_ms: Date.now() - t0 - 2000, ...runUsage(dir, t0) }) // paid work: ticketBudget and the build caps must see it
@@ -1067,7 +1097,7 @@ const authPing = async (text: string) => {
  */
 export async function claude(db: DB, o: Parameters<typeof claudeOnce>[1], once = claudeOnce, ping = authPing) {
   // Build cap per ticket across retries (audit #8): no spawn once a ticket has used its builds; the run ends as a failed build
-  if (o.kind === "build" && o.ticket != null && buildsUsed(db, o.ticket) >= BUILD_CAP) return { ok: false, text: "", reason: `build cap: ${BUILD_CAP} builds on this ticket` }
+  if (o.kind === "build" && o.ticket != null && buildsUsed(db, o.ticket) >= ticketCap(db, o.ticket)) return { ok: false, text: "", reason: `build cap: ${ticketCap(db, o.ticket)} builds on this ticket` }
   // Opt-in harness routing (providers.enabled in config, default off; src/agents.ts). Off or absent: agents.ts is never loaded.
   const routed = config().providers?.enabled === true
   if (routed) once = (await import("./agents.ts")).routed(once)

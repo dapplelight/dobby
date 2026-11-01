@@ -52,7 +52,7 @@ test("sandboxSettings: worktree-only writes, secret paths unreadable, no network
   assert.equal(s.allowUnsandboxedCommands, false)
   assert.deepEqual(s.filesystem.allowWrite, ["/s"])
   for (const p of ["~/.config/dobby", "~/.ssh", "~/.aws", "~/.netrc", "~/.local/share/dobby"]) assert.ok(s.filesystem.denyRead.includes(p), p)
-  assert.deepEqual(s.filesystem.allowRead, ["/home/me/.local/share/dobby/wt/tally-12"])
+  assert.deepEqual(s.filesystem.allowRead, ["/home/me/.local/share/dobby/wt"]) // the worktrees folder: bun install reads above its cwd
   assert.deepEqual(s.network.allowedDomains, [])
   assert.equal(s.network.strictAllowlist, true)
   assert.equal((s.network as { allowLocalBinding?: boolean }).allowLocalBinding, true)
@@ -121,4 +121,19 @@ test("sandboxCheck: macOS ok; Linux names the missing tool, an AppArmor block, o
   assert.equal(sandboxCheck("linux", { bwrap: true, socat: true }, true).ok, true)
   assert.match(sandboxCheck("win32", { bwrap: false, socat: false }, false).fix!, /WSL2/)
   assert.equal(bwrapWorks("darwin", () => { throw new Error("no probe off Linux") }), true)
+})
+
+test("rtk in the sandbox: builders log to scratch; mergeRtk moves those rows into the owner's history", async () => {
+  const { mergeRtk, rtkHistory } = await import("../src/sandbox.ts")
+  const { mkdtempSync } = await import("node:fs")
+  const Database = (await import("better-sqlite3")).default
+  assert.equal(builderEnv(base, "/w/tally-12", "/s").RTK_DB_PATH, "/s/rtk.db")
+  assert.equal(rtkHistory({}, "/h", "darwin"), "/h/Library/Application Support/rtk/history.db")
+  const dir = mkdtempSync(`${tmpdir()}/rtk-`)
+  const schema = "CREATE TABLE commands (id INTEGER PRIMARY KEY, timestamp TEXT, original_cmd TEXT, rtk_cmd TEXT, input_tokens INT, output_tokens INT, saved_tokens INT, savings_pct REAL, exec_time_ms INT, project_path TEXT)"
+  const main = new Database(`${dir}/history.db`); main.exec(schema); main.close()
+  const run = new Database(`${dir}/rtk.db`); run.exec(schema); run.prepare("INSERT INTO commands (timestamp, original_cmd, rtk_cmd, input_tokens, output_tokens, saved_tokens, savings_pct, exec_time_ms, project_path) VALUES ('t','git status','rtk git status',100,20,80,80,5,'/w')").run(); run.close()
+  assert.equal(mergeRtk(dir, `${dir}/history.db`), 1)
+  assert.equal(mergeRtk(dir, `${dir}/history.db`), 0, "scratch log removed after the merge")
+  const back = new Database(`${dir}/history.db`); assert.equal((back.prepare("SELECT saved_tokens s FROM commands").get() as { s: number }).s, 80); back.close()
 })

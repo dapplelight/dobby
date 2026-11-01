@@ -6,6 +6,7 @@
 //
 // gather reads the board, goal, roadmap and recent commits (no AI). plan is one read-only Sonnet run (roles/lead.md).
 // apply enforces the rules in code: the prompt only asks, applyPlan decides. report keeps a summary in kv for the Chief of Staff.
+import { actionOf, heldWhy, isSize, sizeGuide, sizeOr, smallest, sqlList, withAction } from "../sizes.ts"
 import { paused } from "../pause.ts"
 import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph"
@@ -64,7 +65,7 @@ const LEAD_DENY = ["Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"]
 
 export type NewTicket = { title: string; done_when?: string; size?: string; priority?: number; why?: string; goal?: number; engineer?: string; depends_on?: number }
 // assign: ticket id -> mobile | web | backend for promoted tickets. week: the Monday plan's text.
-// programs: an L ticket with a PRD split into S/M tickets in build order (the Program Manager runs it from there).
+// programs: a ticket of a split size with a PRD split into buildable tickets in build order (the Program Manager runs it from there).
 export type Split = { from: number; title?: string; tickets: NewTicket[] }
 export type Plan = { promote: number[]; new: NewTicket[]; note: string; assign?: Record<number, string>; week?: string; programs?: Split[] }
 export type Applied = { promoted: string[]; created: string[]; needsOwner: string[]; skipped: string[]; programs?: string[] }
@@ -115,7 +116,7 @@ export function applyPlan(db: DB, project: string, plan: Plan, dry = false, verd
       const label = t ? `${t.title} · #${t.id}` : `#${id}` // names first, the number as a tag at the end
       if (!t || t.status !== "backlog") out.skipped.push(`${label}: not in the backlog`)
       else if (agentFiled(db, t.id) || needsOwner(`${t.title} ${t.done_when}`, verdicts, { ...base, title: t.title })) out.needsOwner.push(label)
-      else if (t.size === "L") out.skipped.push(`${label}: size L, split it first`)
+      else if (actionOf(t.size) !== "build") out.skipped.push(`${label}: ${heldWhy(t.size, false)}`)
       else if (out.promoted.length >= MAX_PROMOTE) out.skipped.push(`${label}: over ${MAX_PROMOTE} promotions this run`)
       else if (ready() >= READY_CAP) out.skipped.push(`${label}: ready queue full (${READY_CAP})`)
       else {
@@ -130,8 +131,8 @@ export function applyPlan(db: DB, project: string, plan: Plan, dry = false, verd
       else if (isDuplicate(db, project, title)) out.skipped.push(`new: ${title}: duplicate`)
       else if (twins?.has(title)) out.skipped.push(`new: ${title}: same work as #${twins.get(title)}`)
       else {
-        const size = ["S", "M", "L"].includes(String(n.size)) ? String(n.size) : "M"
-        const status = size !== "L" && ready() < READY_CAP ? "ready" : "backlog"
+        const size = sizeOr(String(n.size))
+        const status = actionOf(size) === "build" && ready() < READY_CAP ? "ready" : "backlog"
         const { id } = addTicket(db, { project, title, done_when: n.done_when ?? "", size, priority: Math.max(0, Math.min(100, Number(n.priority) || 50)), goal: goalFor(db, project, n.goal), depends_on: parentFor(db, project, n.depends_on) })
         setTicket(db, id, { status, note: `Engineering Manager: ${n.why ?? ""}`.trim(), engineer: ENGINEERS.includes(n.engineer ?? "") ? n.engineer! : null })
         out.created.push(`${title} · #${id} (${status}, ${size})`)
@@ -140,12 +141,12 @@ export function applyPlan(db: DB, project: string, plan: Plan, dry = false, verd
     for (const sp of plan.programs ?? []) {
       const l = db.prepare("SELECT * FROM tickets WHERE id=? AND project=?").get(sp.from, project) as Ticket | undefined
       const parts = sp.tickets.filter((n) => n && typeof n.title === "string" && n.title.trim() && !needsOwner(`${n.title} ${n.done_when ?? ""}`, verdicts, { ...base, title: n.title }) && !isDuplicate(db, project, n.title.trim()))
-      if (!l || l.size !== "L" || !l.prd || !["backlog", "ready"].includes(l.status)) out.skipped.push(`program from #${sp.from}: needs an L ticket with a PRD`)
+      if (!l || actionOf(l.size) !== "split" || !l.prd || !["backlog", "ready"].includes(l.status)) out.skipped.push(`program from #${sp.from}: needs a ticket of a split size (${withAction("split").join(", ") || "none configured"}) with a PRD`)
       else if ((out.programs ?? []).length >= MAX_PROGRAMS) out.skipped.push(`program from #${sp.from}: one new program per run`)
       else if (parts.length < PROGRAM_TICKETS[0]) out.skipped.push(`program from #${sp.from}: fewer than ${PROGRAM_TICKETS[0]} usable tickets`)
       else {
         const ids = parts.slice(0, PROGRAM_TICKETS[1]).map((n) => {
-          const size = n.size === "M" ? "M" : "S"
+          const size = isSize(n.size) && actionOf(n.size) === "build" ? n.size : smallest()
           const { id } = addTicket(db, { project, title: n.title.trim(), done_when: `${n.done_when ?? ""}\nPart of "${sp.title ?? l.title}" (PRD on #${l.id}).`.trim(), size, priority: l.priority, goal: l.goal })
           setTicket(db, id, { status: "backlog", note: `Engineering Manager: split from #${l.id}`, engineer: ENGINEERS.includes(n.engineer ?? "") ? n.engineer! : null })
           return id
@@ -176,7 +177,7 @@ export type PromoteMode = "ask" | "auto" | "none"
 export async function onboardPromote(db: DB, project: string, mode: PromoteMode, choose?: (titles: string[]) => Promise<number[]>): Promise<string> {
   if (mode === "auto") return ""
   const gs = activeGoals(db, project)
-  const top = splitBacklog(db, project, (id) => gs.find((g) => g.id === id)?.rank).pickable.filter((t) => t.size !== "L").slice(0, 3)
+  const top = splitBacklog(db, project, (id) => gs.find((g) => g.id === id)?.rank).pickable.filter((t) => actionOf(t.size) === "build").slice(0, 3)
   if (mode === "ask" && choose && top.length) {
     const picked = (await choose(top.map((t) => `#${t.id} ${t.title}`))).map((i) => top[i]).filter(Boolean)
     if (picked.length) { for (const t of picked) queueTicket(db, t.id); return `queued ${picked.map((t) => `#${t.id}`).join(", ")}; the rest of the backlog stays put` }
@@ -195,7 +196,7 @@ export function fallbackPromote(db: DB, project: string): Applied {
   if (ready >= LOW_WATER) return { promoted: [], created: [], needsOwner: [], skipped: [] }
   const gs = activeGoals(db, project)
   const { pickable } = splitBacklog(db, project, (id) => gs.find((g) => g.id === id)?.rank)
-  const ids = pickable.filter((t) => t.size !== "L").slice(0, READY_CAP - ready).map((t) => t.id)
+  const ids = pickable.filter((t) => actionOf(t.size) === "build").slice(0, READY_CAP - ready).map((t) => t.id)
   return applyPlan(db, project, { promote: ids, new: [], note: "fallback" }, false, cachedVerdicts(db, pickable))
 }
 
@@ -288,7 +289,8 @@ export function buildLeadGraph(db: DB, c = claude) {
       block("WAITING FOR OWNER APPROVAL", q("status='approval'"), 400),
       block("FAILED, LAST 7 DAYS", q("status='failed' AND updated_at>=?", week), 600),
       block("SHIPPED, LAST 7 DAYS (summaries may mention follow-ups)", q("status='shipped' AND updated_at>=?", week), 400),
-      `L TICKETS WITH A PRD (split each into a program):\n${q("size='L' AND prd IS NOT NULL AND status IN ('backlog','ready')").map((t) => `${fmt(t)}\n    PRD: ${clip(t.prd ?? "", 3000)}`).join("\n") || "(none)"}`,
+      `TICKETS OF A SPLIT SIZE WITH A PRD (split each into a program):\n${q(`size IN (${sqlList(withAction("split"))}) AND prd IS NOT NULL AND status IN ('backlog','ready')`).map((t) => `${fmt(t)}\n    PRD: ${clip(t.prd ?? "", 3000)}`).join("\n") || "(none)"}`,
+      `SIZES (smallest first): ${sizeGuide()} Builders take: ${withAction("build").join(", ") || "none"}. Split first: ${withAction("split").join(", ") || "none"}.`,
       block("BACKLOG YOU MAY PICK FROM, TOP 40 (goal rank, then priority)", pickable.slice(0, 40)),
       `OWNER-ONLY BACKLOG (${owner.length}; only the owner may start these: never promote them, never re-create them, and do not list them as needs-owner):\n${owner.slice(0, 15).map((t) => `#${t.id} ${t.title}`).join("\n") || "(none)"}${owner.length > 15 ? `\n+${owner.length - 15} more` : ""}`,
       `IDEAS, TOP 15:\n${ideas.map((i) => `- ${i.title}${i.why ? ` (${clip(i.why, 150)})` : ""}`).join("\n") || "(none)"}`,

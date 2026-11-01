@@ -5,6 +5,7 @@
 // review path, with a ↩️ Undo button in #dobby-ideas (a revert PR). Nothing is live until it merges and the owner's checkout
 // pulls main. A retro fix is queued as a Dobby ticket. With `scout_merge: auto` (projects/foreman.md) no tap is needed:
 // strict review + scoutInjection() on the diff, then the normal landPr; any failure closes the PR (scoutCard).
+import { smallest } from "./sizes.ts"
 import { paused } from "./pause.ts"
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { DATA, type DB } from "./db.ts"
@@ -299,7 +300,7 @@ export async function scout(db: DB, say: Say) {
     if (isDuplicate(db, "dobby", title)) continue
     ins.get(title, p.type, p.why, JSON.stringify(p), p.type === "retro" ? p.experiment ?? null : null, new Date().toISOString())
     if (p.type === "retro") {
-      const { id } = addTicket(db, { project: "dobby", title: p.title.slice(0, 200), done_when: p.experiment ?? "", size: "S" })
+      const { id } = addTicket(db, { project: "dobby", title: p.title.slice(0, 200), done_when: p.experiment ?? "", size: smallest() })
       await say(`🎓 Queued: ${p.title} · #${id}\nWhy: ${p.why}`)
       done.push(`queued #${id}`)
       continue

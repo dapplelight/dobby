@@ -8,6 +8,7 @@
 // launch: a program whose tickets all finished gets one launch check against its PRD (Sonnet, low effort, text-only).
 //         Gaps become new program tickets (at most 2 checks); ready = done.
 // status: one living message per program in #<app>-tickets (upsert, edited in place; only when it changed).
+import { actionOf, isSize, sizeGuide, smallest, withAction } from "../sizes.ts"
 import { paused } from "../pause.ts"
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph"
 import type { DB } from "../db.ts"
@@ -128,7 +129,7 @@ export function buildProgramGraph(db: DB, deps: Deps = { run: netRun, claude, up
       // text-only (--tools ""): eligible for API credits
       const r = await deps.claude(db, {
         project: s.project, kind: "launch-check", model: role.meta.model ?? "sonnet", effort: role.meta.effort, args: ["--setting-sources", "project", "--tools", ""],
-        prompt: `${role.body.replaceAll("{project}", s.project)}\n\nPROGRAM: ${pg.title}\n\nPRD:\n${prd ?? "(none: judge by the program title and the tickets)"}\n\nTICKETS:\n${ts.map((t) => `#${t.id} [${t.status}] ${t.title} | done when: ${clip(t.done_when, 300)}`).join("\n")}`,
+        prompt: `${role.body.replaceAll("{project}", s.project)}\n\nSIZES (smallest first): ${sizeGuide()} Builders take: ${withAction("build").join(", ") || "none"}.\n\nPROGRAM: ${pg.title}\n\nPRD:\n${prd ?? "(none: judge by the program title and the tickets)"}\n\nTICKETS:\n${ts.map((t) => `#${t.id} [${t.status}] ${t.title} | done when: ${clip(t.done_when, 300)}`).join("\n")}`,
       })
       const v = r.ok ? parseLaunch(r.text) : null
       const gaps = (v?.gaps ?? []).filter((g) => !needsOwner(`${g.title} ${g.done_when ?? ""}`, undefined, { ownerWords: policyCtx(s.project).ownerWords })).slice(0, MAX_GAPS)
@@ -139,7 +140,7 @@ export function buildProgramGraph(db: DB, deps: Deps = { run: netRun, claude, up
       } else {
         const pos = ts.length
         gaps.forEach((g, i) => {
-          const { id } = addTicket(db, { project: s.project, title: g.title.trim(), done_when: g.done_when ?? "", size: g.size === "M" ? "M" : "S", goal: pg.goal })
+          const { id } = addTicket(db, { project: s.project, title: g.title.trim(), done_when: g.done_when ?? "", size: isSize(g.size) && actionOf(g.size) === "build" ? g.size : smallest(), goal: pg.goal })
           setTicket(db, id, { status: "backlog", note: `Program Manager: launch gap in "${pg.title}"` })
           db.prepare("INSERT OR IGNORE INTO program_tickets VALUES (?,?,?)").run(pg.id, id, pos + i)
         })

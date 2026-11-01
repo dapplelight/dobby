@@ -1,5 +1,6 @@
 // Token savings: small pure helpers behind config keys (ticketBudget, retryLimit, builderContextCeiling, shipPreflight, sameFailure,
 // harnessInstall, freshRetries, recoverOutput). Every key is off when absent, so Dobby behaves as before until the owner's config turns it on.
+import { sizeOf } from "./sizes.ts"
 import { classifyRemote } from "./detect.ts"
 import { existsSync, closeSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from "node:fs"
 import { homedir } from "node:os"
@@ -52,7 +53,7 @@ export function prCostText(c: PrCost, apiKey: boolean): string {
   return [COST_MARK, `**Cost of this PR:** ${f(c.usd)}${apiKey ? "" : " of your week"}`, "| Stage | Cost | Runs |", "|---|---|---|", ...c.stages.map((g) => `| ${g.name} | ${f(g.usd)} | ${runs(g)} |`)].join("\n")
 }
 /** The cap in week points for this size, or undefined when the budget is off. */
-export const budgetCap = (size: string) => config().ticketBudget?.[size as "S" | "M" | "L"]
+export const budgetCap = (size: string) => sizeOf(size)?.budget ?? config().ticketBudget?.[size]
 /** "" when the ticket may go on, else the owner-facing reason. */
 export function overBudget(db: DB, t: { id: number; size: string }): string {
   const cap = budgetCap(t.size)

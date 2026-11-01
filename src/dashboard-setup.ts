@@ -1,6 +1,7 @@
 // `dobby init --ui`: the browser face of setup. The state of one setup run lives here; /api/setup/* (dashboard-server.ts, setup mode only) reads and changes it
 // through the same step functions the terminal uses (setup-steps.ts). A request names a folder, a repo or a tool from a list Dobby made itself; it never carries a
 // command, a flag or an argument. Commands come from detection (detect.ts), the fixed tool list (tools.ts) and installJobs. Secrets are shown as set / not set.
+import { smallest } from "./sizes.ts"
 import { existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname } from "node:path"
@@ -348,7 +349,7 @@ export function createSetup(deps: SetupDeps, emit: (state: unknown) => void = ()
           const p = typeof b.project === "string" ? b.project : repoName(ready()[0] ?? { dir: "/" } as Detected)
           if (!ready().some((d) => repoName(d) === p)) return no(400, "Pick one of the projects that passed.")
           const { addTicket, queueTicket } = await import("./lib.ts")
-          ticket = queueTicket(db, addTicket(db, { project: p, title: b.title.trim(), size: "S" }).id)
+          ticket = queueTicket(db, addTicket(db, { project: p, title: b.title.trim(), size: smallest() }).id)
           record(db, "setup_step", { step: "first_ticket", ok: true }); push()
           return ok(ticket)
         }

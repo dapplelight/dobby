@@ -47,8 +47,9 @@ export function parse(cmd) {
   // `{a,b}` / `{1..3}` unquoted would turn one checked word into others (`--no-ind{ex,ex}`, `{~/.ssh/id,/dev/null}`), and `$NAME`
   // would hand git or a reader the value of a variable (an API key). Both are refused; `$HOME` and `${HOME}` are fine.
   let unq = ""
-  const dollar = (at) => {
+  const dollar = (at, dq = false) => {
     if (cmd.startsWith("${HOME}", at) || (cmd.startsWith("$HOME", at) && !/\w/.test(cmd[at + 5] ?? ""))) return
+    if (dq && /['"]/.test(cmd[at + 1] ?? "")) return // inside "...": `$"` and `$'` are a literal $ (grep -E "fail$"; audit 31 Oct: 19 false refusals)
     if (/[\w{@*#?$!'"-]/.test(cmd[at + 1] ?? "")) throw new Error("variable expansion ($NAME): write the value itself")
   }
   const endWord = () => {
@@ -71,7 +72,7 @@ export function parse(cmd) {
         if (cmd[j] === "\\" && '"\\$`\n'.includes(cmd[j + 1])) { part += cmd[j + 1] === "\n" ? "" : cmd[j + 1]; j++ }
         else if (cmd[j] === "$" && cmd[j + 1] === "(") { const k = closeParen(cmd, j + 1); if (k < 0) throw new Error("unbalanced $("); w = (w ?? "") + part; part = ""; nested(cmd.slice(j + 2, k)); j = k }
         else if (cmd[j] === "`") { const k = closeTick(cmd, j); if (k < 0) throw new Error("unbalanced backtick"); w = (w ?? "") + part; part = ""; nested(cmd.slice(j + 1, k)); j = k }
-        else { if (cmd[j] === "$") dollar(j); part += cmd[j] }
+        else { if (cmd[j] === "$") dollar(j, true); part += cmd[j] }
       }
       if (j >= cmd.length) throw new Error("unbalanced quote")
       w = (w ?? "") + part
@@ -213,6 +214,22 @@ export function graphHelper(words) {
   if ((c === "ls" || c === "test" || c === "[") && a.some((w) => /^graphify-out(\/|$)/.test(w))) return a.every((w) => /^(-[a-zA-Z]+|graphify-out(\/[\w.-]*)?|\])$/.test(w))
   return (c === "head" || c === "tail") && a.every((w) => /^(-n|-\d+|\d+|-n\d+)$/.test(w))
 }
+/** Read-only habits of roles that may already `cat` (audit 31 Oct: 53 of 175 refused builder calls were `sed -n 240,320p f`):
+ *  `sed -n` with only line-print scripts (`12p`, `240,320p`, `$p`, `5,$p`), no -i or w/e/r commands; `uniq` on the pipe (flags only). */
+export function readHelper(words) {
+  const [c, ...a] = words
+  if (c === "uniq") return a.every((w) => /^-[a-zA-Z]+$/.test(w))
+  if (c !== "sed" || !a.includes("-n")) return false
+  const PRINT = /^(\d+|\$)(,(\d+|\$))?p$/
+  let script = false // the first plain word is the script unless -e gave one; every later plain word is a file
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] === "-n") continue
+    if (a[i] === "-e") { if (!PRINT.test(a[++i] ?? "")) return false; script = true; continue }
+    if (a[i].startsWith("-")) return false // -i, -E, --in-place...
+    if (!script) { if (!PRINT.test(a[i])) return false; script = true }
+  }
+  return script
+}
 const graphRole = (patterns) => patterns.some((p) => p === "*" || p.startsWith("graphify"))
 
 export function allowedBy(words, patterns) {
@@ -243,7 +260,7 @@ const ENV_FILE = /^\.env(\..+)?$/
 const ENV_OK = /\.(example|sample|template|dist|d\.ts|ts|tsx|js|mjs|cjs|md|txt)$|\.example\./
 const secretFile = (name) => (ENV_FILE.test(name) && !ENV_OK.test(name)) || name === "secrets.env"
 /** Commands that print what they read: their paths must stay inside the worktree, and no glob may reach a .env file. */
-const READERS = new Set(["cat", "grep", "egrep", "fgrep", "rg", "ag", "head", "tail", "less", "more", "bat", "nl", "tac", "strings", "xxd", "od", "hexdump"])
+const READERS = new Set(["sed", "cat", "grep", "egrep", "fgrep", "rg", "ag", "head", "tail", "less", "more", "bat", "nl", "tac", "strings", "xxd", "od", "hexdump"])
 /** A glob (`.en*`, `.e?v`, `.{env,x}`, `[.]env`) that would match a .env file. A leading * or ? skips dotfiles in the shell. */
 function envGlob(word) {
   const b = basename(word.replace(/\\/g, ""))
@@ -368,7 +385,7 @@ export function decide(command, ctx) {
       const c = { ...ctx, cwd }
       const why = x.xargs ? null : guardSegment(x.words, x.redirs, c)
       if (why) return { deny: `Dobby guard: ${why} (\`${x.words.join(" ").slice(0, 80)}\`)` }
-      if (!x.xargs && !allowedBy(x.words, ctx.allow) && !(graphRole(ctx.allow) && graphHelper(x.words))) return { deny: `Dobby guard: \`${x.words.join(" ").slice(0, 80)}\` is not in this role's allowed commands${ctx.allow.length ? "" : " (this role has no shell)"}` }
+      if (!x.xargs && !allowedBy(x.words, ctx.allow) && !(graphRole(ctx.allow) && graphHelper(x.words)) && !(allowedBy(["cat"], ctx.allow) && readHelper(x.words))) return { deny: `Dobby guard: \`${x.words.join(" ").slice(0, 80)}\` is not in this role's allowed commands${ctx.allow.length ? "" : " (this role has no shell)"}` }
       if (x.words[0] === "cd" && x.words[1]) cwd = asPath(x.words[1], cwd, ctx.home)
     }
   }

@@ -12,6 +12,7 @@
 // No GitHub Actions: `dobby review-scan` runs inside the always-on listener every 15 minutes, and the ticket graph's
 // ship node reviews Dobby's own PRs inline before merging. thread_id = "review-<repo>-<pr>-<headsha>".
 // gh and git only ever get argument arrays: titles, bodies and review text are someone else's words.
+import { defaultSize } from "../sizes.ts"
 import { paused } from "../pause.ts"
 import { spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
@@ -97,7 +98,20 @@ export function openFindings(fresh: Finding[], threads: Thread[], fixed: string[
 export type Pr = { title: string; headRefName: string; body: string; headRefOid: string; isDraft: boolean; author: { login: string }; baseRefName: string }
 export type File = { path: string; lines: number }
 export type Choice = "none" | "haiku" | "sonnet" | "opus"
-export type Pick = { choice: Choice; by: "rule" | "jev" | "fallback"; why: string }
+/**
+ * A sensitive ticket's reviewer (owner, 31 Oct): Opus when the diff touches a risk path (auth, crypto, money, migrations...);
+ * else Jev (or Haiku) picks, never below Sonnet. Neither answered = Opus, as before.
+ */
+export const strictPick = async (set: { riskPaths: string[] }, files: File[], ask: () => Promise<Pick>): Promise<Pick> => {
+  const hot = files.find((x) => risky(set, x.path))
+  if (hot) return { choice: "opus", by: "rule", why: `sensitive ticket, touches ${hot.path}` }
+  const j = await ask()
+  if (j.by !== "jev" && j.by !== "haiku") return { choice: "opus", by: "rule", why: "sensitive ticket: strict review (no Jev or Haiku answer)" }
+  return j.choice === "opus" ? j : { choice: "sonnet", by: "jev-strict", why: `sensitive ticket, ${j.by === "jev" ? "Jev" : "Haiku"}: ${j.choice} (floor sonnet)` }
+}
+/** Enough for a sensitive ticket: Opus, or the Sonnet strictPick chose (risk paths and Jev-less picks already went to Opus). Any other Sonnet pass is not. */
+export const strictEnough = (c: string | null | undefined, by?: string | null) => c === "opus" || (c === "sonnet" && by === "jev-strict")
+export type Pick = { choice: Choice; by: "rule" | "jev" | "haiku" | "jev-strict" | "fallback"; why: string }
 
 const OWNER = config().github.owner // the person whose @dobby chat comments are obeyed
 /** Accounts whose repos get reviewed, plus the signed-in owner: read per call (config can change; gh may be signed in as a user while the repo is in an org). */
@@ -124,20 +138,22 @@ export function gateRules(repo: string, pr: Pr, files: File[], o: { drafts?: boo
   return null
 }
 
-/** Rules, then Jev on the title, file paths and line counts (never code). Unsure, error or Jev off = sonnet. */
-export async function choose(repo: string, pr: Pr, files: File[], useJev = true, fetcher?: typeof fetch, o: { drafts?: boolean } = {}): Promise<Pick> {
+const GATE_Q = "Which reviewer does this pull request need? none = nothing that runs: comments, lockfile-only, images or other assets. haiku = tiny and low risk: copy, styling, a test, one small function. sonnet = a normal feature or fix across a few files. opus = risky or wide: money, auth, user data, storage or schema, concurrency, security, or many files across the app."
+
+/** Rules, then Jev on the title, file paths and line counts (never code); Jev off, unsure or offline = o.haiku on the same text; neither = sonnet. */
+export async function choose(repo: string, pr: Pr, files: File[], useJev = true, fetcher?: typeof fetch, o: { drafts?: boolean; haiku?: (prompt: string) => Promise<string | undefined> } = {}): Promise<Pick> {
   const rule = gateRules(repo, pr, files, o)
   if (rule) return rule
-  if (!useJev) return { choice: "sonnet", by: "fallback", why: "Jev off for this project" }
   const lines = files.reduce((n, f) => n + f.lines, 0)
   // ponytail: first 200 paths only; a PR wider than that is opus-shaped anyway and Jev sees the totals.
-  const a = await ask(`Pull request: ${pr.title}\n${files.length} files, ${lines} lines:\n${files.slice(0, 200).map((f) => `${f.path} (${f.lines})`).join("\n")}`, {
-    model: {
-      type: "choice", fallback: "sonnet", options: ["none", "haiku", "sonnet", "opus"],
-      question: "Which reviewer does this pull request need? none = nothing that runs: comments, lockfile-only, images or other assets. haiku = tiny and low risk: copy, styling, a test, one small function. sonnet = a normal feature or fix across a few files. opus = risky or wide: money, auth, user data, storage or schema, concurrency, security, or many files across the app.",
-    },
-  }, fetcher)
-  return a.model.fromJev ? { choice: a.model.value as Choice, by: "jev", why: `Jev: ${a.model.value}, ${files.length} files, ${lines} lines` } : { choice: "sonnet", by: "fallback", why: "Jev unsure or offline" }
+  const text = `Pull request: ${pr.title}\n${files.length} files, ${lines} lines:\n${files.slice(0, 200).map((f) => `${f.path} (${f.lines})`).join("\n")}`
+  if (useJev) {
+    const a = await ask(text, { model: { type: "choice", fallback: "sonnet", options: ["none", "haiku", "sonnet", "opus"], question: GATE_Q } }, fetcher)
+    if (a.model.fromJev) return { choice: a.model.value as Choice, by: "jev", why: `Jev: ${a.model.value}, ${files.length} files, ${lines} lines` }
+  }
+  const jev = useJev ? "Jev unsure or offline" : "Jev off for this project"
+  const h = o.haiku && /\b(none|haiku|sonnet|opus)\b/.exec(((await o.haiku(`${text}\n\n${GATE_Q}\nAnswer with ONE word: none, haiku, sonnet or opus.`).catch(() => undefined)) ?? "").toLowerCase())?.[1]
+  return h ? { choice: h as Choice, by: "haiku", why: `Haiku: ${h} (${jev}), ${files.length} files, ${lines} lines` } : { choice: "sonnet", by: "fallback", why: jev }
 }
 
 /** The 3 "For the owner" bullets, for #needs-you. Missing = the first line of the review. */
@@ -436,13 +452,19 @@ export function buildReviewGraph(db: DB, deps: Deps = real) {
     // review.includePaths / excludePaths; a gating review (strict, a Dobby or a Scout PR) reviews every file
     const files = gating(s) ? all : all.filter((x) => pathReviewed(set, x.path))
     const skipped = all.filter((x) => !files.includes(x)).map((x) => x.path)
-    let pick: Pick = s.strict ? { choice: "opus", by: "rule", why: "sensitive ticket: strict review" }
+    const haiku = async (prompt: string) => {
+      const r = await deps.claude(db, { project: "dobby", kind: "review-gate", model: "haiku", args: ["--setting-sources", "project", "--tools", ""], prompt })
+      return r.ok ? r.text : undefined
+    }
+    let pick: Pick = s.strict ? (set.strictReviewer === "auto" ? await strictPick(set, files, () => choose(s.repo, s.info, files, s.useJev, deps.fetcher, { drafts: true, haiku })) : { choice: "opus", by: "rule", why: "sensitive ticket: strict review" })
       : all.length && !files.length ? { choice: "none", by: "rule", why: "path filters: no reviewed files changed" }
-      : await choose(s.repo, s.info, files, s.useJev, deps.fetcher, { drafts: s.requested || set.auto === "on" || ownerDraft(s.info) })
+      : set.reviewer !== "auto" ? { choice: set.reviewer, by: "rule", why: `review.reviewer is ${set.reviewer}` }
+      : await choose(s.repo, s.info, files, s.useJev, deps.fetcher, { drafts: s.requested || set.auto === "on" || ownerDraft(s.info), haiku })
     const hot = set.riskBump && (pick.choice === "haiku" || pick.choice === "sonnet") && files.find((x) => risky(set, x.path))
     if (hot) pick = { choice: "opus", by: "rule", why: `risk bump: touches ${hot.path}` }
     return { files, skipped, pick, log: [`gate: ${pick.choice} (${pick.by}: ${pick.why})`] }
   }
+
 
   // a PR that merges on its review: strict, a Dobby or Scout PR, or the owner's own PR (ownerLand merges it on a pass)
   const gating = (s: S) => !!s.strict || landsOnReview(s.repo, s.info)
@@ -717,9 +739,9 @@ export async function reviewOnce(db: DB, repo: string, pr: number, o: { deps?: D
   for (;;) {
     const r = await runReview(db, repo, pr, { ...o, force: false })
     if (r.state !== "busy") return r
-    const row = db.prepare("SELECT verdict, choice FROM reviews WHERE repo=? AND pr=? AND sha=?").get(repo, pr, r.sha) as { verdict: string; choice: string | null } | undefined
+    const row = db.prepare("SELECT verdict, choice, by FROM reviews WHERE repo=? AND pr=? AND sha=?").get(repo, pr, r.sha) as { verdict: string; choice: string | null; by: string | null } | undefined
     if (row && row.verdict !== "running" && row.verdict !== "error") {
-      if (o.strict && row.verdict !== "accepted" && row.choice !== "opus") return runReview(db, repo, pr, { ...o, force: true }) // not strict enough: Opus now
+      if (o.strict && row.verdict !== "accepted" && !strictEnough(row.choice, row.by)) return runReview(db, repo, pr, { ...o, force: true }) // not strict enough: Opus now
       const state = row.verdict === "fail" ? "failure" : "success"
       const landed = state === "success" && !o.actions && getWait(db, repo, pr) ? `; ${await landAutomerge(db, o.deps ?? real, repo, pr)}` : ""
       return { state, why: `${row.verdict} (this head was already reviewed)${landed}`, url: "", log: [`review: ${r.sha?.slice(0, 7)} already reviewed: ${row.verdict}${landed}`], sha: r.sha }
@@ -740,10 +762,10 @@ export const automergeStrict = (db: DB, repo: string, pr: number) => !!getWait(d
 
 /** May this head merge: passed (an Opus review when strict) or accepted by the owner. "" = yes, else why not. */
 export function notLandable(db: DB, repo: string, pr: number, sha: string, strict: boolean) {
-  const r = db.prepare("SELECT verdict, choice FROM reviews WHERE repo=? AND pr=? AND sha=?").get(repo, pr, sha) as { verdict: string; choice: string | null } | undefined
+  const r = db.prepare("SELECT verdict, choice, by FROM reviews WHERE repo=? AND pr=? AND sha=?").get(repo, pr, sha) as { verdict: string; choice: string | null; by: string | null } | undefined
   if (r?.verdict === "accepted") return ""
   if (r?.verdict !== "pass") return `head ${sha.slice(0, 7)} has no passing review (${r?.verdict ?? "none"})`
-  return strict && r.choice !== "opus" ? "needs strict review" : ""
+  return strict && !strictEnough(r.choice, r.by) ? "needs strict review" : ""
 }
 
 /**
@@ -953,7 +975,7 @@ async function rebaseOne(db: DB, d: Deps, p: Project, slug: string, x: Behind): 
       if (!r.conflicts?.length && !/^verify failed/.test(r.out)) return transient(clip(r.out, 120))
       const title = `Resolve merge conflicts on ${slug}#${x.number}`
       if (db.prepare("SELECT 1 FROM tickets WHERE title=? AND status IN ('backlog','ready','running','approval','fixing')").get(title)) { done(); return `${tag}: ticket already queued` }
-      const t = addTicket(db, { project: p.name, title, size: "M", risk: "high", priority: 80, onto: x.headRefName,
+      const t = addTicket(db, { project: p.name, title, size: defaultSize(), risk: "high", priority: 80, onto: x.headRefName,
         done_when: `${slug}#${x.number} (${x.headRefName}) conflicts with origin/${x.baseRefName}. Run \`git merge origin/${x.baseRefName}\` in your worktree, resolve the conflict markers${r.conflicts?.length ? ` in: ${r.conflicts.join(", ")}` : ""}, run the project's verify, then git add and git commit the merge (a merge, not a rebase: the push is fast-forward only). Dobby's own rebase failed: ${clip(r.out, 300)}` })
       done()
       return `${tag}: not mechanical, ticket #${t.id} (${clip(r.out, 100)})`
@@ -1227,7 +1249,7 @@ export async function fixReview(db: DB, repo: string, pr: number, d: Deps = real
   const dup = db.prepare("SELECT id FROM tickets WHERE title=? AND status IN ('backlog','ready','running','approval','fixing')").get(title) as { id: number } | undefined
   if (dup) return `Already queued as ticket #${dup.id}: ${title}`
   const done_when = `${only ? "This Claude Review finding" : "Every open Claude Review finding"} on https://github.com/${repo}/pull/${pr} is fixed (the review then passes on the push):\n${found.map((f) => `- ${f}`).join("\n")}`
-  const t = addTicket(db, { project: p.name, title, done_when, size: "M", risk: "high", priority: 80, onto: info.headRefName })
+  const t = addTicket(db, { project: p.name, title, done_when, size: defaultSize(), risk: "high", priority: 80, onto: info.headRefName })
   return `🛠 Ticket #${t.id} (${p.name}): ${title}. It builds on ${info.headRefName} and pushes there: no new PR, no merge. Claude Review re-runs on the push.`
 }
 

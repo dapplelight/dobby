@@ -15,6 +15,9 @@ import { providersConfigSchema } from "./providers/config.ts"
 import { reviewConfigSchema } from "./reviewer/settings.ts"
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url))
+const SIZE_NAME = /^[A-Za-z0-9_-]{1,12}$/
+/** The starting size list, shipped as a file (sizes.defaults.json) so no size is named in code. */
+const defaultSizes = () => (JSON.parse(readFileSync(`${ROOT}sizes.defaults.json`, "utf8")) as { sizes: Config["sizes"] }).sizes
 
 const App = z.object({ label: z.string(), ideas: z.boolean() })
 export const Schema = z.object({
@@ -68,7 +71,19 @@ export const Schema = z.object({
   }).partial().shape).optional(),
   // Token savings (src/savings.ts). Every key is absent by default = Dobby behaves as before; the private config turns each on.
   // ticketBudget: most one ticket may spend, by size, in percent-of-the-week points (usdPerWeekPoint dollars = 1 point; default 26, measured). Over it, the ticket goes to the owner.
-  ticketBudget: z.object({ S: z.number().positive(), M: z.number().positive(), L: z.number().positive(), usdPerWeekPoint: z.number().positive() }).partial().optional(),
+  // Per-size budgets now live on each size (`sizes[].budget`); a ticketBudget entry keyed by size name is still read as a fallback.
+  ticketBudget: z.record(z.string(), z.number().positive()).optional(), // usdPerWeekPoint, plus <size name>: week-% (old form of sizes[].budget)
+  // sizes: every ticket size and what it does (src/sizes.ts), smallest first. Starting list: sizes.defaults.json. Replaced as a whole when set.
+  sizes: z.array(z.object({
+    name: z.string().regex(SIZE_NAME, "1-12 letters, digits, - or _"),
+    action: z.enum(["build", "split", "ask"]),
+    tier: z.enum(["small", "medium", "large"]),
+    estimatePct: z.number().positive(),
+    builds: z.number().int().min(1),
+    budget: z.number().positive().optional(),
+    model: z.string().min(1).optional(),
+    describe: z.string().max(200).optional(),
+  })).min(1).refine((xs) => new Set(xs.map((x) => x.name)).size === xs.length, "size names must be unique"),
   // pacing.fallbackBuildsPerDay: builds started per day (configured timezone) while the Claude usage cannot be read (default 3).
   // pacing.weekCap: most of your weekly plan Dobby may use, in percent; the rest is always yours (default 95).
   pacing: z.object({ fallbackBuildsPerDay: z.number().int().min(0), weekCap: z.number().int().min(10).max(100) }).partial().optional(),
@@ -86,6 +101,10 @@ export const Schema = z.object({
   stats: z.object({ crashes: z.boolean(), usage: z.boolean(), endpoint: z.string() }).partial().optional(),
   // retryLimit: builds one ticket may use before it goes to the owner instead of being rebuilt.
   retryLimit: z.number().int().min(1).optional(),
+  // builders: how many build at once. max (default 4), maxQuietHours in quiet hours (default 6); minFreePct: no new builder while free memory is under it (default 25).
+  builders: z.object({ max: z.number().int().min(1).max(32), maxQuietHours: z.number().int().min(1).max(32), minFreePct: z.number().min(0).max(90) }).partial().optional(),
+  // autoUpdate: on by default: once a day the tick installs a newer dobby-ai from npm while no builder runs. false = only announce it in status.
+  autoUpdate: z.boolean().optional(),
   // builderContextCeiling: tokens of context at which a builder run is ended and continued in a fresh run with a short handoff.
   builderContextCeiling: z.number().int().min(20_000).optional(),
   // shipPreflight: before a builder starts, check gh auth, the remote, push access and the verify command; a failure blocks the ticket with the reason. On by default; false = off.
@@ -198,6 +217,7 @@ export function defaults(home = homedir(), platform = process.platform, tz = loc
     clientProjects: [],
     frontDeskDenyMcp: [],
     safety: { preset: "balanced", rules: {}, classifier: "model", unsure: "ask" },
+    sizes: defaultSizes(),
     paths: {
       projects: "~/projects",
       data: dataDir(home, platform),

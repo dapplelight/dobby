@@ -28,7 +28,8 @@ function Err({ errors }: { errors: readonly unknown[] }) {
 function Estimate({ size }: { size: string }) {
   const q = useSnapshot().data?.queue
   if (!q) return null
-  const est = q.estimates[size === "auto" ? "M" : (size as "S" | "M" | "L")]
+  const names = Object.keys(q.estimates) // the configured sizes, smallest first (config: sizes)
+  const est = q.estimates[size === "auto" ? names[Math.floor((names.length - 1) / 2)] : size]
   const fits = fitsAfter(q.queuedPct, est, q.room)
   return (
     <p className="text-sm text-ink-2" aria-live="polite">
@@ -41,6 +42,7 @@ function Estimate({ size }: { size: string }) {
 // Signet's SelectItem is wrapped in a Tooltip that needs this provider. It sits here, not at the app root, so the tooltip code stays out of the first load.
 /** N: project, what to build, done when, size. Sends { action: "add" }, the same as `dobby add`; the fields use the server's own schema. */
 export function NewTicketDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
+  const sizeNames = Object.keys(useSnapshot().data?.queue?.estimates ?? {}) // configured sizes, smallest first
   const { data } = useSnapshot()
   const act = useAction()
   const projects = data?.projects ?? []
@@ -97,7 +99,7 @@ export function NewTicketDialog({ open, onOpenChange }: { open: boolean; onOpenC
                 <Label htmlFor="nt-size">Size</Label>
                 <Select value={f.state.value} onValueChange={(v) => f.handleChange(v ?? "auto")}>
                   <SelectTrigger id="nt-size" className="w-full"><SelectValue /></SelectTrigger>
-                  <SelectContent>{["auto", "S", "M", "L"].map((s) => <SelectItem key={s} value={s}>{s === "auto" ? "Let Dobby decide" : s}</SelectItem>)}</SelectContent>
+                  <SelectContent>{["auto", ...sizeNames].map((s) => <SelectItem key={s} value={s}>{s === "auto" ? "Let Dobby decide" : s}</SelectItem>)}</SelectContent>
                 </Select>
               </div>
             )}

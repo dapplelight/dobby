@@ -3,6 +3,7 @@
 // used on low confidence, timeout, HTTP error, bad answer or missing key. Nothing here throws.
 // Key: JEV_API_KEY from the environment only, never logged. Never send private or financial text (projects can opt out with `jev: off`).
 
+import { defaultSize, sizeGuide, sizeNames } from "./sizes.ts"
 import type { DB } from "./db.ts"
 import { readSecrets } from "./notify.ts"
 import { decide } from "./policy.ts"
@@ -59,17 +60,16 @@ export const riskFromWords = (title: string, doneWhen = ""): "medium" | "high" =
   return candidates({ text, title }).length || DESTRUCTIVE.test(text) ? "high" : "medium"
 }
 
-const SIZES = ["S", "M", "L"]
 const RISK = ["low", "medium", "high"]
 
 /**
- * Triage a new ticket: how big, how risky. Size falls back to M (gets the Sonnet checker); risk with no Jev answer comes from the
+ * Triage a new ticket: how big, how risky. Size falls back to the default size (sizes.ts); risk with no Jev answer comes from the
  * ticket's words (riskFromWords: high or medium, never low), reported as riskBy.
  * Risk high = touches auth, money, data deletion, migrations, deploys, or anything users see outside the app.
  */
 export async function triage(title: string, doneWhen: string, givenSize?: string, fetcher?: typeof fetch) {
   const a = await ask(`Ticket: ${title}\nDone when: ${doneWhen}`, {
-    size: { type: "choice", question: "How big is this coding task for one engineer? S = under an hour, one or two files. M = a few hours, several files. L = a day or more, needs a design first.", options: SIZES, fallback: givenSize ?? "M" },
+    size: { type: "choice", question: `How big is this coding task for one engineer? ${sizeGuide()}`, options: sizeNames(), fallback: givenSize ?? defaultSize() },
     risk: { type: "score", question: "How risky is this change if it has a bug? low = internal or cosmetic. medium = a user-facing feature. high = auth, money, deleting data, migrations, deploys, messages to people.", levels: RISK, fallback: 2 },
   }, fetcher)
   const riskBy = a.risk.fromJev ? "jev" as const : "words" as const

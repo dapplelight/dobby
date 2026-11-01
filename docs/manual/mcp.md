@@ -46,7 +46,7 @@ If Claude cannot ask you, the item goes to Needs you and waits for your tap. Dob
 |---|---|---|
 | `dobby_read` | `view` | `status`, `limits`, `list`, `show`, `job`, `cost`, `scoreboard`, `receipt`, `pauses`, `stats-report` |
 | `dobby_docs` | `op` | `list`, `read`, `search` |
-| `dobby_ticket` | `op` | `add`, `queue`, `answer`, `hint`, `take-over`, `allow-round`, `apply-finding`, `dismiss-finding`, `rule-from-finding`, `unqueue`, `reorder`, `make-ticket`, `dismiss-idea` |
+| `dobby_ticket` | `op` | `add`, `queue`, `answer`, `hint`, `take-over`, `allow-round`, `apply-finding`, `dismiss-finding`, `rule-from-finding`, `unqueue`, `reorder`, `goal`, `make-ticket`, `dismiss-idea` |
 | `dobby_pause` | `op` | `pause`, `resume`, `status`, `config-set` |
 | `dobby_decide` | `op` | `approve`, `decline`, `cancel`, `retry`, `merge`, `deploy` |
 

@@ -33,6 +33,7 @@ export const ACTIONS: Entry[] = [
   act("reorder-up", "Move up", ["Shift+K"], "queue", "reorder", "reorder", "dobby_ticket/reorder"),
   act("reorder-down", "Move down", ["Shift+J"], "queue", "reorder", "reorder", "dobby_ticket/reorder"),
   act("unqueue", "Back to backlog", ["B"], "queue", "unqueue", "unqueue", "dobby_ticket/unqueue"),
+  act("goal", "Move to goal", ["Shift+O"], "queue", "goal", "goal", "dobby_ticket/goal"),
   act("queue-ticket", "Queue it", ["Enter"], "backlog", "queue", "queue", "dobby_ticket/queue"),
   act("make-ticket", "Make a ticket", ["Enter"], "ideas", "makeTicket", "ideaticket", "dobby_ticket/make-ticket"),
   act("dismiss-idea", "Dismiss", ["X"], "ideas", "dismissIdea", "ideadrop", "dobby_ticket/dismiss-idea"),

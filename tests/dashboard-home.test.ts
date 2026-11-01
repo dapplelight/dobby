@@ -240,7 +240,15 @@ test("NewTicket schema: the form and the server share it", () => {
   assert.ok(NewTicket.safeParse({ project: "tally", title: "Add export" }).success)
   assert.equal(NewTicket.safeParse({ project: "tally", title: "  " }).success, false)
   assert.equal(NewTicket.safeParse({ project: "a b", title: "x" }).success, false)
-  assert.equal(NewTicket.safeParse({ project: "tally", title: "x", size: "XL" }).success, false)
+  // The schema is bundled into the dashboard, so it checks a size's shape only; the server refuses an unconfigured
+  // one (XL, in the POST test above).
+  assert.equal(NewTicket.safeParse({ project: "tally", title: "x", size: "X L;" }).success, false)
+  assert.ok(NewTicket.safeParse({ project: "tally", title: "x", size: "XL" }).success)
+})
+
+test("the dashboard bundle never imports server-only code (config, fs): api-schema has no local imports", () => {
+  const src = readFileSync(new URL("../src/api-schema.ts", import.meta.url), "utf8")
+  assert.deepEqual(src.match(/from "\.\/[^"]+"/g) ?? [], [])
 })
 
 // ---- the three doors ----
