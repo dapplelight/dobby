@@ -1,0 +1,6 @@
+{
+  "name": "dobby",
+  "version": "0.1.0",
+  "description": "Drive Dobby from Claude Code. Before you install it, /dobby:try reads Dobby's docs and your repo and tells you whether it fits.",
+  "license": "MIT"
+}
