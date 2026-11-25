@@ -1,0 +1,18 @@
+{
+  "name": "dobby",
+  "owner": {
+    "name": "Dobby AI"
+  },
+  "plugins": [
+    {
+      "name": "dobby",
+      "source": "./plugins/dobby",
+      "description": "Drive Dobby from Claude Code over MCP. /dobby:try reads the docs and your repo first and says whether Dobby fits."
+    },
+    {
+      "name": "dobby-reviewer",
+      "source": "./plugins/dobby-reviewer",
+      "description": "An independent pull request reviewer: reads a diff the way Dobby's reviewer does and lists the real bugs."
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "dobby": {
+      "command": "sh",
+      "args": ["-c", "command -v dobby >/dev/null 2>&1 && exec dobby mcp || exec npx -y dobby-ai mcp"]
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "dobby-reviewer",
+  "version": "0.1.0",
+  "description": "An independent pull request reviewer for Claude Code: /dobby-reviewer:review lists the real bugs in a diff before it merges.",
+  "license": "MIT"
+}
